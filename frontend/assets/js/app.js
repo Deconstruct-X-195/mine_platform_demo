@@ -135,13 +135,40 @@ const App = {
       el('main', { class: 'main' }, [
         el('header', { class: 'topbar' }, [
           el('div', { class: 'page-title', id: 'pageTitle' }, ''),
-          el('div', { style: { color: 'var(--text-3)', fontSize: '12.5px' } },
-            new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }))
+          el('div', { style: { display: 'flex', alignItems: 'center', gap: '14px' } }, [
+            el('div', { id: 'msgBell', style: { position: 'relative', cursor: 'pointer', fontSize: '18px' },
+              title: '消息中心', onclick: () => location.hash = '#/msg.center' }, [
+              el('span', null, '🔔'),
+              el('span', { id: 'msgBellBadge', style: { display: 'none', position: 'absolute', top: '-6px', right: '-8px',
+                background: 'var(--red, #ef4444)', color: '#fff', borderRadius: '9px', fontSize: '10px',
+                minWidth: '16px', height: '16px', lineHeight: '16px', textAlign: 'center', padding: '0 3px' } }, '')
+            ]),
+            el('div', { style: { color: 'var(--text-3)', fontSize: '12.5px' } },
+              new Date().toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }))
+          ])
         ]),
         el('div', { class: 'content', id: 'content' })
       ])
     ]));
+    this.startMsgPolling();
     this.navigate();
+  },
+
+  /* 消息未读轮询（PRD-12） */
+  startMsgPolling() {
+    const refresh = async () => {
+      if (!this.user) return;
+      try {
+        const d = await API.get('/api/message/unread-count');
+        const badge = document.getElementById('msgBellBadge');
+        if (!badge) return;
+        if (d.count > 0) { badge.textContent = d.count > 99 ? '99+' : d.count; badge.style.display = 'block'; }
+        else badge.style.display = 'none';
+      } catch (e) { /* 静默 */ }
+    };
+    refresh();
+    if (this._msgTimer) clearInterval(this._msgTimer);
+    this._msgTimer = setInterval(refresh, 30000);
   },
 
   /* ---------- 企业主体注册 ---------- */

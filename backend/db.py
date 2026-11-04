@@ -355,6 +355,180 @@ CREATE TABLE IF NOT EXISTS archive_record (
   operator_id INTEGER,
   archive_summary TEXT
 );
+
+-- ============ 矿石质检&化验 (PRD-09) ============
+CREATE TABLE IF NOT EXISTS ore_inspect_report (
+  report_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_no TEXT UNIQUE,
+  report_type INTEGER NOT NULL,           -- 1货源预检 2到港船检 3仓内抽检 4分拨出库检
+  source_id INTEGER,
+  order_id INTEGER,
+  logi_id INTEGER,
+  alloc_id INTEGER,
+  ore_category TEXT,
+  inspect_org TEXT,
+  sample_date TEXT,
+  test_date TEXT,
+  wet_ton REAL,                           -- 湿基吨数（船检/过磅毛重）
+  deduct_ton REAL DEFAULT 0,              -- 扣水扣杂合计吨数
+  settle_ton REAL,                        -- 结算干基吨数 = 湿基 - 扣减
+  rule_id INTEGER,
+  vessel_no TEXT,
+  batch_no TEXT,
+  sample_place TEXT,
+  conclusion TEXT,
+  status TEXT NOT NULL DEFAULT 'DRAFT',   -- DRAFT/PENDING/APPROVED/REJECTED/REDBACKED
+  reject_reason TEXT,
+  attachment_url TEXT,
+  file_name TEXT,
+  remark TEXT,
+  is_redbacked INTEGER DEFAULT 0,
+  create_by INTEGER,
+  create_time TEXT NOT NULL,
+  update_time TEXT
+);
+CREATE TABLE IF NOT EXISTS ore_inspect_index (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_id INTEGER NOT NULL,
+  index_name TEXT NOT NULL,
+  index_value TEXT,
+  index_unit TEXT
+);
+CREATE TABLE IF NOT EXISTS ore_inspect_deduct_rule (
+  rule_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_name TEXT NOT NULL,
+  ore_category TEXT NOT NULL,
+  index_name TEXT NOT NULL,
+  threshold REAL NOT NULL,                -- 指标阈值：超过该值按比例扣减
+  deduct_rate REAL NOT NULL,              -- 扣减比例(%)
+  status INTEGER DEFAULT 1,
+  create_time TEXT NOT NULL
+);
+
+-- ============ 合同管理 (PRD-10) ============
+CREATE TABLE IF NOT EXISTS ore_contract (
+  contract_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contract_no TEXT UNIQUE,
+  contract_type INTEGER NOT NULL,         -- 1上游供货 2下游分拨
+  order_id INTEGER,
+  alloc_id INTEGER,
+  enterprise_id INTEGER NOT NULL,
+  ore_category TEXT,
+  plan_ton REAL,
+  unit_price REAL,
+  contract_amount REAL,
+  sign_date TEXT,
+  effective_date TEXT,
+  expire_date TEXT,
+  status TEXT NOT NULL DEFAULT 'DRAFT',   -- DRAFT/PENDING_STAMP/EFFECTIVE/EXECUTING/FINISHED/TERMINATED
+  pay_remark TEXT,
+  terminate_reason TEXT,
+  remark TEXT,
+  is_redbacked INTEGER DEFAULT 0,
+  create_by INTEGER,
+  create_time TEXT NOT NULL,
+  update_time TEXT
+);
+CREATE TABLE IF NOT EXISTS ore_contract_attach (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contract_id INTEGER NOT NULL,
+  attach_type TEXT DEFAULT 'MAIN',        -- MAIN/SUPPLEMENT/CHANGE
+  file_url TEXT NOT NULL,
+  file_name TEXT,
+  upload_time TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ore_contract_change (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  contract_id INTEGER NOT NULL,
+  change_content TEXT NOT NULL,
+  reason TEXT,
+  attachment_url TEXT,
+  file_name TEXT,
+  create_by INTEGER,
+  create_time TEXT NOT NULL
+);
+
+-- ============ 结算明细&费用分摊 (PRD-11) ============
+CREATE TABLE IF NOT EXISTS ore_expense_bill (
+  expense_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  expense_no TEXT UNIQUE,
+  order_id INTEGER NOT NULL,
+  expense_type TEXT NOT NULL,
+  expense_amount REAL NOT NULL,
+  happen_date TEXT,
+  payee TEXT,
+  attachment_url TEXT,
+  file_name TEXT,
+  remark TEXT,
+  is_deleted INTEGER DEFAULT 0,
+  create_by INTEGER,
+  create_time TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ore_expense_allocate (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  expense_bill_id INTEGER NOT NULL,
+  alloc_id INTEGER NOT NULL,
+  share_ton REAL NOT NULL,                -- 分摊权重吨数
+  share_amount REAL NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',  -- ACTIVE / REVOKED
+  create_time TEXT NOT NULL,
+  revoke_time TEXT
+);
+
+-- ============ 业务预警&消息通知 (PRD-12) ============
+CREATE TABLE IF NOT EXISTS ore_message (
+  msg_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  receiver_user_id INTEGER NOT NULL,
+  msg_type INTEGER NOT NULL,              -- 1待办 2通知 3预警
+  title TEXT NOT NULL,
+  content TEXT,
+  link_biz_type TEXT,
+  biz_id TEXT,
+  is_read INTEGER DEFAULT 0,
+  is_finish INTEGER DEFAULT 0,
+  is_deleted INTEGER DEFAULT 0,
+  create_time TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ore_warn_rule (
+  rule_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rule_name TEXT NOT NULL,
+  warn_type TEXT NOT NULL,                -- CONTRACT_EXPIRE / PRICE_CHANGE / LOGI_STALE / RESOURCE_EXPIRE
+  threshold REAL NOT NULL,
+  enable_status INTEGER DEFAULT 1,
+  create_time TEXT NOT NULL,
+  update_time TEXT
+);
+
+-- ============ 单据变更&红冲 (PRD-15) ============
+CREATE TABLE IF NOT EXISTS ore_biz_change (
+  change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  biz_type TEXT NOT NULL,                 -- INSPECT / ALLOC / BILL / CONTRACT
+  biz_id INTEGER NOT NULL,
+  before_content TEXT NOT NULL,
+  after_content TEXT NOT NULL,
+  reason TEXT,
+  attachment_url TEXT,
+  file_name TEXT,
+  status TEXT NOT NULL DEFAULT 'PENDING', -- PENDING / APPROVED / REJECTED
+  review_remark TEXT,
+  review_time TEXT,
+  create_by INTEGER,
+  create_time TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ore_biz_redback (
+  redback_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  biz_type TEXT NOT NULL,
+  source_biz_id INTEGER NOT NULL,
+  redback_no TEXT UNIQUE,
+  redback_ton REAL,
+  redback_amount REAL,
+  reason TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  review_remark TEXT,
+  review_time TEXT,
+  create_by INTEGER,
+  create_time TEXT NOT NULL
+);
 """
 
 
@@ -389,9 +563,13 @@ def _migrate(conn):
     """轻量列迁移：已有库缺新列时自动补齐"""
     need_cols = {
         'demand_change': [('new_quantity', 'REAL')],
-        'company_bill': [('dispute_reason', 'TEXT'), ('settle_remark', 'TEXT'), ('settle_time', 'TEXT')],
-        'supplier_bill': [('period', 'TEXT'), ('dispute_reason', 'TEXT'), ('settle_remark', 'TEXT'), ('settle_time', 'TEXT')],
+        'company_bill': [('dispute_reason', 'TEXT'), ('settle_remark', 'TEXT'), ('settle_time', 'TEXT'),
+                         ('is_redbacked', 'INTEGER DEFAULT 0')],
+        'supplier_bill': [('period', 'TEXT'), ('dispute_reason', 'TEXT'), ('settle_remark', 'TEXT'),
+                          ('settle_time', 'TEXT'), ('is_redbacked', 'INTEGER DEFAULT 0')],
         'archive_record': [('task_id', 'INTEGER'), ('archive_summary', 'TEXT')],
+        'ore_indicator_template': [('unit', 'TEXT')],
+        'allocation_order': [('is_redbacked', 'INTEGER DEFAULT 0')],
     }
     for table, cols in need_cols.items():
         existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
@@ -425,8 +603,17 @@ def _seed(conn):
         ('PORT', 'TANGSHAN', '唐山港', 3), ('PORT', 'SHANGHAI', '上海港', 4),
         # 供方类型 / 配套方类型
         ('SUPPLIER_TYPE', 'DOMESTIC', '国内供应商', 1), ('SUPPLIER_TYPE', 'OVERSEAS', '海外矿山', 2),
+        ('SUPPLIER_TYPE', 'TRADER', '贸易商', 3),
         ('PARTNER_TYPE', 'SEA', '海运承运方', 1), ('PARTNER_TYPE', 'PORT', '港口接卸方', 2),
         ('PARTNER_TYPE', 'WAREHOUSE', '仓储方', 3), ('PARTNER_TYPE', 'LAND', '陆运配送方', 4),
+        ('PARTNER_TYPE', 'LAB', '化验机构', 5),
+        # PRD-14 新增字典分组：矿石产地 / 费用类型 / 计量单位
+        ('ORIGIN', 'AU', '澳大利亚', 1), ('ORIGIN', 'BR', '巴西', 2), ('ORIGIN', 'ZA', '南非', 3),
+        ('ORIGIN', 'IN', '印度', 4), ('ORIGIN', 'CN', '国产', 5),
+        ('EXPENSE_TYPE', 'SEA_FREIGHT', '海运费', 1), ('EXPENSE_TYPE', 'PORT_CHARGE', '港杂费', 2),
+        ('EXPENSE_TYPE', 'STORAGE', '仓储费', 3), ('EXPENSE_TYPE', 'STEVEDORE', '装卸费', 4),
+        ('EXPENSE_TYPE', 'LAND_FREIGHT', '短驳陆运费', 5), ('EXPENSE_TYPE', 'AGENT_FEE', '代理服务费', 6),
+        ('UNIT', 'TON', '吨', 1), ('UNIT', 'KTON', '千吨', 2), ('UNIT', 'WTON', '万吨', 3),
     ]
     for cat, code, name, sort in seeds:
         conn.execute("INSERT OR IGNORE INTO dict_item(category,item_code,item_name,sort) VALUES(?,?,?,?)",

@@ -150,10 +150,35 @@ def dict_delete(dict_id):
     row = db.execute("SELECT * FROM dict_item WHERE id=?", (dict_id,)).fetchone()
     if not row:
         return err('字典项不存在', http=404)
+    # PRD-14：已被业务单据引用的字典项不允许删除，只能停用
+    used = _dict_item_used(db, row['category'], row['item_code'], row['item_name'])
+    if used:
+        return err('该字典项已被业务单据引用，不可删除，仅可停用')
     db.execute("DELETE FROM dict_item WHERE id=?", (dict_id,))
     db.commit()
     log_action('字典删除', f"{row['category']}/{row['item_code']}", ref_type='dict', ref_id=row['category'])
     return ok(message='删除成功')
+
+
+def _dict_item_used(db, category, item_code, item_name):
+    """检查字典项是否被业务数据引用：品类/周期等业务枚举列 + 指标模板"""
+    checks = []
+    if category in ('ORE_CATEGORY', 'PERIOD_TYPE'):
+        checks.append(("SELECT 1 FROM purchase_demand WHERE ore_category=? OR period_type=? LIMIT 1",
+                       (item_code, item_code)))
+        checks.append(("SELECT 1 FROM ore_resource WHERE ore_category=? LIMIT 1", (item_code,)))
+        checks.append(("SELECT 1 FROM collective_order WHERE ore_category=? LIMIT 1", (item_code,)))
+        checks.append(("SELECT 1 FROM ore_inspect_report WHERE ore_category=? LIMIT 1", (item_code,)))
+        checks.append(("SELECT 1 FROM ore_contract WHERE ore_category=? LIMIT 1", (item_code,)))
+    if category == 'EXPENSE_TYPE':
+        checks.append(("SELECT 1 FROM ore_expense_bill WHERE expense_type=? LIMIT 1", (item_code,)))
+    if category == 'ORIGIN':
+        checks.append(("SELECT 1 FROM ore_resource WHERE origin=? LIMIT 1", (item_name,)))
+    checks.append(("SELECT 1 FROM ore_indicator_template WHERE ore_category=? LIMIT 1", (item_code,)))
+    for sql, args in checks:
+        if db.execute(sql, args).fetchone():
+            return True
+    return False
 
 
 # ---------------- 指标模板 (PRD-08 §2.3) ----------------
@@ -176,19 +201,20 @@ def indicator_template_save():
     if d.get('field_type') not in (None, '', 'text', 'number'):
         return err('字段类型仅支持 text/number')
     db = get_db()
+    unit = (d.get('unit') or '').strip() or None
     if d.get('id'):
         row = db.execute("SELECT id FROM ore_indicator_template WHERE id=?", (d['id'],)).fetchone()
         if not row:
             return err('模板字段不存在', http=404)
         db.execute("UPDATE ore_indicator_template SET ore_category=?,field_name=?,field_label=?,"
-                   "field_type=?,required=?,sort=? WHERE id=?",
+                   "field_type=?,required=?,unit=?,sort=? WHERE id=?",
                    (d['ore_category'].strip(), d['field_name'].strip(), d['field_label'].strip(),
-                    d.get('field_type') or 'text', 1 if d.get('required') else 0, d.get('sort', 0), d['id']))
+                    d.get('field_type') or 'text', 1 if d.get('required') else 0, unit, d.get('sort', 0), d['id']))
     else:
-        db.execute("INSERT INTO ore_indicator_template(ore_category,field_name,field_label,field_type,required,sort)"
-                   " VALUES(?,?,?,?,?,?)",
+        db.execute("INSERT INTO ore_indicator_template(ore_category,field_name,field_label,field_type,required,unit,sort)"
+                   " VALUES(?,?,?,?,?,?,?)",
                    (d['ore_category'].strip(), d['field_name'].strip(), d['field_label'].strip(),
-                    d.get('field_type') or 'text', 1 if d.get('required') else 0, d.get('sort', 0)))
+                    d.get('field_type') or 'text', 1 if d.get('required') else 0, unit, d.get('sort', 0)))
     db.commit()
     log_action('指标模板维护', f"{d['ore_category']}/{d['field_name']}: {d['field_label']}",
                ref_type='indicator_template', ref_id=d.get('id') or d['field_name'])
@@ -213,7 +239,7 @@ def indicator_template_delete(tid):
 def indicator_by_category(ore_category):
     """业务表单按品类带出指标字段（全员可用）"""
     rows = get_db().execute(
-        "SELECT field_name, field_label, field_type, required FROM ore_indicator_template"
+        "SELECT field_name, field_label, field_type, required, unit FROM ore_indicator_template"
         " WHERE ore_category=? ORDER BY sort", (ore_category,)).fetchall()
     return ok([dict(r) for r in rows])
 

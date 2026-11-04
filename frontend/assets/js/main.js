@@ -1,6 +1,7 @@
 /* ============ 菜单注册与启动 ============ */
 App.addMenu([
   { key: 'home', title: '工作台', icon: '⌂', group: '总览' },
+  { key: 'msg.center', title: '消息中心', icon: '🔔', group: '总览' },
 
   /* R1 下游需求企业 */
   { key: 'r1.demand', title: '采购需求管理', icon: '📋', group: '需求申报', roles: ['R1'] },
@@ -33,7 +34,31 @@ App.addMenu([
   { key: 'r1.bill', title: '我的对账单', icon: '🧾', group: '履约结算', roles: ['R1'] },
   { key: 'r2.bill', title: '对账记录', icon: '🧾', group: '履约结算', roles: ['R2'] },
   { key: 'r4.company', title: '企业资质审核', icon: '🏢', group: '平台后台', roles: ['R4'] },
-  { key: 'r4.account', title: '账号管理', icon: '👤', group: '平台后台', roles: ['R4'] }
+  { key: 'r4.account', title: '账号管理', icon: '👤', group: '平台后台', roles: ['R4'] },
+  { key: 'r4.warnrule', title: '预警规则', icon: '⏰', group: '平台后台', roles: ['R4'] },
+
+  /* PRD-09 质检化验 */
+  { key: 'r4.inspect', title: '质检化验管理', icon: '🔬', group: '质检化验', roles: ['R4'] },
+  { key: 'r3.inspect', title: '化验录入', icon: '🧫', group: '质检化验', roles: ['R3'] },
+  { key: 'r2.inspect', title: '货源预检', icon: '🧪', group: '质检化验', roles: ['R2'] },
+  { key: 'r1.inspect', title: '质检记录', icon: '🔬', group: '履约结算', roles: ['R1'] },
+
+  /* PRD-10 合同管理 */
+  { key: 'r4.contract', title: '合同台账', icon: '📜', group: '合同管理', roles: ['R4'] },
+  { key: 'r1.contract', title: '我的合同', icon: '📜', group: '履约结算', roles: ['R1'] },
+  { key: 'r2.contract', title: '我的合同', icon: '📜', group: '货源资源', roles: ['R2'] },
+
+  /* PRD-11 费用分摊 */
+  { key: 'r4.expense', title: '费用分摊', icon: '💰', group: '集采中枢', roles: ['R4'] },
+  { key: 'r1.expense', title: '费用明细', icon: '💰', group: '履约结算', roles: ['R1'] },
+
+  /* PRD-13/15 报表与变更 */
+  { key: 'r4.report', title: '报表中心', icon: '📈', group: '报表与大屏', roles: ['R4'] },
+  { key: 'r4.bigscreen', title: '运营大屏', icon: '🖥', group: '报表与大屏', roles: ['R4'] },
+  { key: 'r1.report', title: '我的报表', icon: '📈', group: '履约结算', roles: ['R1'] },
+  { key: 'r2.report', title: '我的报表', icon: '📈', group: '货源资源', roles: ['R2'] },
+  { key: 'biz.apply', title: '变更红冲申请', icon: '✏', group: '履约结算', roles: ['R1', 'R2'] },
+  { key: 'r4.bizchange', title: '变更红冲审核', icon: '✅', group: '审计与检索', roles: ['R4'] }
 ]);
 
 App.boot();
