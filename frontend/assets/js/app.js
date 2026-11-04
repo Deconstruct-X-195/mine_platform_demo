@@ -1,4 +1,14 @@
 /* ============ 应用核心：路由 / 菜单 / 布局 ============ */
+/* 品牌 LOGO：iOS 风格圆角方块 + 蓝色渐变 + 白色山形（与 favicon 同源，全局唯一标识） */
+const APP_LOGO = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'>
+  <defs><linearGradient id='lg' x1='0' y1='0' x2='0' y2='1'>
+    <stop offset='0' stop-color='#42a2ff'/><stop offset='1' stop-color='#0a6fe8'/>
+  </linearGradient></defs>
+  <rect width='48' height='48' rx='10.8' fill='url(#lg)'/>
+  <path d='M9.5 33.5 L19.5 15.5 L26 27.5 L30.5 19.5 L38.5 33.5 Z' fill='#fff' stroke='#fff' stroke-width='2.5' stroke-linejoin='round'/>
+  <circle cx='36' cy='11.5' r='2.6' fill='#fff'/>
+</svg>`;
+
 const App = {
   user: null,
   views: {},      // key -> {title, roles, render}
@@ -30,8 +40,12 @@ const App = {
     $$('.menu-item').forEach(mi => mi.classList.toggle('active', mi.dataset.key === key));
     $('#pageTitle').textContent = view.title;
     contentEl.innerHTML = '';
-    contentEl.appendChild(UI.loading());
-    try { await view.render(contentEl); }
+    const loadingEl = UI.loading();
+    contentEl.appendChild(loadingEl);
+    try {
+      await view.render(contentEl);
+      loadingEl.remove();  // 视图渲染完成后移除加载占位（视图均以 append 方式挂载，不会自动清除）
+    }
     catch (e) { console.error(e); contentEl.innerHTML = ''; contentEl.appendChild(UI.empty('页面加载失败')); }
   },
 
@@ -56,6 +70,8 @@ const App = {
       catch (e) { location.hash = '#/login'; return; }
     }
     if (!Object.keys(this.dicts).length) await this.loadDicts();
+    // 布局已存在时仅切换内容区，避免重建侧边栏导致菜单滚动位置丢失
+    if ($('#content') && app.querySelector('.sidebar')) { this.navigate(); return; }
     this.renderLayout(app);
   },
 
@@ -66,7 +82,7 @@ const App = {
     const pwdInput = el('input', { type: 'password', placeholder: '请输入密码' });
     const form = el('form', { class: 'login-box' }, [
       el('div', { class: 'login-brand' }, [
-        el('div', { class: 'brand-logo' }, '⛰'),
+        el('div', { class: 'brand-logo', html: APP_LOGO }),
         el('h1', null, '矿石集中集采平台')
       ]),
       el('div', { class: 'login-sub' }, '以量换价 · 集中保供 · 全链路可视'),
@@ -110,7 +126,7 @@ const App = {
     root.appendChild(el('div', { class: 'layout' }, [
       el('aside', { class: 'sidebar' }, [
         el('div', { class: 'brand' }, [
-          el('div', { class: 'brand-logo' }, '⛰'),
+          el('div', { class: 'brand-logo', html: APP_LOGO }),
           el('div', { class: 'brand-name' }, '矿石集采平台')
         ]),
         el('nav', { class: 'menu' }, groups.map(g => [
