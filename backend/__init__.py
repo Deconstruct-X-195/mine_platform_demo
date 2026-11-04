@@ -98,3 +98,9 @@ def register_module_bps(app):
         app.register_blueprint(settlement.bp, url_prefix='/api')
     except ImportError:
         pass  # 模块随开发阶段逐步启用
+
+    # 扩展模块（PRD-09 ~ PRD-15）
+    for mod_name in ('inspect', 'contract', 'expense', 'message', 'report', 'bizchange'):
+        from importlib import import_module
+        mod = import_module(f'.api.{mod_name}', package=__package__)
+        app.register_blueprint(mod.bp, url_prefix='/api')
