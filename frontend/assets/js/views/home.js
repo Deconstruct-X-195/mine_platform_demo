@@ -1,4 +1,7 @@
 /* ============ 各角色工作台首页 ============ */
+/* 快捷入口箭头：SVG 渲染 + flex 居中（字体"→"字形基线偏上会视觉不居中，故弃用字符箭头） */
+const ARR_SVG = '<svg viewBox="0 0 12 12" width="11" height="11"><path d="M4.2 2.6 L7.6 6 L4.2 9.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
 App.registerView('home', {
   title: '工作台', roles: ['R1', 'R2', 'R3', 'R4'],
   async render(root) {
@@ -7,7 +10,7 @@ App.registerView('home', {
     const cards = el('div', { class: 'stat-grid' });
     const mainCard = el('div', { class: 'card' });
 
-    root.appendChild(el('div', { class: 'card', style: { background: 'linear-gradient(120deg,#4d6bfe 0%,#6a5afe 55%,#14c9c9 130%)', color: '#fff', border: 'none' } }, [
+    root.appendChild(el('div', { class: 'card', style: { background: 'linear-gradient(120deg,#0071e3 0%,#3b8de8 60%,#5ac8fa 135%)', color: '#fff', border: 'none' } }, [
       el('div', { style: { fontSize: '18px', fontWeight: '700', marginBottom: '6px' } }, `你好，${greeting}`),
       el('div', { style: { fontSize: '13px', opacity: '.85' } },
         u.company ? `${u.company.company_name} · ${TAG_MAP[u.role_code] ? TAG_MAP[u.role_code][0] : u.role_code}`
@@ -61,7 +64,8 @@ App.registerView('home', {
     if (roleCfg.tips.length) {
       const tipBox = el('div', { style: { display: 'flex', gap: '10px', marginTop: '14px', flexWrap: 'wrap' } });
       roleCfg.tips.forEach(([t, k]) => {
-        if (App.views[k]) tipBox.appendChild(el('button', { class: 'btn', onclick: () => location.hash = '#/' + k }, [t, ' →']));
+        if (App.views[k]) tipBox.appendChild(el('button', { class: 'btn', onclick: () => location.hash = '#/' + k },
+          [t, el('span', { class: 'btn-arr', html: ARR_SVG })]));
       });
       mainCard.appendChild(tipBox);
     }
