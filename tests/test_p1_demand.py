@@ -7,7 +7,7 @@ from openpyxl import load_workbook
 
 def valid_body(**over):
     body = {
-        'period_type': 'MONTH', 'period': '2026-01', 'ore_category': 'IRON',
+        'period_type': 'MONTH', 'period': '2026-01', 'ore_category': 'IRON', 'ore_type': 'PB_FINES',
         'quantity': 1000.5, 'grade_req': 'TFe>=62%', 'expected_arrival': '2026-03-01',
         'action': 'submit'
     }
@@ -119,8 +119,8 @@ def test_collective_list_generation(client):
     r1b, _ = make_user(client, '集采厂B')
     create_demand(client, r1a, quantity=1000)                       # 2026-01 IRON
     create_demand(client, r1a, quantity=300, period='2026-02')      # 2026-02 IRON
-    create_demand(client, r1b, quantity=500.25, ore_category='CHROME')  # 2026-01 CHROME
-    create_demand(client, r1b, quantity=200, ore_category='CHROME')     # 2026-01 CHROME 同品类合并
+    create_demand(client, r1b, quantity=500.25, ore_category='CHROME', ore_type=None)  # 2026-01 CHROME
+    create_demand(client, r1b, quantity=200, ore_category='CHROME', ore_type=None)     # 2026-01 CHROME 同品类合并
     admin = login(client, 'admin', 'admin123')
     code, body = api(client, 'POST', '/api/admin/collective/create', admin,
                      json_body={'period_type': 'MONTH', 'period': '2026-01'})

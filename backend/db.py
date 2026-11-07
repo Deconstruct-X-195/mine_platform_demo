@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS purchase_demand (
   period_type TEXT NOT NULL,              -- MONTH / QUARTER
   period TEXT NOT NULL,                   -- YYYY-MM 或 YYYY-Qn
   ore_category TEXT NOT NULL,
+  ore_type TEXT,                          -- 矿种（铁矿石品类下：IRON_ORE_TYPE 字典）
   quantity REAL NOT NULL,
   grade_req TEXT,
   granularity_req TEXT,
@@ -113,6 +114,30 @@ CREATE TABLE IF NOT EXISTS demand_attachment (
   demand_id INTEGER NOT NULL,
   file_url TEXT NOT NULL,
   file_name TEXT
+);
+-- ============ 采购商城（现货直购） ============
+CREATE TABLE IF NOT EXISTS mall_order (
+  order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_no TEXT UNIQUE,
+  company_id INTEGER NOT NULL,
+  ore_type TEXT NOT NULL,                 -- 矿种（IRON_ORE_TYPE 字典）
+  product_name TEXT NOT NULL,
+  spec TEXT,
+  qty REAL NOT NULL,
+  unit_price REAL NOT NULL,
+  total_amount REAL NOT NULL,
+  dest_port TEXT,                         -- 目的港/交货地址
+  period_type TEXT,                       -- 申报周期类型（MONTH/QUARTER，预购申报）
+  period TEXT,                            -- 申报周期（如 2026-01 / 2026-Q1 / 05 / Q3）
+  ore_category TEXT,                      -- 矿石品类（IRON 等）
+  grade_req TEXT,                         -- 品位要求（如 TFe≥62%）
+  expected_arrival TEXT,                  -- 预到货日期
+  delivery_place TEXT,                    -- 交货地点（企业自填地址）
+  contact_name TEXT,                      -- 联系人（预购弹窗自填）
+  contact_phone TEXT,                     -- 联系方式（预购弹窗自填）
+  remark TEXT,                            -- 备注（预购弹窗自填）
+  status TEXT NOT NULL DEFAULT 'SUBMITTED', -- SUBMITTED(待确认)/CONFIRMED(已确认)/CANCELLED(已取消)
+  create_time TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS demand_change (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -275,6 +300,7 @@ CREATE TABLE IF NOT EXISTS logistics_attachment (
 CREATE TABLE IF NOT EXISTS ore_price_quote (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ore_category TEXT NOT NULL,
+  ore_type TEXT,                          -- 矿种（铁矿石品类下：IRON_ORE_TYPE 字典）
   spec TEXT NOT NULL,
   quote_date TEXT NOT NULL,
   market_price REAL NOT NULL,
@@ -562,7 +588,9 @@ def init_db(app):
 def _migrate(conn):
     """轻量列迁移：已有库缺新列时自动补齐"""
     need_cols = {
-        'demand_change': [('new_quantity', 'REAL')],
+        'purchase_demand': [('ore_type', 'TEXT')],
+        'ore_price_quote': [('ore_type', 'TEXT')],
+        'demand_change': [('new_quantity', 'REAL'), ('ref_no', 'TEXT')],
         'company_bill': [('dispute_reason', 'TEXT'), ('settle_remark', 'TEXT'), ('settle_time', 'TEXT'),
                          ('is_redbacked', 'INTEGER DEFAULT 0')],
         'supplier_bill': [('period', 'TEXT'), ('dispute_reason', 'TEXT'), ('settle_remark', 'TEXT'),
@@ -570,6 +598,9 @@ def _migrate(conn):
         'archive_record': [('task_id', 'INTEGER'), ('archive_summary', 'TEXT')],
         'ore_indicator_template': [('unit', 'TEXT')],
         'allocation_order': [('is_redbacked', 'INTEGER DEFAULT 0')],
+        'mall_order': [('period_type', 'TEXT'), ('period', 'TEXT'), ('ore_category', 'TEXT'),
+                       ('grade_req', 'TEXT'), ('expected_arrival', 'TEXT'), ('delivery_place', 'TEXT'),
+                       ('remark', 'TEXT'), ('contact_name', 'TEXT'), ('contact_phone', 'TEXT')],
     }
     for table, cols in need_cols.items():
         existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
@@ -596,11 +627,18 @@ def _seed(conn):
         # 矿石品类字典
         ('ORE_CATEGORY', 'IRON', '铁矿石', 1), ('ORE_CATEGORY', 'CHROME', '铬矿', 2),
         ('ORE_CATEGORY', 'MANGANESE', '锰矿', 3), ('ORE_CATEGORY', 'LIMESTONE', '石灰石', 4),
+        # 铁矿石矿种字典（铁矿石品类专用）
+        ('IRON_ORE_TYPE', 'PB_FINES', 'PB粉', 1), ('IRON_ORE_TYPE', 'CARTER', '卡特粉', 2),
+        ('IRON_ORE_TYPE', 'ULTRA_FINE', '超特粉', 3), ('IRON_ORE_TYPE', 'BR_BLEND', '巴西混合', 4),
+        ('IRON_ORE_TYPE', 'BR_COARSE', '巴西粗粉', 5), ('IRON_ORE_TYPE', 'NEWMAN', '纽曼筛后', 6),
+        ('IRON_ORE_TYPE', 'JIMBLEBAR', '金布巴粉', 7), ('IRON_ORE_TYPE', 'SA_FINES', '南非粉', 8),
+        ('IRON_ORE_TYPE', 'KA_FINE', '卡粉', 9), ('IRON_ORE_TYPE', 'FMG_BLEND', 'FMG混合粉', 10),
         # 申报周期
         ('PERIOD_TYPE', 'MONTH', '月度', 1), ('PERIOD_TYPE', 'QUARTER', '季度', 2),
         # 港口信息
         ('PORT', 'QINGDAO', '青岛港', 1), ('PORT', 'RIAZHAO', '日照港', 2),
         ('PORT', 'TANGSHAN', '唐山港', 3), ('PORT', 'SHANGHAI', '上海港', 4),
+        ('PORT', 'HUANGHUA', '黄骅港', 5), ('PORT', 'TIANJIN', '天津港', 6),
         # 供方类型 / 配套方类型
         ('SUPPLIER_TYPE', 'DOMESTIC', '国内供应商', 1), ('SUPPLIER_TYPE', 'OVERSEAS', '海外矿山', 2),
         ('SUPPLIER_TYPE', 'TRADER', '贸易商', 3),

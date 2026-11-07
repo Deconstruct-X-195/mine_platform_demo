@@ -182,7 +182,7 @@ def test_account_lifecycle(client):
     assert code == 200 and login(client, 'steel_sub', 'abc12345')
     # 不能停用自己
     _, body = api(client, 'GET', '/api/admin/account/list?keyword=admin', admin)
-    my_id = body['data']['list'][0]['user_id']
+    my_id = next(x['user_id'] for x in body['data']['list'] if x['username'] == 'admin')
     code, body = api(client, 'PUT', f'/api/admin/account/{my_id}', admin, json_body={'status': 'DISABLED'})
     assert code == 400 and '自己' in body['message']
     # 密码过短

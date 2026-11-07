@@ -39,7 +39,7 @@ App.registerView('r2.resource', {
         { title: '优选', render: r => r.is_preferred ? el('span', { class: 'tag tag-orange' }, '★ 优选') : '-' },
         { title: '状态', render: r => tag(r.status) },
         { title: '更新时间', render: r => fmtTime(r.update_time) },
-        { title: '操作', render: r => el('div', { style: { display: 'flex', gap: '0', flexWrap: 'wrap' } }, [
+        { title: '操作', render: r => el('div', { style: { display: 'flex', gap: '0', whiteSpace: 'nowrap' } }, [
           el('button', { class: 'btn btn-sm btn-link', onclick: () => showDetail(r) }, '详情'),
           r.status === 'DRAFT' ? el('button', { class: 'btn btn-sm btn-link', onclick: () => showForm(r) }, '编辑') : null,
           r.status === 'DRAFT' ? el('button', { class: 'btn btn-sm btn-link', style: { color: 'var(--green)' }, onclick: () => doAction(r, 'submit', '提交上架') }, '上架') : null,
@@ -130,7 +130,7 @@ App.registerView('r4.supplierLedger', {
         { title: '最大吨数', num: true, render: r => fmtQty(r.max_qty) },
         { title: '优选', render: r => r.is_preferred ? el('span', { class: 'tag tag-orange' }, '★') : '-' },
         { title: '状态', render: r => tag(r.status) },
-        { title: '操作', render: r => el('div', { style: { display: 'flex', gap: '0', flexWrap: 'wrap' } }, [
+        { title: '操作', render: r => el('div', { style: { display: 'flex', gap: '0', whiteSpace: 'nowrap' } }, [
           r.status === 'ON_SHELF' ? el('button', { class: 'btn btn-sm btn-link', style: { color: 'var(--red)' }, onclick: () => forceOff(r) }, '强制下架') : null,
           el('button', { class: 'btn btn-sm btn-link', onclick: () => prefer(r, !r.is_preferred) },
             r.is_preferred ? '取消优选' : (r.status === 'ON_SHELF' ? '标优选' : null) || '标优选')

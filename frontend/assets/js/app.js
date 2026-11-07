@@ -9,6 +9,9 @@ const APP_LOGO = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'>
   <circle cx='36' cy='11.5' r='2.6' fill='#fff'/>
 </svg>`;
 
+/* 顶栏返回按钮箭头（左向，SVG 与菜单快捷入口同风格，规避字符字形基线偏移） */
+const BACK_SVG = '<svg viewBox="0 0 12 12" width="11" height="11"><path d="M7.8 2.6 L4.4 6 L7.8 9.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
 const App = {
   user: null,
   views: {},      // key -> {title, roles, render}
@@ -19,7 +22,7 @@ const App = {
   addMenu(items) { this.menus.push(...items); },
 
   async loadDicts() {
-    const cats = ['ORE_CATEGORY', 'PERIOD_TYPE', 'PORT', 'PARTNER_TYPE', 'SUPPLIER_TYPE'];
+    const cats = ['ORE_CATEGORY', 'IRON_ORE_TYPE', 'PERIOD_TYPE', 'PORT', 'PARTNER_TYPE', 'SUPPLIER_TYPE'];
     for (const c of cats) {
       try { this.dicts[c] = await API.get(`/api/dict/${c}`); } catch (e) { this.dicts[c] = []; }
     }
@@ -36,8 +39,12 @@ const App = {
     const contentEl = $('#content');
     if (!view) { location.hash = '#/home'; return; }
     if (view.roles && !view.roles.includes(this.user.role_code)) { location.hash = '#/home'; return; }
-    // 高亮菜单
-    $$('.menu-item').forEach(mi => mi.classList.toggle('active', mi.dataset.key === key));
+    // 高亮菜单（消息中心已并入工作台入口，访问时高亮工作台）
+    const activeKey = key === 'msg.center' ? 'home' : key;
+    $$('.menu-item').forEach(mi => mi.classList.toggle('active', mi.dataset.key === activeKey));
+    // 顶栏返回按钮：仅消息中心与行情浏览显示（均为非菜单直达页，需可返回）
+    const backBtn = $('#backBtn');
+    if (backBtn) backBtn.style.display = (key === 'msg.center' || key === 'r1.market') ? 'inline-flex' : 'none';
     $('#pageTitle').textContent = view.title;
     contentEl.innerHTML = '';
     const loadingEl = UI.loading();
@@ -150,12 +157,19 @@ const App = {
       ]),
       el('main', { class: 'main' }, [
         el('header', { class: 'topbar' }, [
-          el('div', { class: 'page-title', id: 'pageTitle' }, ''),
+          el('div', { style: { display: 'flex', alignItems: 'center', gap: '10px', minWidth: '0' } }, [
+            el('button', {
+              id: 'backBtn', class: 'btn btn-sm', title: '返回上一页',
+              style: { display: 'none', padding: '5px 9px', flex: 'none' },
+              onclick: () => { if (history.length > 1) history.back(); else location.hash = '#/home'; }
+            }, [el('span', { class: 'btn-arr', style: { margin: 0 }, html: BACK_SVG })]),
+            el('div', { class: 'page-title', id: 'pageTitle' }, '')
+          ]),
           el('div', { style: { display: 'flex', alignItems: 'center', gap: '14px' } }, [
-            el('div', { id: 'msgBell', style: { position: 'relative', cursor: 'pointer', fontSize: '18px' },
+            el('div', { id: 'msgBell', class: 'msg-bell', style: { position: 'relative', cursor: 'pointer', fontSize: '18px' },
               title: '消息中心', onclick: () => location.hash = '#/msg.center' }, [
               el('span', null, '🔔'),
-              el('span', { id: 'msgBellBadge', style: { display: 'none', position: 'absolute', top: '-6px', right: '-8px',
+              el('span', { class: 'msg-badge', style: { display: 'none', position: 'absolute', top: '-6px', right: '-8px',
                 background: 'var(--red, #ef4444)', color: '#fff', borderRadius: '9px', fontSize: '10px',
                 minWidth: '16px', height: '16px', lineHeight: '16px', textAlign: 'center', padding: '0 3px' } }, '')
             ]),
@@ -170,18 +184,19 @@ const App = {
     this.navigate();
   },
 
-  /* 消息未读轮询（PRD-12） */
+  /* 消息未读轮询（PRD-12）：更新页内所有 .msg-badge（顶栏 + 工作台入口） */
   startMsgPolling() {
     const refresh = async () => {
       if (!this.user) return;
       try {
         const d = await API.get('/api/message/unread-count');
-        const badge = document.getElementById('msgBellBadge');
-        if (!badge) return;
-        if (d.count > 0) { badge.textContent = d.count > 99 ? '99+' : d.count; badge.style.display = 'block'; }
-        else badge.style.display = 'none';
+        $$('.msg-badge').forEach(badge => {
+          if (d.count > 0) { badge.textContent = d.count > 99 ? '99+' : d.count; badge.style.display = 'block'; }
+          else badge.style.display = 'none';
+        });
       } catch (e) { /* 静默 */ }
     };
+    this._refreshMsgBadge = refresh;
     refresh();
     if (this._msgTimer) clearInterval(this._msgTimer);
     this._msgTimer = setInterval(refresh, 30000);

@@ -1,7 +1,7 @@
 /* ============ 菜单注册与启动 ============ */
 App.addMenu([
   { key: 'home', title: '工作台', icon: '⌂', group: '总览' },
-  { key: 'msg.center', title: '消息中心', icon: '🔔', group: '总览' },
+  { key: 'r1.mall', title: '采购商城', icon: '🛒', group: '总览', roles: ['R1'] },
 
   /* R1 下游需求企业 */
   { key: 'r1.demand', title: '采购需求管理', icon: '📋', group: '需求申报', roles: ['R1'] },
@@ -28,7 +28,7 @@ App.addMenu([
   { key: 'r4.ledgerSearch', title: '单据检索', icon: '🔍', group: '审计与检索', roles: ['R4'] },
   { key: 'r4.log', title: '操作日志', icon: '🕰', group: '审计与检索', roles: ['R4'] },
   { key: 'r4.supplierLedger', title: '上游资源台账', icon: '🗄', group: '资源管理', roles: ['R4'] },
-  { key: 'r1.market', title: '行情浏览', icon: '🌐', group: '价格数据', roles: ['R1'] },
+  /* R1 行情浏览不再单列菜单（工作台"价格指数→更多"直达），视图保留供跳转 */
   { key: 'r1.alloc', title: '我的分拨单', icon: '📦', group: '履约结算', roles: ['R1'] },
   { key: 'r1.logistics', title: '物流进度', icon: '🚚', group: '履约结算', roles: ['R1'] },
   { key: 'r1.bill', title: '我的对账单', icon: '🧾', group: '履约结算', roles: ['R1'] },

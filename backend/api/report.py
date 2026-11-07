@@ -103,7 +103,7 @@ def report_logistics():
                  " OR t.land_partner_id=?)")
         args.extend([cid, cid, cid, cid])
     elif role == 'R1':
-        cond += " AND t.alloc_id IN (SELECT alloc_id FROM allocation_order WHERE company_id=?)"
+        cond += " AND t.order_id IN (SELECT order_id FROM allocation_order WHERE company_id=?)"
         args.append(cid)
     elif role == 'R2':
         cond += " AND t.order_id IN (SELECT order_id FROM collective_order WHERE supplier_id=?)"

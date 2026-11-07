@@ -28,8 +28,11 @@ def workbench():
         }
     elif role == 'R1':
         data = {
-            'demand_mine': db.execute("SELECT COUNT(*) FROM purchase_demand WHERE company_id=?",
-                                      (user['company_id'],)).fetchone()[0],
+            # 申报需求 = 需求申报 + 商城集采预购订单（与需求申报列表同一口径）
+            'demand_mine': db.execute(
+                "SELECT (SELECT COUNT(*) FROM purchase_demand WHERE company_id=?)"
+                " + (SELECT COUNT(*) FROM mall_order WHERE company_id=?)",
+                (user['company_id'], user['company_id'])).fetchone()[0],
             'alloc_wait': db.execute("SELECT COUNT(*) FROM allocation_order WHERE company_id=? AND status IN ('WAIT_CONFIRM')",
                                      (user['company_id'],)).fetchone()[0],
             'bill_wait': db.execute("SELECT COUNT(*) FROM company_bill WHERE company_id=? AND status='PENDING'",
@@ -174,6 +177,8 @@ def _dict_item_used(db, category, item_code, item_name):
         checks.append(("SELECT 1 FROM ore_expense_bill WHERE expense_type=? LIMIT 1", (item_code,)))
     if category == 'ORIGIN':
         checks.append(("SELECT 1 FROM ore_resource WHERE origin=? LIMIT 1", (item_name,)))
+    if category == 'IRON_ORE_TYPE':
+        checks.append(("SELECT 1 FROM purchase_demand WHERE ore_type=? LIMIT 1", (item_code,)))
     checks.append(("SELECT 1 FROM ore_indicator_template WHERE ore_category=? LIMIT 1", (item_code,)))
     for sql, args in checks:
         if db.execute(sql, args).fetchone():
