@@ -1,0 +1,23 @@
+# 大宗矿产集采平台一期 · PostgreSQL 14 数据库容器
+# 用法：docker compose up -d
+services:
+  postgres:
+    image: postgres:14
+    container_name: mine-platform-pg
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Langchain2026
+      POSTGRES_DB: mine_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - mine_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mine_platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  mine_pg_data:

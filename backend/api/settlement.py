@@ -1,633 +1,356 @@
-# -*- coding: utf-8 -*-
-"""对账结算模块 (PRD-07)：分拨单生成/到货确认/异常反馈/企业对账单/供方对账单/结清/归档/履约台账"""
+"""交割结算与归档（PRD 4.9/T17-T19）：质检录入、结算生成与双向确认、付款登记、完成归档。
+
+核心规则：
+- 质检拒收（REJECT）不允许生成正常结算单，走退货说明文本。
+- 结算金额只能由服务端 Decimal 计算：（单价+质量调价元/吨）×结算数量 − 扣款，quantize(0.01)。
+- 双方确认后结算冻结，后续调整需新增结算单并备注。
+- 归档三条件：全部运单已签收 + 结算已完成 + 无未关闭预警。
+"""
 import io
-from flask import Blueprint, request, g
-from ..db import get_db, _now
-from ..utils import ok, err, log_action, paginate, round2, export_excel
-from ..auth import roles_required, company_approved_required
+import json
+import zipfile
+from decimal import Decimal, ROUND_HALF_UP
 
-bp = Blueprint('settlement', __name__)
+from flask import g, send_file
 
-# 分拨单状态机: TRANSIT(配送在途) → WAIT_CONFIRM(待企业确认到货) → DONE(已完成)
-# 对账单状态机: PENDING(待确认) → CONFIRMED(已确认)/DISPUTE(有异议) → SETTLED(已结清)
+from ..alerts import create_alert
+from ..common import (ApiError, decimal_field, doc_no, get_params, json_payload,
+                      ok, op_log, page_args, page_data, parse_date, require_fields,
+                      send_msg)
+from ..db import execute, q1, qall
+from ..security import ROLE_STEEL, ROLE_SUPPLIER, auth_required, roles_required
+from ..state_machine import add_node, transition
+from . import bp
 
-
-def _get_alloc(db, aid):
-    return db.execute("SELECT * FROM allocation_order WHERE alloc_id=?", (aid,)).fetchone()
-
-
-def _period_of_order(db, order_id):
-    r = db.execute(
-        "SELECT l.period_type, l.period FROM collective_order o"
-        " JOIN collective_task t ON t.task_id=o.task_id"
-        " JOIN collective_list l ON l.list_id=t.list_id WHERE o.order_id=?", (order_id,)).fetchone()
-    if not r:
-        return None, None
-    return r['period_type'], r['period']
+TWO = Decimal('0.01')
 
 
-def _gen_no(db, table, col, prefix):
-    now = _now().replace('-', '').replace(':', '').replace(' ', '')
-    r = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-    return f"{prefix}{now}{r + 1:04d}"
+def _order_of(oid):
+    row = q1(g.conn, "SELECT * FROM biz_order WHERE id=%s AND is_deleted=0", (oid,))
+    if not row:
+        raise ApiError(40401, '订单不存在')
+    return row
 
 
-# ================= 分拨单 =================
-
-@bp.post('/admin/allocation/create')
-@roles_required('R4')
-def allocation_create():
-    """入库后（N5完成）按下游企业分拨生成单据"""
-    d = request.get_json(force=True)
-    db = get_db()
-    if not d.get('order_id'):
-        return err('缺少集采订单')
-    o = db.execute("SELECT * FROM collective_order WHERE order_id=?", (d['order_id'],)).fetchone()
-    if not o:
-        return err('集采订单不存在', http=404)
-    lt = db.execute("SELECT * FROM logistics_task WHERE order_id=?", (o['order_id'],)).fetchone()
-    if not lt:
-        return err('该订单尚未创建物流任务，无法分拨')
-    if lt['current_node'] < 5:
-        return err(f'货物尚未完成入仓储（当前节点 N{lt["current_node"]}），不可分拨')
-    dup = db.execute("SELECT COUNT(*) FROM allocation_order WHERE order_id=?", (o['order_id'],)).fetchone()[0]
-    if dup:
-        return err('该订单已完成分拨，不可重复分拨')
-    allocs = d.get('allocs')
-    if not isinstance(allocs, list) or not allocs:
-        return err('请提供分拨明细')
-    now = _now()
-    total = 0.0
-    plan = []
-    for a in allocs:
-        try:
-            cid = int(a.get('company_id')); qty = round2(a.get('qty')); price = round2(a.get('unit_price'))
-        except (TypeError, ValueError):
-            return err('分拨明细缺少有效字段')
-        if qty <= 0 or price <= 0:
-            return err('分拨吨数、单价必须大于0')
-        c = db.execute("SELECT * FROM company WHERE company_id=?", (cid,)).fetchone()
-        if not c or c['company_type'] != 'DOWNSTREAM':
-            return err('分拨对象必须是下游需求企业')
-        if c['audit_status'] != 'APPROVED':
-            return err(f'企业 {c["company_name"]} 资质未审核通过')
-        plan.append((cid, qty, price, (a.get('destination') or '').strip() or None))
-        total += qty
-    if total > o['total_qty'] + 1e-9:
-        return err(f'分拨合计 {total} 吨不可超过集采实际到货 {o["total_qty"]} 吨')
-    period_type, period = _period_of_order(db, o['order_id'])
-    created = []
-    for cid, qty, price, dest in plan:
-        cur = db.execute(
-            "INSERT INTO allocation_order(order_id,company_id,ore_category,qty,unit_price,amount,"
-            "destination,status,create_time) VALUES(?,?,?,?,?,?,?,?,?)",
-            (o['order_id'], cid, o['ore_category'], qty, price, round2(qty * price),
-             dest, 'TRANSIT', now))
-        aid = cur.lastrowid
-        alloc_no = _gen_no(db, 'allocation_order', 'alloc_no', 'AL')
-        db.execute("UPDATE allocation_order SET alloc_no=? WHERE alloc_id=?", (alloc_no, aid))
-        created.append(aid)
-    db.commit()
-    log_action('生成分拨单', f"订单{o['order_no']} 分拨{len(created)}家下游企业合计{total}吨",
-               ref_type='allocation_order', ref_id=o['order_id'])
-    rows = [dict(x) for x in db.execute(
-        "SELECT a.*, c.company_name FROM allocation_order a JOIN company c ON c.company_id=a.company_id"
-        " WHERE a.order_id=?", (o['order_id'],))]
-    return ok({'list': rows})
+def _order_visible(order):
+    if not g.ctx.is_plat and (not g.ctx.company or
+                              g.ctx.company['id'] not in (order['buyer_id'], order['supplier_id'])):
+        raise ApiError(40301, '无权限访问该订单')
 
 
-@bp.get('/admin/allocation/list')
-@roles_required('R4')
-def allocation_list():
-    db = get_db()
-    page = int(request.args.get('page', 1)); size = int(request.args.get('page_size', 10))
-    sql = ("SELECT a.*, c.company_name, o.order_no FROM allocation_order a"
-           " JOIN company c ON c.company_id=a.company_id"
-           " JOIN collective_order o ON o.order_id=a.order_id WHERE 1=1")
-    args = []
-    if request.args.get('status'):
-        sql += " AND a.status=?"; args.append(request.args['status'])
-    if request.args.get('order_no'):
-        sql += " AND o.order_no LIKE ?"; args.append(f"%{request.args['order_no']}%")
-    if request.args.get('company'):
-        sql += " AND c.company_name LIKE ?"; args.append(f"%{request.args['company']}%")
-    sql += " ORDER BY a.create_time DESC"
-    rows, total = paginate(db, sql, args, page, size)
-    return ok({'list': rows, 'total': total, 'page': page, 'page_size': size})
+def _settlement_view(sid):
+    row = q1(g.conn, """
+        SELECT s.*, o.order_no AS "orderNo", o.buyer_id AS "buyerId", o.supplier_id AS "supplierId",
+               v.variety_name AS "varietyName"
+        FROM biz_settlement s
+        JOIN biz_order o ON o.id = s.order_id
+        LEFT JOIN base_variety v ON v.id = o.variety_id
+        WHERE s.id=%s AND s.is_deleted=0
+    """, (sid,))
+    if not row:
+        raise ApiError(40401, '结算单不存在')
+    return row
 
 
-# ================= 到货确认 / 异常反馈 =================
+# ---------------- 质检录入（FR-09-02） ----------------
 
-@bp.get('/company/allocation/list')
-@roles_required('R1')
-@company_approved_required
-def company_allocation_list():
-    """下游企业：我的分拨单（含对账与反馈状态）"""
-    db = get_db()
-    cid = g.current_user['company_id']
-    rows = []
-    for a in db.execute(
-            "SELECT a.*, o.order_no, o.supplier_id FROM allocation_order a"
-            " JOIN collective_order o ON o.order_id=a.order_id"
-            " WHERE a.company_id=? ORDER BY a.create_time DESC", (cid,)):
-        item = dict(a)
-        fb = db.execute("SELECT * FROM arrival_feedback WHERE alloc_id=? ORDER BY create_time DESC",
-                        (a['alloc_id'],)).fetchone()
-        item['feedback'] = dict(fb) if fb else None
-        # 归档状态：由订单状态判断
-        o = db.execute("SELECT status FROM collective_order WHERE order_id=?", (a['order_id'],)).fetchone()
-        item['order_archived'] = bool(o and o['status'] == 'ARCHIVED')
-        rows.append(item)
-    return ok({'list': rows, 'total': len(rows), 'page': 1, 'page_size': len(rows) or 10})
-
-
-@bp.post('/company/allocation/<int:aid>/confirm')
-@roles_required('R1')
-@company_approved_required
-def allocation_confirm(aid):
-    """企业确认到货：分拨单 → 已完成"""
-    db = get_db()
-    a = _get_alloc(db, aid)
-    if not a:
-        return err('分拨单不存在', http=404)
-    if a['company_id'] != g.current_user['company_id']:
-        return err('仅可确认本企业分拨单', code=403, http=403)
-    if a['status'] not in ('TRANSIT', 'WAIT_CONFIRM'):
-        return err(f'当前状态不可确认到货（{a["status"]}）')
-    o = db.execute("SELECT status FROM collective_order WHERE order_id=?", (a['order_id'],)).fetchone()
-    if o and o['status'] == 'ARCHIVED':
-        return err('订单已归档，单据只读')
-    db.execute("UPDATE allocation_order SET status='DONE' WHERE alloc_id=?", (aid,))
-    db.commit()
-    log_action('企业确认到货', f"分拨单 {a['alloc_no']} 确认完成",
-               before=a['status'], after='DONE', ref_type='allocation_order', ref_id=aid)
-    return ok({'alloc_id': aid, 'status': 'DONE'})
+@bp.post('/orders/<int:oid>/quality-check')
+@roles_required(ROLE_STEEL)
+def create_quality_check(oid):
+    order = _order_of(oid)
+    _order_visible(order)
+    if order['status'] != 'PERFORMING':
+        raise ApiError(40901, '订单当前状态为 %s，不能录入质检' % order['status'])
+    p = get_params()
+    require_fields(p, 'arrivedQty', 'conclusion')
+    if p['conclusion'] not in ('ACCEPT', 'REJECT'):
+        raise ApiError(40001, 'conclusion 须为 ACCEPT 或 REJECT')
+    arrived = decimal_field(p, 'arrivedQty')
+    check_no = doc_no(g.conn, 'ZJ')  # TODO(PRD待确认): 质检单前缀未在 PRD 3.3 定义，最小实现 ZJ
+    cid = execute(g.conn, """
+        INSERT INTO biz_quality_check (check_no, order_id, arrived_qty, indicators,
+                                       conclusion, check_desc, file_url, created_by)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+    """, (check_no, oid, arrived, p.get('indicators'), p['conclusion'],
+          p.get('checkDesc'), p.get('fileId'), g.ctx.user['id']), returning_id=True)
+    # 数量偏差超溢短装比例 → 生成 QTY_DIFF 预警（需方、供方）
+    qty = order['quantity']
+    rate = order['more_less_rate'] or Decimal('5.00')
+    if abs(arrived - qty) / qty * 100 > rate:
+        create_alert(
+            g.conn, 'QTY_DIFF', 'ORDER', oid, [order['buyer_id'], order['supplier_id']],
+            content='到货数量 %s 与订单数量 %s 偏差超过允差 %s%%，请双方确认处理意见'
+                    % (arrived, qty, rate),
+        )
+    add_node(g.conn, g.ctx, 'ORDER', oid, 'QUALITY_CHECKED',
+             remark='质检 %s，结论 %s' % (check_no, p['conclusion']))
+    op_log(g.conn, g.ctx, 'biz_quality_check', cid, 'CREATE', None,
+           {'checkNo': check_no, 'arrivedQty': str(arrived), 'conclusion': p['conclusion']})
+    send_msg(g.conn, order['supplier_id'], '到货质检完成', '订单 %s 质检结论：%s' % (order['order_no'], p['conclusion']),
+             'ORDER', oid)
+    return ok({'id': cid, 'checkNo': check_no})
 
 
-@bp.post('/company/allocation/<int:aid>/feedback')
-@roles_required('R1')
-@company_approved_required
-def allocation_feedback(aid):
-    """企业提交到货异常反馈"""
-    d = request.get_json(force=True)
-    desc = (d.get('description') or '').strip()
-    if not desc:
-        return err('异常描述必填')
-    if len(desc) > 500:
-        return err('异常描述不可超过500字')
-    db = get_db()
-    a = _get_alloc(db, aid)
-    if not a:
-        return err('分拨单不存在', http=404)
-    if a['company_id'] != g.current_user['company_id']:
-        return err('仅可反馈本企业分拨单', code=403, http=403)
-    o = db.execute("SELECT status FROM collective_order WHERE order_id=?", (a['order_id'],)).fetchone()
-    if o and o['status'] == 'ARCHIVED':
-        return err('订单已归档，单据只读')
-    cur = db.execute(
-        "INSERT INTO arrival_feedback(alloc_id,company_id,description,attachment_url,status,create_time)"
-        " VALUES(?,?,?,?, 'PENDING', ?)",
-        (aid, g.current_user['company_id'], desc, (d.get('attachment') or '').strip() or None, _now()))
-    db.commit()
-    log_action('提交到货异常反馈', f"分拨单 {a['alloc_no']}：{desc[:50]}", ref_type='arrival_feedback', ref_id=cur.lastrowid)
-    return ok({'feedback_id': cur.lastrowid, 'status': 'PENDING'})
+@bp.get('/orders/<int:oid>/quality-checks')
+@auth_required
+def list_quality_checks(oid):
+    _order_visible(_order_of(oid))
+    rows = qall(g.conn, """
+        SELECT id, check_no AS "checkNo", order_id AS "orderId", arrived_qty AS "arrivedQty",
+               indicators, conclusion, check_desc AS "checkDesc", file_url AS "fileUrl",
+               created_at AS "createdAt"
+        FROM biz_quality_check WHERE order_id=%s AND is_deleted=0 ORDER BY id DESC
+    """, (oid,))
+    return ok({'list': json_payload(rows)})
 
 
-@bp.get('/admin/feedback/list')
-@roles_required('R4')
-def admin_feedback_list():
-    db = get_db()
-    page = int(request.args.get('page', 1)); size = int(request.args.get('page_size', 10))
-    sql = ("SELECT f.*, c.company_name, a.alloc_no FROM arrival_feedback f"
-           " JOIN company c ON c.company_id=f.company_id"
-           " JOIN allocation_order a ON a.alloc_id=f.alloc_id WHERE 1=1")
-    args = []
-    if request.args.get('status'):
-        sql += " AND f.status=?"; args.append(request.args['status'])
-    sql += " ORDER BY f.create_time DESC"
-    rows, total = paginate(db, sql, args, page, size)
-    return ok({'list': rows, 'total': total, 'page': page, 'page_size': size})
+# ---------------- 结算生成（FR-09-03） ----------------
+
+@bp.post('/orders/<int:oid>/settlements')
+@roles_required(ROLE_STEEL)
+def create_settlement(oid):
+    order = _order_of(oid)
+    _order_visible(order)
+    if order['status'] != 'PERFORMING':
+        raise ApiError(40901, '订单当前状态为 %s，不能生成结算单' % order['status'])
+    last_check = q1(g.conn, """
+        SELECT conclusion, arrived_qty FROM biz_quality_check
+        WHERE order_id=%s AND is_deleted=0 ORDER BY id DESC LIMIT 1
+    """, (oid,))
+    if last_check and last_check['conclusion'] == 'REJECT':
+        raise ApiError(40901, '质检结论为拒收，不允许生成正常结算单')
+    p = get_params()
+    # 结算数量默认实收（最近一次质检到货量），可调但须 >0
+    default_qty = (last_check['arrived_qty'] if last_check and last_check['conclusion'] == 'ACCEPT'
+                   else order['quantity'])
+    settle_qty = decimal_field(p, 'settleQty', required=False) or default_qty
+    adjust = decimal_field(p, 'adjustAmount', positive=False, required=False) or Decimal('0')
+    deduct = decimal_field(p, 'deductAmount', positive=False, required=False) or Decimal('0')
+    if deduct < 0:
+        raise ApiError(40001, 'deductAmount 不能为负')
+    # 金额只能由系统计算（PRD 4.9）：（单价+调价）×数量 − 扣款
+    total = ((order['unit_price'] + adjust) * settle_qty - deduct).quantize(TWO, rounding=ROUND_HALF_UP)
+    settle_no = doc_no(g.conn, 'JS')
+    sid = execute(g.conn, """
+        INSERT INTO biz_settlement (settle_no, order_id, settle_qty, unit_price, adjust_amount,
+                                    deduct_amount, total_amount, settle_desc, created_by)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+    """, (settle_no, oid, settle_qty, order['unit_price'], adjust, deduct, total,
+          p.get('settleDesc'), g.ctx.user['id']), returning_id=True)
+    add_node(g.conn, g.ctx, 'SETTLEMENT', sid, 'SETTLE_CREATED',
+             remark='结算金额 %s' % total)
+    op_log(g.conn, g.ctx, 'biz_settlement', sid, 'CREATE', None,
+           {'settleNo': settle_no, 'totalAmount': str(total)})
+    send_msg(g.conn, order['supplier_id'], '结算单待确认',
+             '订单 %s 已生成结算单 %s，金额 %s 元，请确认' % (order['order_no'], settle_no, total),
+             'SETTLEMENT', sid)
+    return ok(_settlement_view(sid))
 
 
-@bp.post('/admin/feedback/<int:fid>/resolve')
-@roles_required('R4')
-def feedback_resolve(fid):
-    d = request.get_json(force=True)
-    remark = (d.get('resolve_remark') or '').strip()
-    if not remark:
-        return err('处理结果说明必填')
-    db = get_db()
-    f = db.execute("SELECT * FROM arrival_feedback WHERE id=?", (fid,)).fetchone()
-    if not f:
-        return err('反馈记录不存在', http=404)
-    if f['status'] != 'PENDING':
-        return err('该反馈已处理')
-    db.execute("UPDATE arrival_feedback SET status='RESOLVED',resolve_remark=? WHERE id=?",
-               (remark, fid))
-    db.commit()
-    log_action('处理到货异常反馈', f"反馈#{fid}：{remark[:50]}", before='PENDING', after='RESOLVED',
-               ref_type='arrival_feedback', ref_id=fid)
-    return ok({'feedback_id': fid, 'status': 'RESOLVED'})
+# ---------------- 双向确认（FR-09-04） ----------------
 
-
-# ================= 对账单 =================
-
-def _bill_status_of(db, table, bill_id):
-    return db.execute(f"SELECT status FROM {table} WHERE bill_id=?", (bill_id,)).fetchone()
-
-
-@bp.post('/admin/bill/company/create')
-@roles_required('R4')
-def company_bill_create():
-    """按订单生成下游企业对账单（按企业聚合分拨明细，已生成企业跳过）"""
-    d = request.get_json(force=True)
-    db = get_db()
-    if not d.get('order_id'):
-        return err('缺少集采订单')
-    o = db.execute("SELECT * FROM collective_order WHERE order_id=?", (d['order_id'],)).fetchone()
-    if not o:
-        return err('集采订单不存在', http=404)
-    allocs = db.execute(
-        "SELECT a.* FROM allocation_order a WHERE a.order_id=?", (o['order_id'],)).fetchall()
-    if not allocs:
-        return err('该订单尚无分拨单，无法生成企业对账单')
-    period_type, period = _period_of_order(db, o['order_id'])
-    now = _now()
-    by_company = {}
-    for a in allocs:
-        used = db.execute("SELECT COUNT(*) FROM company_bill_detail WHERE alloc_id=?", (a['alloc_id'],)).fetchone()[0]
-        if not used:
-            by_company.setdefault(a['company_id'], []).append(a)
-    created = []
-    for cid, items in by_company.items():
-        total = round2(sum(x['amount'] for x in items))
-        cur = db.execute(
-            "INSERT INTO company_bill(company_id,period,total_amount,status,create_time)"
-            " VALUES(?,?,?,'PENDING',?)", (cid, period, total, now))
-        bid = cur.lastrowid
-        db.execute("UPDATE company_bill SET bill_no=? WHERE bill_id=?",
-                   (_gen_no(db, 'company_bill', 'bill_no', 'CB'), bid))
-        for x in items:
-            db.execute(
-                "INSERT INTO company_bill_detail(bill_id,alloc_id,ore_category,qty,unit_price,amount)"
-                " VALUES(?,?,?,?,?,?)",
-                (bid, x['alloc_id'], x['ore_category'], x['qty'], x['unit_price'], x['amount']))
-        created.append(bid)
-    db.commit()
-    log_action('生成企业对账单', f"订单{o['order_no']} 新生成{len(created)}份（跳过已生成）",
-               ref_type='company_bill')
-    return ok({'created': len(created),
-               'skipped_companies': len({a['company_id'] for a in allocs}) - len(created)})
-
-
-@bp.post('/admin/bill/supplier/create')
-@roles_required('R4')
-def supplier_bill_create():
-    """按订单生成上游供方对账单（一单一供方，防重复）"""
-    d = request.get_json(force=True)
-    db = get_db()
-    if not d.get('order_id'):
-        return err('缺少集采订单')
-    o = db.execute("SELECT * FROM collective_order WHERE order_id=?", (d['order_id'],)).fetchone()
-    if not o:
-        return err('集采订单不存在', http=404)
-    dup = db.execute("SELECT bill_id FROM supplier_bill WHERE order_id=?", (o['order_id'],)).fetchone()
-    if dup:
-        return err('该订单已生成供方对账单')
-    period_type, period = _period_of_order(db, o['order_id'])
-    now = _now()
-    cur = db.execute(
-        "INSERT INTO supplier_bill(supplier_id,order_id,period,total_amount,status,create_time)"
-        " VALUES(?,?,?,?, 'PENDING', ?)", (o['supplier_id'], o['order_id'], period, o['total_amount'], now))
-    bid = cur.lastrowid
-    db.execute("UPDATE supplier_bill SET bill_no=? WHERE bill_id=?",
-               (_gen_no(db, 'supplier_bill', 'bill_no', 'SB'), bid))
-    db.commit()
-    log_action('生成供方对账单', f"订单{o['order_no']} 金额{o['total_amount']}元",
-               ref_type='supplier_bill', ref_id=bid)
-    return ok({'bill_id': bid})
-
-
-def _bill_action(db, table, bill_id, action, d, owner_col):
-    """校验并执行对账单确认/异议；失败返回错误响应，成功返回状态字符串"""
-    b = db.execute(f"SELECT * FROM {table} WHERE bill_id=?", (bill_id,)).fetchone()
-    if not b:
-        return err('对账单不存在', http=404)
-    if b[owner_col] != g.current_user['company_id']:
-        return err('仅可操作本企业对账单', code=403, http=403)
-    if b['status'] == 'SETTLED':
-        return err('对账单已结清，不可再操作')
-    if action == 'confirm':
-        if b['status'] not in ('PENDING', 'DISPUTE'):
-            return err(f'当前状态不可确认（{b["status"]}）')
-        db.execute(f"UPDATE {table} SET status='CONFIRMED',confirm_time=? WHERE bill_id=?", (_now(), bill_id))
-        return 'CONFIRMED'
-    # dispute
-    reason = (d.get('reason') or '').strip()
-    if not reason:
-        return err('异议原因必填')
-    if len(reason) > 300:
-        return err('异议原因不可超过300字')
-    if b['status'] not in ('PENDING', 'CONFIRMED'):
-        return err(f'当前状态不可提出异议（{b["status"]}）')
-    db.execute(f"UPDATE {table} SET status='DISPUTE',dispute_reason=? WHERE bill_id=?", (reason, bill_id))
-    return 'DISPUTE'
-
-
-@bp.post('/company/bill/<int:bid>/confirm')
-@roles_required('R1')
-@company_approved_required
-def company_bill_confirm(bid):
-    db = get_db()
-    res = _bill_action(db, 'company_bill', bid, 'confirm', request.get_json(force=True, silent=True) or {}, 'company_id')
-    if isinstance(res, str):
-        db.commit()
-        log_action('企业确认对账单', f"对账单#{bid} 确认无误", ref_type='company_bill', ref_id=bid)
-        return ok({'bill_id': bid, 'status': res})
-    return res
-
-
-@bp.post('/company/bill/<int:bid>/dispute')
-@roles_required('R1')
-@company_approved_required
-def company_bill_dispute(bid):
-    db = get_db()
-    d = request.get_json(force=True)
-    res = _bill_action(db, 'company_bill', bid, 'dispute', d, 'company_id')
-    if isinstance(res, str):
-        db.commit()
-        log_action('企业对账异议', f"对账单#{bid} 异议：{(d.get('reason') or '')[:50]}",
-                   ref_type='company_bill', ref_id=bid)
-        return ok({'bill_id': bid, 'status': res})
-    return res
-
-
-@bp.post('/supplier/bill/<int:bid>/confirm')
-@roles_required('R2')
-@company_approved_required
-def supplier_bill_confirm(bid):
-    db = get_db()
-    res = _bill_action(db, 'supplier_bill', bid, 'confirm', request.get_json(force=True, silent=True) or {}, 'supplier_id')
-    if isinstance(res, str):
-        db.commit()
-        log_action('供方确认对账单', f"供方对账单#{bid} 确认无误", ref_type='supplier_bill', ref_id=bid)
-        return ok({'bill_id': bid, 'status': res})
-    return res
-
-
-@bp.post('/supplier/bill/<int:bid>/dispute')
-@roles_required('R2')
-@company_approved_required
-def supplier_bill_dispute(bid):
-    db = get_db()
-    d = request.get_json(force=True)
-    res = _bill_action(db, 'supplier_bill', bid, 'dispute', d, 'supplier_id')
-    if isinstance(res, str):
-        db.commit()
-        log_action('供方对账异议', f"供方对账单#{bid} 异议：{(d.get('reason') or '')[:50]}",
-                   ref_type='supplier_bill', ref_id=bid)
-        return ok({'bill_id': bid, 'status': res})
-    return res
-
-
-@bp.post('/admin/bill/company/<int:bid>/settle')
-@roles_required('R4')
-def company_bill_settle(bid):
-    d = request.get_json(force=True)
-    db = get_db()
-    b = db.execute("SELECT * FROM company_bill WHERE bill_id=?", (bid,)).fetchone()
-    if not b:
-        return err('对账单不存在', http=404)
-    if b['status'] not in ('CONFIRMED', 'DISPUTE'):
-        return err(f'当前状态不可结清（{b["status"]}）')
-    db.execute("UPDATE company_bill SET status='SETTLED',settle_remark=?,settle_time=? WHERE bill_id=?",
-               ((d.get('remark') or '').strip() or None, _now(), bid))
-    db.commit()
-    log_action('企业对账结清', f"对账单#{bid} 已结清", after='SETTLED', ref_type='company_bill', ref_id=bid)
-    return ok({'bill_id': bid, 'status': 'SETTLED'})
-
-
-@bp.post('/admin/bill/supplier/<int:bid>/settle')
-@roles_required('R4')
-def supplier_bill_settle(bid):
-    d = request.get_json(force=True)
-    db = get_db()
-    b = db.execute("SELECT * FROM supplier_bill WHERE bill_id=?", (bid,)).fetchone()
-    if not b:
-        return err('对账单不存在', http=404)
-    if b['status'] not in ('CONFIRMED', 'DISPUTE'):
-        return err(f'当前状态不可结清（{b["status"]}）')
-    db.execute("UPDATE supplier_bill SET status='SETTLED',settle_remark=?,settle_time=? WHERE bill_id=?",
-               ((d.get('remark') or '').strip() or None, _now(), bid))
-    db.commit()
-    log_action('供方对账结清', f"供方对账单#{bid} 已结清", after='SETTLED', ref_type='supplier_bill', ref_id=bid)
-    return ok({'bill_id': bid, 'status': 'SETTLED'})
-
-
-@bp.get('/company/bill/list')
-@roles_required('R1')
-@company_approved_required
-def company_bill_list():
-    db = get_db()
-    rows = [dict(x) for x in db.execute(
-        "SELECT * FROM company_bill WHERE company_id=? ORDER BY create_time DESC",
-        (g.current_user['company_id'],))]
-    for r in rows:
-        r['details'] = [dict(x) for x in db.execute(
-            "SELECT d.*, a.alloc_no, o.order_no, a.destination FROM company_bill_detail d"
-            " JOIN allocation_order a ON a.alloc_id=d.alloc_id"
-            " JOIN collective_order o ON o.order_id=a.order_id"
-            " WHERE d.bill_id=?", (r['bill_id'],))]
-    return ok({'list': rows, 'total': len(rows), 'page': 1, 'page_size': len(rows) or 10})
-
-
-@bp.get('/supplier/bill/list')
-@roles_required('R2')
-@company_approved_required
-def supplier_bill_list():
-    db = get_db()
-    rows = [dict(x) for x in db.execute(
-        "SELECT b.*, o.order_no, o.ore_category, o.total_qty FROM supplier_bill b"
-        " JOIN collective_order o ON o.order_id=b.order_id"
-        " WHERE b.supplier_id=? ORDER BY b.create_time DESC", (g.current_user['company_id'],))]
-    return ok({'list': rows, 'total': len(rows), 'page': 1, 'page_size': len(rows) or 10})
-
-
-@bp.get('/admin/bill/list')
-@roles_required('R4')
-def admin_bill_list():
-    """平台对账总台账：企业单与供方单合并视图"""
-    db = get_db()
-    kind = request.args.get('kind', 'company')
-    page = int(request.args.get('page', 1)); size = int(request.args.get('page_size', 10))
-    if kind == 'supplier':
-        base = ("SELECT b.*, c.company_name AS peer_name, o.order_no FROM supplier_bill b"
-                " JOIN company c ON c.company_id=b.supplier_id"
-                " JOIN collective_order o ON o.order_id=b.order_id WHERE 1=1")
+@bp.put('/settlements/<int:sid>/confirm')
+@auth_required
+def confirm_settlement(sid):
+    s = _settlement_view(sid)
+    is_buyer = g.ctx.company and g.ctx.company['id'] == s['buyerId']
+    is_supplier = g.ctx.company and g.ctx.company['id'] == s['supplierId']
+    if not g.ctx.is_plat and not (is_buyer or is_supplier):
+        raise ApiError(40301, '无权限确认该结算单')
+    if s['status'] == 'PENDING_CONFIRM_SUPPLIER':
+        if not (is_supplier or g.ctx.is_plat):
+            raise ApiError(40901, '当前等待供应商确认')
+        transition(g.conn, g.ctx, 'biz_settlement', '结算单', 'biz_settlement', sid,
+                   'PENDING_CONFIRM_BUYER')
+        execute(g.conn, "UPDATE biz_settlement SET supplier_confirm_at=now() WHERE id=%s", (sid,))
+        add_node(g.conn, g.ctx, 'SETTLEMENT', sid, 'SETTLE_SUPPLIER_CONFIRMED')
+        send_msg(g.conn, s['buyerId'], '结算单待确认', '结算单 %s 供应商已确认，请需方确认' % s['settle_no'],
+                 'SETTLEMENT', sid)
+    elif s['status'] == 'PENDING_CONFIRM_BUYER':
+        if not (is_buyer or g.ctx.is_plat):
+            raise ApiError(40901, '当前等待需方确认')
+        transition(g.conn, g.ctx, 'biz_settlement', '结算单', 'biz_settlement', sid, 'CONFIRMED')
+        execute(g.conn, "UPDATE biz_settlement SET buyer_confirm_at=now() WHERE id=%s", (sid,))
+        add_node(g.conn, g.ctx, 'SETTLEMENT', sid, 'SETTLE_BUYER_CONFIRMED')
+        send_msg(g.conn, s['supplierId'], '结算单已确认', '结算单 %s 双方确认完成，已冻结' % s['settle_no'],
+                 'SETTLEMENT', sid)
     else:
-        base = ("SELECT b.*, c.company_name AS peer_name FROM company_bill b"
-                " JOIN company c ON c.company_id=b.company_id WHERE 1=1")
+        raise ApiError(40901, '结算单当前状态为 %s，禁止确认' % s['status'])
+    return ok(_settlement_view(sid))
+
+
+# ---------------- 付款登记（FR-09-05） ----------------
+
+@bp.post('/settlements/<int:sid>/payments')
+@roles_required(ROLE_STEEL)
+def register_payment(sid):
+    s = _settlement_view(sid)
+    if not g.ctx.is_plat and (not g.ctx.company or g.ctx.company['id'] != s['buyerId']):
+        raise ApiError(40301, '仅需方可登记付款')
+    if s['status'] not in ('CONFIRMED', 'COMPLETED'):
+        raise ApiError(40901, '结算单当前状态为 %s，须双方确认后方可登记付款' % s['status'])
+    p = get_params()
+    require_fields(p, 'amount', 'payDate')
+    amount = decimal_field(p, 'amount')
+    pay_date = parse_date(p, 'payDate')
+    payment_no = doc_no(g.conn, 'FK')  # TODO(PRD待确认): 付款单前缀未在 PRD 3.3 定义，最小实现 FK
+    pid = execute(g.conn, """
+        INSERT INTO biz_payment (payment_no, settlement_id, payer_id, amount, pay_date,
+                                 pay_desc, file_url, created_by)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+    """, (payment_no, sid, s['buyerId'], amount, pay_date, p.get('payDesc'),
+          p.get('fileId'), g.ctx.user['id']), returning_id=True)
+    if s['status'] == 'CONFIRMED':
+        transition(g.conn, g.ctx, 'biz_settlement', '结算单', 'biz_settlement', sid, 'COMPLETED')
+    add_node(g.conn, g.ctx, 'SETTLEMENT', sid, 'SETTLE_PAID',
+             remark='付款 %s，金额 %s' % (payment_no, amount))
+    op_log(g.conn, g.ctx, 'biz_payment', pid, 'CREATE', None,
+           {'paymentNo': payment_no, 'amount': str(amount)})
+    send_msg(g.conn, s['supplierId'], '付款已登记',
+             '结算单 %s 已登记付款 %s，金额 %s 元' % (s['settle_no'], payment_no, amount),
+             'SETTLEMENT', sid)
+    return ok({'id': pid, 'paymentNo': payment_no})
+
+
+# ---------------- 完成归档（FR-09-06） ----------------
+
+@bp.post('/orders/<int:oid>/archive')
+@roles_required(ROLE_STEEL)
+def archive_order(oid):
+    order = _order_of(oid)
+    _order_visible(order)
+    if order['status'] != 'PERFORMING':
+        raise ApiError(40901, '订单当前状态为 %s，不能归档' % order['status'])
+    # 条件一：全部运单已签收
+    w = q1(g.conn, """
+        SELECT count(*) AS total, count(*) FILTER (WHERE status='SIGNED') AS signed
+        FROM biz_waybill WHERE order_id=%s AND is_deleted=0
+    """, (oid,))
+    if w['total'] != w['signed']:
+        raise ApiError(40901, '存在未签收运单，不能归档')
+    # 条件二：结算已完成（付款已登记）
+    s = q1(g.conn, """
+        SELECT count(*) AS c FROM biz_settlement
+        WHERE order_id=%s AND status='COMPLETED' AND is_deleted=0
+    """, (oid,))
+    if not s['c']:
+        raise ApiError(40901, '结算未完成（须双方确认并登记付款），不能归档')
+    # 条件三：无未关闭预警（订单与其运单）
+    open_alert = q1(g.conn, """
+        SELECT count(*) AS c FROM biz_alert
+        WHERE is_deleted=0 AND status IN ('PENDING','PROCESSING')
+          AND ((biz_type='ORDER' AND biz_id=%s)
+               OR (biz_type='WAYBILL' AND biz_id IN (SELECT id FROM biz_waybill WHERE order_id=%s)))
+    """, (oid, oid))
+    if open_alert['c']:
+        raise ApiError(40901, '存在未关闭预警，不能归档')
+    transition(g.conn, g.ctx, 'biz_order', '订单', 'biz_order', oid, 'COMPLETED',
+               node_biz_type='ORDER', node_code='ORDER_ARCHIVED')
+    send_msg(g.conn, order['supplier_id'], '订单已归档', '订单 %s 已完成归档' % order['order_no'],
+             'ORDER', oid)
+    return ok({'id': oid, 'status': 'COMPLETED'})
+
+
+@bp.get('/orders/<int:oid>/archive/export')
+@auth_required
+def export_archive(oid):
+    """订单档案导出：单据 JSON 清单 + 关联盖章件/凭证打包 zip。"""
+    order = _order_of(oid)
+    _order_visible(order)
+    manifest = {
+        'order': json_payload(order),
+        'contracts': json_payload(qall(g.conn, "SELECT * FROM biz_contract WHERE order_id=%s AND is_deleted=0 ORDER BY version", (oid,))),
+        'logisticsPlans': json_payload(qall(g.conn, "SELECT * FROM biz_logistics_plan WHERE order_id=%s AND is_deleted=0", (oid,))),
+        'waybills': json_payload(qall(g.conn, "SELECT * FROM biz_waybill WHERE order_id=%s AND is_deleted=0 ORDER BY segment_no", (oid,))),
+        'qualityChecks': json_payload(qall(g.conn, "SELECT * FROM biz_quality_check WHERE order_id=%s AND is_deleted=0", (oid,))),
+        'settlements': json_payload(qall(g.conn, "SELECT * FROM biz_settlement WHERE order_id=%s AND is_deleted=0", (oid,))),
+        'payments': json_payload(qall(g.conn, """
+            SELECT p.* FROM biz_payment p JOIN biz_settlement s ON s.id=p.settlement_id
+            WHERE s.order_id=%s AND p.is_deleted=0
+        """, (oid,))),
+        'trackNodes': json_payload(qall(g.conn, """
+            SELECT * FROM biz_track_node WHERE (biz_type='ORDER' AND biz_id=%s)
+               OR (biz_type='WAYBILL' AND biz_id IN (SELECT id FROM biz_waybill WHERE order_id=%s))
+               OR (biz_type='SETTLEMENT' AND biz_id IN (SELECT id FROM biz_settlement WHERE order_id=%s))
+            ORDER BY occur_time, id
+        """, (oid, oid, oid))),
+        'alerts': json_payload(qall(g.conn, """
+            SELECT * FROM biz_alert WHERE (biz_type='ORDER' AND biz_id=%s)
+               OR (biz_type='WAYBILL' AND biz_id IN (SELECT id FROM biz_waybill WHERE order_id=%s))
+            ORDER BY id
+        """, (oid, oid))),
+    }
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+        z.writestr('manifest.json', json.dumps(manifest, ensure_ascii=False, indent=2, default=str))
+        # 关联附件（fileId → sys_file 实际文件）
+        file_ids = []
+        for c in manifest['contracts'] or []:
+            if c.get('file_url'):
+                file_ids.append(c['file_url'])
+        for t in ('qualityChecks', 'payments'):
+            for r in manifest[t] or []:
+                if r.get('file_url'):
+                    file_ids.append(r['file_url'])
+        for fid in dict.fromkeys(file_ids):  # 去重保序
+            f = q1(g.conn, "SELECT file_name, path FROM sys_file WHERE file_id=%s AND is_deleted=0", (fid,))
+            if f:
+                import os
+                full = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                                    'uploads', f['path'])
+                if os.path.isfile(full):
+                    z.write(full, 'files/%s' % f['file_name'])
+    buf.seek(0)
+    return send_file(buf, mimetype='application/zip', as_attachment=True,
+                     download_name='archive-%s.zip' % order['order_no'])
+
+
+# ---------------- 结算查询 ----------------
+
+@bp.get('/settlements')
+@auth_required
+def list_settlements():
+    p = get_params()
+    page, size = page_args(p)
+    where = ['s.is_deleted=0']
     args = []
-    if request.args.get('status'):
-        base += " AND b.status=?"; args.append(request.args['status'])
-    if request.args.get('period'):
-        base += " AND b.period=?"; args.append(request.args['period'])
-    base += " ORDER BY b.create_time DESC"
-    rows, total = paginate(db, base, args, page, size)
-    return ok({'list': rows, 'total': total, 'page': page, 'page_size': size})
+    if not g.ctx.is_plat:
+        if not g.ctx.company:
+            return ok(page_data([], 0, page, size))
+        where.append('(o.buyer_id=%s OR o.supplier_id=%s)')
+        args += [g.ctx.company['id'], g.ctx.company['id']]
+    if p.get('status'):
+        where.append('s.status=%s')
+        args.append(p['status'])
+    if p.get('orderId'):
+        where.append('s.order_id=%s')
+        args.append(p['orderId'])
+    w = ' AND '.join(where)
+    total = q1(g.conn, "SELECT count(*) AS c FROM biz_settlement s JOIN biz_order o ON o.id=s.order_id WHERE " + w, args)['c']
+    rows = qall(g.conn, """
+        SELECT s.id, s.settle_no AS "settleNo", s.order_id AS "orderId", o.order_no AS "orderNo",
+               s.settle_qty AS "settleQty", s.unit_price AS "unitPrice",
+               s.adjust_amount AS "adjustAmount", s.deduct_amount AS "deductAmount",
+               s.total_amount AS "totalAmount", s.status,
+               s.supplier_confirm_at AS "supplierConfirmAt", s.buyer_confirm_at AS "buyerConfirmAt",
+               s.created_at AS "createdAt"
+        FROM biz_settlement s JOIN biz_order o ON o.id=s.order_id
+        WHERE """ + w + " ORDER BY s.id DESC LIMIT %s OFFSET %s",
+        args + [size, (page - 1) * size])
+    return ok(page_data(rows, total, page, size))
 
 
-@bp.get('/company/bill/<int:bid>/export')
-@roles_required('R1')
-@company_approved_required
-def company_bill_export(bid):
-    """导出企业对账单 Excel"""
-    db = get_db()
-    b = db.execute("SELECT * FROM company_bill WHERE bill_id=? AND company_id=?",
-                   (bid, g.current_user['company_id'])).fetchone()
-    if not b:
-        return err('对账单不存在', http=404)
-    c = db.execute("SELECT company_name FROM company WHERE company_id=?", (b['company_id'],)).fetchone()
-    rows = [[d['alloc_no'], d['order_no'], d['ore_category'], d['qty'], d['unit_price'], d['amount'],
-             d['destination']]
-            for d in db.execute(
-                "SELECT d.*, a.alloc_no, o.order_no, a.destination FROM company_bill_detail d"
-                " JOIN allocation_order a ON a.alloc_id=d.alloc_id"
-                " JOIN collective_order o ON o.order_id=a.order_id WHERE d.bill_id=?", (bid,))]
-    log_action('导出企业对账单', f"{b['bill_no']}", ref_type='company_bill', ref_id=bid)
-    return export_excel(
-        ['分拨单号', '集采订单号', '品类', '吨数', '单价(元/吨)', '金额(元)', '交货地'],
-        [(f"对账明细 {b['bill_no']}（周期 {b['period']} · {c['company_name']} · 合计 {b['total_amount']} 元 · 状态 {b['status']}）", rows)],
-        f"企业对账单-{b['bill_no']}.xlsx")
-
-
-# ================= 归档 =================
-
-@bp.post('/admin/archive')
-@roles_required('R4')
-def archive_order():
-    """归档：全部分拨确认完成 + 企业/供方对账单全部结清"""
-    d = request.get_json(force=True)
-    db = get_db()
-    if not d.get('order_id'):
-        return err('缺少集采订单')
-    o = db.execute("SELECT * FROM collective_order WHERE order_id=?", (d['order_id'],)).fetchone()
-    if not o:
-        return err('集采订单不存在', http=404)
-    if o['status'] == 'ARCHIVED':
-        return err('该订单已归档')
-    allocs = db.execute("SELECT * FROM allocation_order WHERE order_id=?", (o['order_id'],)).fetchall()
-    if not allocs:
-        return err('该订单尚未分拨，不可归档')
-    undone = [a['alloc_no'] for a in allocs if a['status'] != 'DONE']
-    if undone:
-        return err(f'存在未确认到货的分拨单：{",".join(undone[:5])}')
-    uncovered = [a['alloc_no'] for a in allocs if not db.execute(
-        "SELECT 1 FROM company_bill_detail WHERE alloc_id=?", (a['alloc_id'],)).fetchone()]
-    if uncovered:
-        return err(f'存在未生成企业对账单的分拨单：{",".join(uncovered[:5])}')
-    unf_c = db.execute(
-        "SELECT COUNT(*) FROM company_bill WHERE status!='SETTLED' AND bill_id IN"
-        " (SELECT bill_id FROM company_bill_detail WHERE alloc_id IN"
-        "  (SELECT alloc_id FROM allocation_order WHERE order_id=?))", (o['order_id'],)).fetchone()[0]
-    if unf_c:
-        return err(f'存在未结清的企业对账单 {unf_c} 份，不可归档')
-    sup = db.execute("SELECT bill_id FROM supplier_bill WHERE order_id=?", (o['order_id'],)).fetchone()
-    if not sup:
-        return err('尚未生成供方对账单，不可归档')
-    unf_s = db.execute("SELECT COUNT(*) FROM supplier_bill WHERE order_id=? AND status!='SETTLED'",
-                       (o['order_id'],)).fetchone()[0]
-    if unf_s:
-        return err('供方对账单未结清，不可归档')
-    task = db.execute("SELECT * FROM collective_task WHERE task_id=?", (o['task_id'],)).fetchone()
-    period_type, period = _period_of_order(db, o['order_id'])
-    now = _now()
-    db.execute(
-        "INSERT INTO archive_record(order_id,task_id,archive_time,operator_id,archive_summary)"
-        " VALUES(?,?,?,?,?)",
-        (o['order_id'], o['task_id'], now, g.current_user['user_id'],
-         d.get('summary') or ''))
-    db.execute("UPDATE collective_order SET status='ARCHIVED' WHERE order_id=?", (o['order_id'],))
-    db.execute("UPDATE collective_task SET status='ARCHIVED' WHERE task_id=?", (o['task_id'],))
-    # 需求闭环 → DISTRIBUTED
-    db.execute(
-        "UPDATE purchase_demand SET status='DISTRIBUTED',update_time=?"
-        " WHERE demand_id IN (SELECT demand_id FROM collective_list_detail WHERE list_id=("
-        " SELECT list_id FROM collective_task WHERE task_id=?)) AND status='IN_EXEC'",
-        (now, o['task_id']))
-    db.commit()
-    log_action('订单归档', f"订单{o['order_no']} 归档完成，需求全链路闭环", before=o['status'],
-               after='ARCHIVED', ref_type='collective_order', ref_id=o['order_id'])
-    return ok({'order_id': o['order_id'], 'status': 'ARCHIVED', 'archive_time': now})
-
-
-@bp.get('/admin/archive/list')
-@roles_required('R4')
-def archive_list():
-    db = get_db()
-    rows = [dict(x) for x in db.execute(
-        "SELECT ar.*, o.order_no, o.ore_category, o.total_amount FROM archive_record ar"
-        " JOIN collective_order o ON o.order_id=ar.order_id"
-        " ORDER BY ar.archive_time DESC")]
-    return ok({'list': rows})
-
-
-# ================= 履约台账 =================
-
-@bp.get('/admin/ledger')
-@roles_required('R4')
-def ledger():
-    """全周期履约台账：分拨 + 对账 + 归档状态联合视图"""
-    db = get_db()
-    page = int(request.args.get('page', 1)); size = int(request.args.get('page_size', 10))
-    sql = ("SELECT a.*, c.company_name, o.order_no, o.status AS order_status,"
-           " t.task_no, l.period, l.period_type"
-           " FROM allocation_order a"
-           " JOIN company c ON c.company_id=a.company_id"
-           " JOIN collective_order o ON o.order_id=a.order_id"
-           " JOIN collective_task t ON t.task_id=o.task_id"
-           " JOIN collective_list l ON l.list_id=t.list_id WHERE 1=1")
-    args = []
-    if request.args.get('period'):
-        sql += " AND l.period=?"; args.append(request.args['period'])
-    if request.args.get('company'):
-        sql += " AND c.company_name LIKE ?"; args.append(f"%{request.args['company']}%")
-    if request.args.get('ore_category'):
-        sql += " AND a.ore_category=?"; args.append(request.args['ore_category'])
-    if request.args.get('status'):
-        sql += " AND a.status=?"; args.append(request.args['status'])
-    sql += " ORDER BY a.create_time DESC"
-    rows, total = paginate(db, sql, args, page, size)
-    for r in rows:
-        cb = db.execute(
-            "SELECT b.status FROM company_bill b JOIN company_bill_detail d ON d.bill_id=b.bill_id"
-            " WHERE d.alloc_id=? LIMIT 1", (r['alloc_id'],)).fetchone()
-        r['bill_status'] = cb['status'] if cb else None
-        r['archived'] = 1 if r['order_status'] == 'ARCHIVED' else 0
-    return ok({'list': rows, 'total': total, 'page': page, 'page_size': size})
-
-
-@bp.get('/admin/ledger/export')
-@roles_required('R4')
-def ledger_export():
-    db = get_db()
-    rows = []
-    for r in db.execute(
-            "SELECT a.*, c.company_name, o.order_no, o.status AS order_status, l.period"
-            " FROM allocation_order a"
-            " JOIN company c ON c.company_id=a.company_id"
-            " JOIN collective_order o ON o.order_id=a.order_id"
-            " JOIN collective_task t ON t.task_id=o.task_id"
-            " JOIN collective_list l ON l.list_id=t.list_id ORDER BY a.create_time DESC"):
-        cb = db.execute(
-            "SELECT b.status FROM company_bill b JOIN company_bill_detail d ON d.bill_id=b.bill_id"
-            " WHERE d.alloc_id=? LIMIT 1", (r['alloc_id'],)).fetchone()
-        rows.append([r['period'], r['alloc_no'], r['order_no'], r['company_name'],
-                     r['ore_category'], r['qty'], r['unit_price'], r['amount'],
-                     r['destination'], r['status'], cb['status'] if cb else '未生成',
-                     '已归档' if r['order_status'] == 'ARCHIVED' else '未归档'])
-    log_action('导出履约台账', f"共{len(rows)}行", ref_type='allocation_order')
-    return export_excel(
-        ['周期', '分拨单号', '订单号', '下游企业', '品类', '吨数', '单价(元/吨)', '金额(元)',
-         '交货地', '分拨状态', '对账状态', '归档'],
-        [('履约台账', rows)], '履约台账.xlsx')
+@bp.get('/settlements/<int:sid>')
+@auth_required
+def settlement_detail(sid):
+    s = _settlement_view(sid)
+    _order_visible(_order_of(s['order_id']))
+    payments = qall(g.conn, """
+        SELECT id, payment_no AS "paymentNo", settlement_id AS "settlementId", amount,
+               pay_date AS "payDate", pay_desc AS "payDesc", file_url AS "fileUrl",
+               created_at AS "createdAt"
+        FROM biz_payment WHERE settlement_id=%s AND is_deleted=0 ORDER BY id
+    """, (sid,))
+    data = json_payload(s)
+    data['payments'] = json_payload(payments)
+    return ok(data)
