@@ -22,6 +22,16 @@ def _validate_demand(d):
         return '季度周期格式应为 YYYY-Qn'
     if not (d.get('ore_category') or '').strip():
         return '矿石品类必填'
+    ore_type = (d.get('ore_type') or '').strip()
+    valid_iron_types = {r['item_code'] for r in get_db().execute(
+        "SELECT item_code FROM dict_item WHERE category='IRON_ORE_TYPE' AND status=1").fetchall()}
+    if d['ore_category'] == 'IRON':
+        if not ore_type:
+            return '铁矿石品类必须选择矿种'
+        if ore_type not in valid_iron_types:
+            return '无效的矿种'
+    elif ore_type:
+        return '仅铁矿石品类需选择矿种'
     qty = d.get('quantity')
     if qty is None or not isinstance(qty, (int, float)) or qty <= 0:
         return '采购数量必须大于0'
@@ -56,11 +66,11 @@ def demand_create():
     action = d.get('action', 'submit')  # draft / submit
     status = 'DRAFT' if action == 'draft' else 'SUBMITTED'
     cur = db.execute(
-        "INSERT INTO purchase_demand(company_id,period_type,period,ore_category,quantity,grade_req,"
+        "INSERT INTO purchase_demand(company_id,period_type,period,ore_category,ore_type,quantity,grade_req,"
         "granularity_req,moisture_req,impurity_req,expected_arrival,delivery_place,remark,status,"
-        "create_time,update_time) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "create_time,update_time) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (g_company_id(), d['period_type'], d['period'].strip(), d['ore_category'],
-         round2(d['quantity']), d['grade_req'], d.get('granularity_req'), d.get('moisture_req'),
+         (d.get('ore_type') or '').strip() or None, round2(d['quantity']), d['grade_req'], d.get('granularity_req'), d.get('moisture_req'),
          d.get('impurity_req'), d['expected_arrival'], d.get('delivery_place'),
          d.get('remark'), status, now, now))
     demand_id = cur.lastrowid
@@ -94,10 +104,11 @@ def demand_update(did):
         return err(msg)
     now = _now()
     db.execute(
-        "UPDATE purchase_demand SET period_type=?,period=?,ore_category=?,quantity=?,grade_req=?,"
+        "UPDATE purchase_demand SET period_type=?,period=?,ore_category=?,ore_type=?,quantity=?,grade_req=?,"
         "granularity_req=?,moisture_req=?,impurity_req=?,expected_arrival=?,delivery_place=?,remark=?,"
         "status=?,update_time=? WHERE demand_id=?",
-        (d['period_type'], d['period'].strip(), d['ore_category'], round2(d['quantity']), d['grade_req'],
+        (d['period_type'], d['period'].strip(), d['ore_category'], (d.get('ore_type') or '').strip() or None,
+         round2(d['quantity']), d['grade_req'],
          d.get('granularity_req'), d.get('moisture_req'), d.get('impurity_req'), d['expected_arrival'],
          d.get('delivery_place'), d.get('remark'),
          'DRAFT' if d.get('action', 'draft') == 'draft' else 'SUBMITTED', now, did))
@@ -164,8 +175,33 @@ def demand_list():
     if request.args.get('status'):
         sql += " AND d.status=?"; args.append(request.args['status'])
     sql += " ORDER BY d.update_time DESC"
-    rows, total = paginate(db, sql, args, page, size)
-    return ok({'list': rows, 'total': total, 'page': page, 'page_size': size})
+    merged = [dict(r) for r in db.execute(sql, args).fetchall()]
+    # 商城集采预购订单并入申报列表（映射为申报行结构）
+    msql = "SELECT * FROM mall_order WHERE company_id=?"
+    margs = [g_company_id()]
+    if request.args.get('status'):
+        msql += " AND status=?"; margs.append(request.args['status'])
+    if request.args.get('period'):
+        msql += " AND period=?"; margs.append(request.args['period'])
+    if request.args.get('ore_category'):
+        msql += " AND ore_category=?"; margs.append(request.args['ore_category'])
+    msql += " ORDER BY create_time DESC"
+    for o in db.execute(msql, margs).fetchall():
+        merged.append({
+            'demand_id': f"mall_{o['order_id']}", 'demand_no': o['order_no'],
+            'period_type': o['period_type'] or 'MONTH', 'period': o['period'] or '',
+            'ore_category': o['ore_category'], 'ore_type': o['ore_type'],
+            'quantity': o['qty'], 'grade_req': o['grade_req'],
+            'unit_price': o['unit_price'], 'total_amount': o['total_amount'],
+            'expected_arrival': o['expected_arrival'], 'delivery_place': o['delivery_place'],
+            'remark': o['remark'], 'contact_name': o['contact_name'], 'contact_phone': o['contact_phone'],
+            'status': o['status'], 'src': 'mall',
+            'create_time': o['create_time'], 'update_time': o['create_time'],
+        })
+    merged.sort(key=lambda r: r['update_time'] or '', reverse=True)
+    total = len(merged)
+    start = (page - 1) * size
+    return ok({'list': merged[start:start + size], 'total': total, 'page': page, 'page_size': size})
 
 
 @bp.get('/demand/<int:did>')
@@ -242,8 +278,37 @@ def admin_demand_list():
     if request.args.get('status'):
         sql += " AND d.status=?"; args.append(request.args['status'])
     sql += " ORDER BY d.update_time DESC"
-    rows, total = paginate(db, sql, args, page, size)
-    return ok({'list': rows, 'total': total, 'page': page, 'page_size': size})
+    merged = [dict(r) for r in db.execute(sql, args).fetchall()]
+    # 商城集采预购订单并入归集列表（与 R1 需求申报列表同一数据视图）
+    msql = ("SELECT o.*, c.company_name FROM mall_order o"
+            " JOIN company c ON c.company_id=o.company_id WHERE 1=1")
+    margs = []
+    if request.args.get('period'):
+        msql += " AND o.period=?"; margs.append(request.args['period'])
+    if request.args.get('company'):
+        msql += " AND c.company_name LIKE ?"; margs.append(f"%{request.args['company']}%")
+    if request.args.get('ore_category'):
+        msql += " AND o.ore_category=?"; margs.append(request.args['ore_category'])
+    if request.args.get('status'):
+        msql += " AND o.status=?"; margs.append(request.args['status'])
+    msql += " ORDER BY o.create_time DESC"
+    for o in db.execute(msql, margs).fetchall():
+        merged.append({
+            'demand_id': f"mall_{o['order_id']}", 'demand_no': o['order_no'],
+            'company_name': o['company_name'],
+            'period_type': o['period_type'] or 'MONTH', 'period': o['period'] or '',
+            'ore_category': o['ore_category'], 'ore_type': o['ore_type'],
+            'quantity': o['qty'], 'grade_req': o['grade_req'],
+            'unit_price': o['unit_price'], 'total_amount': o['total_amount'],
+            'expected_arrival': o['expected_arrival'], 'delivery_place': o['delivery_place'],
+            'remark': o['remark'], 'contact_name': o['contact_name'], 'contact_phone': o['contact_phone'],
+            'status': o['status'], 'src': 'mall',
+            'create_time': o['create_time'], 'update_time': o['create_time'],
+        })
+    merged.sort(key=lambda r: r['update_time'] or '', reverse=True)
+    total = len(merged)
+    start = (page - 1) * size
+    return ok({'list': merged[start:start + size], 'total': total, 'page': page, 'page_size': size})
 
 
 @bp.get('/admin/demand/change/list')
@@ -251,9 +316,10 @@ def admin_demand_list():
 def admin_change_list():
     db = get_db()
     page = int(request.args.get('page', 1)); size = int(request.args.get('page_size', 10))
-    sql = ("SELECT dc.*, d.demand_no, d.ore_category, d.quantity AS old_qty, d.status AS demand_status,"
-           " c.company_name FROM demand_change dc"
-           " JOIN purchase_demand d ON d.demand_id=dc.demand_id"
+    sql = ("SELECT dc.*, COALESCE(d.demand_no, dc.ref_no) AS demand_no, d.ore_category,"
+           " COALESCE(d.quantity, (SELECT m.qty FROM mall_order m WHERE -m.order_id=dc.demand_id)) AS old_qty,"
+           " d.status AS demand_status, c.company_name FROM demand_change dc"
+           " LEFT JOIN purchase_demand d ON d.demand_id=dc.demand_id"
            " JOIN company c ON c.company_id=dc.company_id WHERE 1=1")
     args = []
     if request.args.get('status'):
@@ -278,18 +344,30 @@ def admin_change_review(cid):
         return err('无效的处理结论')
     now = _now()
     if result == 'AGREED':
-        demand = db.execute("SELECT * FROM purchase_demand WHERE demand_id=?", (ch['demand_id'],)).fetchone()
-        if not demand:
-            return err('原申报记录不存在')
-        if demand['status'] == 'DISTRIBUTED':
-            return err('该需求已分拨归档，单据只读，不可执行变更')
-        if ch['change_type'] == 'QTY':
-            db.execute("UPDATE purchase_demand SET quantity=?, update_time=? WHERE demand_id=?",
-                       (ch['new_quantity'], now, ch['demand_id']))
-        elif ch['change_type'] == 'CANCEL':
-            db.execute("UPDATE purchase_demand SET status='CANCELLED', update_time=? WHERE demand_id=?",
-                       (now, ch['demand_id']))
-        # SPEC 变更：记录说明（规格文本变更由管理员依据说明人工核定，此处记录审计轨迹）
+        if ch['demand_id'] < 0:
+            # 商城预购订单变更（demand_id = -order_id）
+            order = db.execute("SELECT * FROM mall_order WHERE order_id=?", (-ch['demand_id'],)).fetchone()
+            if not order:
+                return err('原商城订单不存在')
+            if ch['change_type'] == 'QTY':
+                db.execute("UPDATE mall_order SET qty=?, total_amount=? WHERE order_id=?",
+                           (ch['new_quantity'], round2((ch['new_quantity'] or 0) * order['unit_price']), order['order_id']))
+            elif ch['change_type'] == 'CANCEL':
+                db.execute("UPDATE mall_order SET status='CANCELLED' WHERE order_id=?", (order['order_id'],))
+            # SPEC 变更：记录说明（品位/规格文本由平台人工核定，此处记录审计轨迹）
+        else:
+            demand = db.execute("SELECT * FROM purchase_demand WHERE demand_id=?", (ch['demand_id'],)).fetchone()
+            if not demand:
+                return err('原申报记录不存在')
+            if demand['status'] == 'DISTRIBUTED':
+                return err('该需求已分拨归档，单据只读，不可执行变更')
+            if ch['change_type'] == 'QTY':
+                db.execute("UPDATE purchase_demand SET quantity=?, update_time=? WHERE demand_id=?",
+                           (ch['new_quantity'], now, ch['demand_id']))
+            elif ch['change_type'] == 'CANCEL':
+                db.execute("UPDATE purchase_demand SET status='CANCELLED', update_time=? WHERE demand_id=?",
+                           (now, ch['demand_id']))
+            # SPEC 变更：记录说明（规格文本变更由管理员依据说明人工核定，此处记录审计轨迹）
     db.execute("UPDATE demand_change SET status=?, review_remark=?, review_time=? WHERE id=?",
                (result, d.get('review_remark'), now, cid))
     db.commit()
@@ -310,11 +388,20 @@ def collective_create():
     demands = db.execute(
         "SELECT * FROM purchase_demand WHERE period_type=? AND period=? AND status IN ('SUBMITTED','IN_PROCESS')"
         " ORDER BY company_id", (period_type, period)).fetchall()
-    if not demands:
-        return err('该周期下没有可归集的有效需求（需为已提交/归集处理中状态）')
+    # 商城集采预购订单同样纳入归集（demand_id 取负数区分，与变更审核同一约定）
+    orders = db.execute(
+        "SELECT * FROM mall_order WHERE COALESCE(period_type,'MONTH')=? AND period=?"
+        " AND status IN ('SUBMITTED','CONFIRMED') ORDER BY company_id", (period_type, period)).fetchall()
+    rows = [dict(x) for x in demands]
+    for o in orders:
+        rows.append({'demand_id': -o['order_id'], 'company_id': o['company_id'], 'src': 'mall',
+                     'ore_category': o['ore_category'], 'quantity': o['qty'],
+                     'grade_req': o['grade_req'], 'expected_arrival': o['expected_arrival']})
+    if not rows:
+        return err('该周期下没有可归集的有效需求（需为已提交/归集处理中状态，含商城预购订单）')
     now = _now()
     groups = {}
-    for dm in demands:
+    for dm in rows:
         groups.setdefault(dm['ore_category'], []).append(dm)
     created = []
     for category, items in groups.items():
@@ -331,8 +418,11 @@ def collective_create():
                 " VALUES(?,?,?,?,?,?,?)",
                 (list_id, it['demand_id'], it['company_id'], category, it['quantity'],
                  it['grade_req'], it['expected_arrival']))
-            db.execute("UPDATE purchase_demand SET status='IN_LIST', update_time=? WHERE demand_id=?",
-                       (now, it['demand_id']))
+            if it['demand_id'] < 0:
+                db.execute("UPDATE mall_order SET status='IN_LIST' WHERE order_id=?", (-it['demand_id'],))
+            else:
+                db.execute("UPDATE purchase_demand SET status='IN_LIST', update_time=? WHERE demand_id=?",
+                           (now, it['demand_id']))
         created.append({'list_id': list_id, 'ore_category': category, 'total_qty': total,
                         'detail_count': len(items)})
         log_action('生成集采清单', f"周期 {period} 品类 {category} 总量 {total}吨 含{len(items)}家企业",

@@ -35,7 +35,9 @@ def create_app():
 
     @app.get('/')
     def index():
-        return send_from_directory(FRONTEND_DIR, 'index.html')
+        resp = send_from_directory(FRONTEND_DIR, 'index.html')
+        resp.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        return resp
 
     @app.get('/assets/<path:filename>')
     def assets(filename):
@@ -104,3 +106,7 @@ def register_module_bps(app):
         from importlib import import_module
         mod = import_module(f'.api.{mod_name}', package=__package__)
         app.register_blueprint(mod.bp, url_prefix='/api')
+
+    # 采购商城（现货直购）
+    from .api import mall
+    app.register_blueprint(mall.bp, url_prefix='/api')

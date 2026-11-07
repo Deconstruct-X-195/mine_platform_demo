@@ -12,12 +12,12 @@ const UI = {
 
   /* DataTable: {columns:[{title,key,render,width}], fetch:(query)=>{list,total}, toolbar, query}
      返回 {root, reload} */
-  table({ columns, fetch, toolbar, query = {}, pageSize = 10, rowKey = 'id' }) {
+  table({ columns, fetch, toolbar, query = {}, pageSize = 10, rowKey = 'id', className = '' }) {
     const state = { page: 1, total: 0, query: { ...query } };
     const root = el('div', null);
     const tbody = el('tbody');
     const table = el('div', { class: 'table-wrap' },
-      el('table', { class: 'tb' }, [
+      el('table', { class: className ? `tb ${className}` : 'tb' }, [
         el('thead', null, el('tr', null, columns.map(c =>
           el('th', { style: c.width ? { width: c.width } : null }, c.title)))),
         tbody

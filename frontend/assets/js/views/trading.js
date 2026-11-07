@@ -46,7 +46,7 @@ App.registerView('r4.trade', {
           { title: '报价截止', key: 'quote_deadline' },
           { title: '询价进度', num: true, render: r => `${r.quoted_total}/${r.inquiry_total} 家已报价` },
           { title: '状态', render: r => tag(r.status) },
-          { title: '操作', render: r => el('div', { style: { display: 'flex', gap: '0', flexWrap: 'wrap' } }, [
+          { title: '操作', render: r => el('div', { style: { display: 'flex', gap: '0', whiteSpace: 'nowrap' } }, [
             el('button', { class: 'btn btn-sm btn-link', onclick: () => showCompare(r) }, '比价'),
             ['WAIT_QUOTE', 'QUOTING'].includes(r.status)
               ? el('button', { class: 'btn btn-sm btn-link', style: { color: 'var(--orange)' }, onclick: () => showLock(r) }, '锁货') : null,
@@ -313,7 +313,7 @@ App.registerView('r2.inquiry', {
           ? `${fmtMoney(r.quote_price)}/吨 · ${fmtQty(r.quote_qty)}吨`
           : (r.status === 'REFUSED' ? el('span', { title: '拒绝原因: ' + r.refuse_reason, style: { color: 'var(--red)', fontSize: '12px' } }, '⚠ 已拒绝') : '-') },
         { title: '状态', render: r => tag(r.status) },
-        { title: '操作', render: r => el('div', { style: { display: 'flex', gap: '0', flexWrap: 'wrap' } }, [
+        { title: '操作', render: r => el('div', { style: { display: 'flex', gap: '0', whiteSpace: 'nowrap' } }, [
           r.status === 'WAIT_QUOTE' ? el('button', { class: 'btn btn-sm btn-link', style: { color: 'var(--green)' }, onclick: () => showQuote(r, false) }, '提交报价') : null,
           r.status === 'QUOTED' ? el('button', { class: 'btn btn-sm btn-link', onclick: () => showQuote(r, true) }, '修改报价') : null,
           ['WAIT_QUOTE', 'QUOTED'].includes(r.status) ? el('button', { class: 'btn btn-sm btn-link', style: { color: 'var(--red)' }, onclick: () => doRefuse(r) }, '拒绝询价') : null,

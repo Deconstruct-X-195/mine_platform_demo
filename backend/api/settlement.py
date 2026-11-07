@@ -549,12 +549,17 @@ def archive_order():
          d.get('summary') or ''))
     db.execute("UPDATE collective_order SET status='ARCHIVED' WHERE order_id=?", (o['order_id'],))
     db.execute("UPDATE collective_task SET status='ARCHIVED' WHERE task_id=?", (o['task_id'],))
-    # 需求闭环 → DISTRIBUTED
+    # 需求闭环 → DISTRIBUTED（含商城预购订单，明细 demand_id 负数对应 mall_order.order_id）
     db.execute(
         "UPDATE purchase_demand SET status='DISTRIBUTED',update_time=?"
         " WHERE demand_id IN (SELECT demand_id FROM collective_list_detail WHERE list_id=("
         " SELECT list_id FROM collective_task WHERE task_id=?)) AND status='IN_EXEC'",
         (now, o['task_id']))
+    db.execute(
+        "UPDATE mall_order SET status='DISTRIBUTED'"
+        " WHERE order_id IN (SELECT -demand_id FROM collective_list_detail WHERE list_id=("
+        " SELECT list_id FROM collective_task WHERE task_id=?)) AND status='IN_EXEC'",
+        (o['task_id'],))
     db.commit()
     log_action('订单归档', f"订单{o['order_no']} 归档完成，需求全链路闭环", before=o['status'],
                after='ARCHIVED', ref_type='collective_order', ref_id=o['order_id'])

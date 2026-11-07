@@ -195,11 +195,15 @@ def task_lock(tid):
         "UPDATE inquiry_task SET status='NOT_SELECTED',update_time=?"
         " WHERE task_id=? AND status IN ('WAIT_QUOTE','QUOTED')", (now, tid))
     db.execute("UPDATE collective_task SET status='LOCKED' WHERE task_id=?", (tid,))
-    # 需求进入集采执行中
+    # 需求进入集采执行中（含商城预购订单，明细 demand_id 负数对应 mall_order.order_id）
     db.execute(
         "UPDATE purchase_demand SET status='IN_EXEC',update_time=?"
         " WHERE demand_id IN (SELECT demand_id FROM collective_list_detail WHERE list_id=?)"
         " AND status='IN_LIST'", (now, task['list_id']))
+    db.execute(
+        "UPDATE mall_order SET status='IN_EXEC'"
+        " WHERE order_id IN (SELECT -demand_id FROM collective_list_detail WHERE list_id=?)"
+        " AND status='IN_LIST'", (task['list_id'],))
     db.commit()
     log_action('确认锁货', f"任务{task['task_no']}，锁货{len(plan)}家合计{total_lock}吨",
                before='QUOTING', after='LOCKED', ref_type='collective_task', ref_id=tid)

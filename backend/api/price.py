@@ -30,6 +30,14 @@ def _validate(d):
     date = (d.get('quote_date') or '').strip()
     if not category:
         return None, '矿石品类必填'
+    ore_type = (d.get('ore_type') or '').strip() or None
+    if ore_type and category == 'IRON':
+        valid = {r['item_code'] for r in get_db().execute(
+            "SELECT item_code FROM dict_item WHERE category='IRON_ORE_TYPE' AND status=1").fetchall()}
+        if ore_type not in valid:
+            return None, '无效的矿种'
+    elif ore_type:
+        return None, '仅铁矿石品类需选择矿种'
     if not spec:
         return None, '指标规格必填'
     if len(spec) > 100:
@@ -48,7 +56,7 @@ def _validate(d):
     remark = (d.get('remark') or '').strip()
     if remark and len(remark) > 200:
         return None, '备注不可超过200字'
-    return (category, spec, date, market, deal, source, remark), None
+    return (category, ore_type, spec, date, market, deal, source, remark), None
 
 
 # ================= 管理员 (R4) =================
@@ -59,12 +67,12 @@ def price_create():
     packed, error = _validate(request.get_json(force=True))
     if error:
         return err(error)
-    category, spec, date, market, deal, source, remark = packed
+    category, ore_type, spec, date, market, deal, source, remark = packed
     db = get_db()
     cur = db.execute(
-        "INSERT INTO ore_price_quote(ore_category,spec,quote_date,market_price,avg_deal_price,"
-        "source,remark,operator_id,create_time) VALUES(?,?,?,?,?,?,?,?,?)",
-        (category, spec, date, market, deal, source, remark, g.current_user['user_id'], _now()))
+        "INSERT INTO ore_price_quote(ore_category,ore_type,spec,quote_date,market_price,avg_deal_price,"
+        "source,remark,operator_id,create_time) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        (category, ore_type, spec, date, market, deal, source, remark, g.current_user['user_id'], _now()))
     db.commit()
     log_action('录入矿石行情', f"{category} {date} 市场价{market}元/吨", ref_type='ore_price_quote', ref_id=cur.lastrowid)
     return ok({'id': cur.lastrowid})
@@ -80,11 +88,11 @@ def price_update(pid):
     packed, error = _validate(request.get_json(force=True))
     if error:
         return err(error)
-    category, spec, date, market, deal, source, remark = packed
+    category, ore_type, spec, date, market, deal, source, remark = packed
     db.execute(
-        "UPDATE ore_price_quote SET ore_category=?,spec=?,quote_date=?,market_price=?,"
+        "UPDATE ore_price_quote SET ore_category=?,ore_type=?,spec=?,quote_date=?,market_price=?,"
         "avg_deal_price=?,source=?,remark=?,operator_id=? WHERE id=?",
-        (category, spec, date, market, deal, source, remark, g.current_user['user_id'], pid))
+        (category, ore_type, spec, date, market, deal, source, remark, g.current_user['user_id'], pid))
     db.commit()
     log_action('修改矿石行情', f"#{pid} {category} {date}", ref_type='ore_price_quote', ref_id=pid)
     return ok({'id': pid})
@@ -113,6 +121,8 @@ def price_list():
     args = []
     if request.args.get('ore_category'):
         sql += " AND ore_category=?"; args.append(request.args['ore_category'])
+    if request.args.get('ore_type'):
+        sql += " AND ore_type=?"; args.append(request.args['ore_type'])
     if request.args.get('date_from'):
         sql += " AND quote_date>=?"; args.append(request.args['date_from'])
     if request.args.get('date_to'):
@@ -195,12 +205,22 @@ def admin_trend():
     category = request.args.get('ore_category')
     if category:
         sql += " AND ore_category=?"; args.append(category)
+    has_type = bool(request.args.get('ore_type'))
+    if has_type:
+        sql += " AND ore_type=?"; args.append(request.args['ore_type'])
     if request.args.get('date_from'):
         sql += " AND quote_date>=?"; args.append(request.args['date_from'])
     if request.args.get('date_to'):
         sql += " AND quote_date<=?"; args.append(request.args['date_to'])
-    sql += " ORDER BY quote_date ASC, id ASC"
-    rows = [dict(x) for x in db.execute(sql, args)]
+    if has_type:
+        # 指定矿种：返回该矿种原始行情
+        sql += " ORDER BY quote_date ASC, id ASC"
+        rows = [dict(x) for x in db.execute(sql, args)]
+    else:
+        # 未指定矿种：同日多矿种按日均聚合，保证趋势线单调清晰
+        agg_sql = (sql.replace("SELECT *", "SELECT quote_date, ROUND(AVG(market_price),2) AS market_price,"
+                               " ROUND(AVG(avg_deal_price),2) AS avg_deal_price") + " GROUP BY quote_date ORDER BY quote_date ASC")
+        rows = [dict(x) for x in db.execute(agg_sql, args)]
     return ok({
         'trend': rows,
         'deal_stats': _deal_avg_stats(db, category)
@@ -215,11 +235,13 @@ def admin_trend():
 def company_trend():
     """下游行情浏览：仅公开市场参考价，不返回平台成交均价等内部数据"""
     db = get_db()
-    sql = ("SELECT id, ore_category, spec, quote_date, market_price, source"
+    sql = ("SELECT id, ore_category, ore_type, spec, quote_date, market_price, source"
            " FROM ore_price_quote WHERE 1=1")
     args = []
     if request.args.get('ore_category'):
         sql += " AND ore_category=?"; args.append(request.args['ore_category'])
+    if request.args.get('ore_type'):
+        sql += " AND ore_type=?"; args.append(request.args['ore_type'])
     if request.args.get('date_from'):
         sql += " AND quote_date>=?"; args.append(request.args['date_from'])
     if request.args.get('date_to'):

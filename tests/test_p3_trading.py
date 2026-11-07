@@ -11,7 +11,7 @@ def setup_env(client, suffix=''):
     """搭建基础数据：1家下游(需求1000t IRON 2026-01) + 2家供方(货源5000t/3000t) + 归集清单"""
     r1, c1 = make_user(client, f'交易钢厂{suffix}')
     api(client, 'POST', '/api/demand/create', r1, json_body={
-        'period_type': 'MONTH', 'period': '2026-01', 'ore_category': 'IRON',
+        'period_type': 'MONTH', 'period': '2026-01', 'ore_category': 'IRON', 'ore_type': 'PB_FINES',
         'quantity': 1000, 'grade_req': 'TFe>=62%', 'expected_arrival': '2026-03-01',
         'action': 'submit'})
     ra, ca = make_user(client, f'交易矿山A{suffix}', 'SUPPLIER', extra={'supplier_type': 'DOMESTIC'})

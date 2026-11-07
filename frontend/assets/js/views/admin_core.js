@@ -157,6 +157,9 @@ App.registerView('r4.dict', {
         { title: '状态', render: r => r.status === 1 ? tag('APPROVED') : tag('DISABLED') },
         { title: '操作', render: r => el('div', { style: { display: 'flex', gap: '2px' } }, [
           el('button', { class: 'btn btn-sm btn-link', onclick: () => showEdit(r) }, '编辑'),
+          state.category === 'ORE_CATEGORY' ? el('button', { class: 'btn btn-sm btn-link',
+            style: r.item_code === 'IRON' ? { color: 'var(--blue, #2563eb)' } : { color: 'var(--text-3)' },
+            onclick: () => r.item_code === 'IRON' ? showOreTypes(r) : Toast.info('仅铁矿石品类支持配置矿种') }, '矿种') : null,
           el('button', { class: 'btn btn-sm btn-link', style: { color: 'var(--red)' },
             onclick: () => confirmDialog(`确认删除字典项「${r.item_name}」？`, async () => {
               await API.post(`/api/admin/dict/${r.id}/delete`); Toast.success('已删除'); table.reload();
@@ -200,6 +203,54 @@ App.registerView('r4.dict', {
     }
 
     root.appendChild(el('div', { class: 'card' }, [catTabs, table.root]));
+
+    /* 铁矿石品类 ↔ 矿种 对应管理：查看/新增/删除该品类下矿种 */
+    async function showOreTypes(catRow) {
+      const body = el('div');
+      const addInput = el('input', { type: 'text', placeholder: '矿种名称，如 PB粉', style: { flex: '1' } });
+      const addBtn = el('button', { class: 'btn btn-primary btn-sm', onclick: () => addItem() }, '+ 新增矿种');
+      const bar = el('div', { style: { display: 'flex', gap: '8px', marginBottom: '10px' } }, [addInput, addBtn]);
+      body.appendChild(bar);
+      const listBox = el('div');
+      body.appendChild(listBox);
+
+      async function loadList() {
+        const d = await API.get('/api/admin/dict/list', { category: 'IRON_ORE_TYPE', page_size: 100 });
+        const rows = d.list;
+        listBox.innerHTML = '';
+        listBox.appendChild(el('div', { style: { marginBottom: '6px', color: 'var(--text-3)', fontSize: '12.5px' } },
+          `品类「${catRow.item_name}」(${catRow.item_code}) 共配置 ${rows.length} 个矿种，申报单选择铁矿石时可调取`));
+        listBox.appendChild(el('table', { class: 'tb' }, [
+          el('thead', null, el('tr', null, ['编码', '名称', '排序', '状态', '操作'].map(h => el('th', null, h)))),
+          el('tbody', null, rows.length ? rows.map(r => el('tr', null, [
+            el('td', null, r.item_code), el('td', null, r.item_name), el('td', null, String(r.sort)),
+            el('td', null, r.status === 1 ? tag('APPROVED') : tag('DISABLED')),
+            el('td', null, el('button', { class: 'btn btn-sm btn-link', style: { color: 'var(--red)' },
+              onclick: () => confirmDialog(`确认删除矿种「${r.item_name}」？`, async () => {
+                await API.post(`/api/admin/dict/${r.id}/delete`);
+                Toast.success('已删除'); await App.loadDicts(); loadList();
+              }, { danger: true }) }, '删除'))
+          ])) : el('tr', null, el('td', { colspan: 5, style: { textAlign: 'center', color: 'var(--text-3)' } }, '暂无矿种')))
+        ]));
+      }
+
+      async function addItem() {
+        const name = addInput.value.trim();
+        if (!name) { Toast.error('请输入矿种名称'); return; }
+        const sort = Date.now() % 10000; // 追加到末尾
+        await API.post('/api/admin/dict', {
+          category: 'IRON_ORE_TYPE', item_code: 'IRON_TYPE_' + Date.now().toString(36).toUpperCase(),
+          item_name: name, sort
+        });
+        Toast.success('矿种已添加');
+        addInput.value = '';
+        await App.loadDicts();
+        loadList();
+      }
+
+      await loadList();
+      openModal({ title: `矿种管理 · ${catRow.item_name}`, body, wide: true });
+    }
   }
 });
 
@@ -213,9 +264,9 @@ App.registerView('r4.dashboard', {
     startIn.addEventListener('change', () => { state.start_date = startIn.value; load(); });
     endIn.addEventListener('change', () => { state.end_date = endIn.value; load(); });
 
-    const barBox = el('div', { style: { height: '260px', position: 'relative' } }, el('canvas'));
-    const lineBox = el('div', { style: { height: '260px', position: 'relative' } }, el('canvas'));
-    const pieBox = el('div', { style: { height: '260px', position: 'relative' } }, el('canvas'));
+    const barBox = el('div', { style: { height: '260px', position: 'relative' } }, el('canvas', { style: { width: '100%', height: '100%' } }));
+    const lineBox = el('div', { style: { height: '260px', position: 'relative' } }, el('canvas', { style: { width: '100%', height: '100%' } }));
+    const pieBox = el('div', { style: { height: '260px', position: 'relative' } }, el('canvas', { style: { width: '100%', height: '100%' } }));
     const cardsBox = el('div', { class: 'stat-grid', style: { display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: '10px', marginBottom: '14px' } });
 
     root.appendChild(el('div', { class: 'card' }, el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center' } }, [

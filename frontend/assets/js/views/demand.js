@@ -1,34 +1,50 @@
 /* ============ 需求申报模块视图 (PRD-02) ============ */
 
+/* 品位要求统一显示格式：TFe≥62%（去掉 >= 写法与空格），R1/R4 视图共用 */
+const fmtGrade = s => s ? String(s).replace(/>=/g, '≥').replace(/\s+/g, '') : '-';
+
 /* ---------- R1 采购需求管理 ---------- */
 App.registerView('r1.demand', {
   title: '采购需求管理', roles: ['R1'],
   async render(root) {
+    /* 需求申报列表：商城集采预购订单由后端并入本列表直接展示 */
+    root.appendChild(renderDemandTable());
+
+    function renderDemandTable() {
     const state = { period: '', ore_category: '', status: '' };
-    const periodIn = el('input', { type: 'text', placeholder: '周期 如 2026-01' });
+    const periodIn = el('input', { type: 'text', placeholder: '周期 如 2026-01', style: {
+      width: '180px', height: '35px', padding: '0 14px', border: '1px solid var(--border-2, #d8d9dc)', borderRadius: '6px',
+      fontSize: '13px', color: 'var(--text-1)', background: 'var(--panel, #fff)', outline: 'none',
+      boxSizing: 'border-box', transition: 'border-color .15s ease' } });
+    periodIn.addEventListener('focus', () => { periodIn.style.borderColor = 'var(--primary, #0071e3)'; });
+    periodIn.addEventListener('blur', () => { periodIn.style.borderColor = 'var(--border-2, #d8d9dc)'; });
     periodIn.addEventListener('input', debounce(() => { state.period = periodIn.value.trim(); table.reload(); }, 300));
     const catSel = el('select', null, [el('option', { value: '' }, '全部品类'),
       ...App.dict('ORE_CATEGORY').map(d => el('option', { value: d.item_code }, d.item_name))]);
     catSel.addEventListener('change', () => { state.ore_category = catSel.value; table.reload(); });
     const statusSel = el('select', null, [el('option', { value: '' }, '全部状态'),
-      ...['DRAFT', 'SUBMITTED', 'IN_PROCESS', 'IN_LIST', 'IN_EXEC', 'DISTRIBUTED'].map(s => el('option', { value: s }, TAG_MAP[s][0]))]);
+      ...['DRAFT', 'SUBMITTED', 'CONFIRMED', 'IN_PROCESS', 'IN_LIST', 'IN_EXEC', 'DISTRIBUTED'].map(s => el('option', { value: s }, TAG_MAP[s][0]))]);
     statusSel.addEventListener('change', () => { state.status = statusSel.value; table.reload(); });
     const newBtn = el('button', { class: 'btn btn-primary btn-sm', onclick: () => showForm(null) }, '+ 新增申报');
 
     const table = UI.table({
+      className: 'tb-nowrap',
       columns: [
-        { title: '申报周期', render: r => `${TAG_MAP[r.period_type][0]} ${r.period}`, strong: true },
-        { title: '矿石品类', render: r => dictName(App.dict('ORE_CATEGORY'), r.ore_category) },
-        { title: '申报吨数', num: true, render: r => fmtQty(r.quantity) + ' 吨' },
-        { title: '品位要求', key: 'grade_req' },
-        { title: '期望到货', render: r => fmtDate(r.expected_arrival) },
-        { title: '状态', render: r => tag(r.status) },
-        { title: '更新时间', render: r => fmtTime(r.update_time) },
-        { title: '操作', render: r => el('div', { style: { display: 'flex', gap: '0', flexWrap: 'wrap' } }, [
+        { title: '序号', width: '56px', render: (r, idx) => (table.state.page - 1) * 10 + idx + 1 },
+        { title: '订单编号', width: '190px', render: r => r.demand_no, strong: true },
+        { title: '申报周期', width: '118px', render: r => `${TAG_MAP[r.period_type][0]} ${r.period}` },
+        { title: '矿石品类', width: '88px', render: r => dictName(App.dict('ORE_CATEGORY'), r.ore_category) },
+        { title: '矿种', width: '88px', render: r => r.ore_type ? dictName(App.dict('IRON_ORE_TYPE'), r.ore_type) : '-' },
+        { title: '申报吨数', width: '110px', num: true, render: r => fmtQty(r.quantity) + ' 吨' },
+        { title: '品位要求', width: '96px', render: r => fmtGrade(r.grade_req) },
+        { title: '期望到货', width: '108px', render: r => fmtDate(r.expected_arrival) },
+        { title: '状态', width: '92px', render: r => tag(r.status) },
+        { title: '更新时间', width: '160px', render: r => fmtTime(r.update_time) },
+        { title: '操作', width: '190px', render: r => el('div', { style: { display: 'flex', gap: '0', whiteSpace: 'nowrap' } }, [
           el('button', { class: 'btn btn-sm btn-link', onclick: () => showDetail(r) }, '详情'),
-          r.status === 'DRAFT' ? el('button', { class: 'btn btn-sm btn-link', onclick: () => showForm(r) }, '编辑') : null,
-          r.status === 'DRAFT' ? el('button', { class: 'btn btn-sm btn-link', style: { color: 'var(--green)' }, onclick: () => doSubmit(r) }, '提交') : null,
-          r.status === 'DRAFT' ? el('button', { class: 'btn btn-sm btn-link', style: { color: 'var(--red)' }, onclick: () => doDelete(r) }, '删除') : null,
+          r.src !== 'mall' && r.status === 'DRAFT' ? el('button', { class: 'btn btn-sm btn-link', onclick: () => showForm(r) }, '编辑') : null,
+          r.src !== 'mall' && r.status === 'DRAFT' ? el('button', { class: 'btn btn-sm btn-link', style: { color: 'var(--green)' }, onclick: () => doSubmit(r) }, '提交') : null,
+          r.src !== 'mall' && r.status === 'DRAFT' ? el('button', { class: 'btn btn-sm btn-link', style: { color: 'var(--red)' }, onclick: () => doDelete(r) }, '删除') : null,
           !['DRAFT', 'CANCELLED'].includes(r.status) ? el('button', { class: 'btn btn-sm btn-link', style: { color: 'var(--orange)' }, onclick: () => showChange(r) }, '变更申请') : null
         ]) }
       ],
@@ -36,7 +52,7 @@ App.registerView('r1.demand', {
       query: state, rowKey: 'demand_id',
       fetch: q => API.get('/api/demand/list', q)
     });
-    root.appendChild(el('div', { class: 'card' }, [table.root]));
+    return el('div', { class: 'card' }, [table.root]);
 
     function catOptions() { return App.dict('ORE_CATEGORY').map(d => ({ value: d.item_code, label: d.item_name })); }
 
@@ -53,6 +69,10 @@ App.registerView('r1.demand', {
           { text: '保存并提交', action: 'submit', primary: true }
         ],
         onSubmit: async (values, action) => {
+          if (values.ore_category === 'IRON' && !values.ore_type) {
+            Toast.error('铁矿石品类必须选择矿种');
+            return;
+          }
           const payload = { ...values, action };
           payload.attachments = (values.attachments || []).map(f => ({ file_url: f.file_url, file_name: f.file_name }));
           if (isEdit) await API.put(`/api/demand/${row.demand_id}`, payload);
@@ -71,8 +91,12 @@ App.registerView('r1.demand', {
         { key: 'period', label: '申报周期', type: 'text', required: true, value: row ? row.period : '',
           placeholder: '月度 2026-01 / 季度 2026-Q1', hint: '月度 YYYY-MM；季度 YYYY-Qn' },
         { key: 'ore_category', label: '矿石品类', type: 'select', required: true, options: catOptions(), value: row ? row.ore_category : '' },
+        { key: 'ore_type', label: '矿种', type: 'select',
+          options: [{ value: '', label: '请选择' },
+            ...App.dict('IRON_ORE_TYPE').map(d => ({ value: d.item_code, label: d.item_name }))],
+          value: row ? (row.ore_type || '') : '', hint: '铁矿石品类必选，其他品类可不选' },
         { key: 'quantity', label: '采购数量（吨）', type: 'number', required: true, value: row ? row.quantity : '', hint: '大于0，保留2位小数' },
-        { key: 'grade_req', label: '品位要求', type: 'text', required: true, value: row ? row.grade_req : '', placeholder: '如 TFe>=62%' },
+        { key: 'grade_req', label: '品位要求', type: 'text', required: true, value: row ? row.grade_req : '', placeholder: '如 TFe≥62%' },
         { key: 'granularity_req', label: '粒度要求', type: 'text', value: row ? row.granularity_req : '' },
         { key: 'moisture_req', label: '水分要求(%)', type: 'text', value: row ? row.moisture_req : '' },
         { key: 'impurity_req', label: '杂质要求', type: 'text', value: row ? row.impurity_req : '', placeholder: '硫、磷等指标' },
@@ -100,6 +124,9 @@ App.registerView('r1.demand', {
     }
 
     function showChange(r) {
+      /* 商城预购订单行走订单变更接口（demand_id 形如 mall_5），申报行走申报变更接口 */
+      const isMall = r.src === 'mall';
+      const changeUrl = isMall ? `/api/mall/order/${String(r.demand_id).slice(5)}/change` : `/api/demand/${r.demand_id}/change`;
       UI.form({
         title: `变更申请 · ${r.period} ${dictName(App.dict('ORE_CATEGORY'), r.ore_category)}`,
         fields: [
@@ -117,7 +144,7 @@ App.registerView('r1.demand', {
             attachment_url: (v.attachment_url && v.attachment_url[0]) ? v.attachment_url[0].file_url : null,
             file_name: (v.attachment_url && v.attachment_url[0]) ? v.attachment_url[0].file_name : null
           };
-          await API.post(`/api/demand/${r.demand_id}/change`, payload);
+          await API.post(changeUrl, payload);
           Toast.success('变更申请已提交，待平台处理');
           table.reload();
         }
@@ -125,6 +152,27 @@ App.registerView('r1.demand', {
     }
 
     async function showDetail(r) {
+      /* 商城预购订单行：直接用行数据展示，不调申报详情接口 */
+      if (r.src === 'mall') {
+        UI.detail({ title: '集采预购订单详情', sections: [{ title: '订单信息', items: [
+          { label: '订单编号', value: r.demand_no },
+          { label: '申报周期', value: `${TAG_MAP[r.period_type][0]} ${r.period}` },
+          { label: '矿石品类', value: dictName(App.dict('ORE_CATEGORY'), r.ore_category) },
+          { label: '矿种', value: r.ore_type ? dictName(App.dict('IRON_ORE_TYPE'), r.ore_type) : '-' },
+          { label: '预采购数量', value: fmtQty(r.quantity) + ' 吨' },
+          { label: '预采购单价', value: '¥' + fmtQty(r.unit_price) + ' /吨' },
+          { label: '总价格', value: '¥' + fmtQty(r.total_amount), strong: true },
+          { label: '品位要求', value: fmtGrade(r.grade_req) },
+          { label: '预到货日期', value: r.expected_arrival || '-' },
+          { label: '交货地点', value: r.delivery_place || '-' },
+          { label: '联系人', value: r.contact_name || '-' },
+          { label: '联系方式', value: r.contact_phone || '-' },
+          { label: '备注', value: r.remark || '-', full: true },
+          { label: '状态', render: () => tag(r.status) },
+          { label: '下单时间', value: fmtTime(r.create_time) }
+        ] }] });
+        return;
+      }
       const d = await API.get(`/api/demand/${r.demand_id}`);
       const sections = [{
         title: '申报信息', items: [
@@ -132,11 +180,11 @@ App.registerView('r1.demand', {
           { label: '所属企业', value: d.company_name },
           { label: '申报周期', value: `${TAG_MAP[d.period_type][0]} ${d.period}` },
           { label: '矿石品类', value: dictName(App.dict('ORE_CATEGORY'), d.ore_category) },
+          { label: '矿种', value: d.ore_type ? dictName(App.dict('IRON_ORE_TYPE'), d.ore_type) : '-' },
           { label: '申报吨数', value: fmtQty(d.quantity) + ' 吨' },
-          { label: '品位要求', value: d.grade_req },
-          { label: '粒度要求', value: d.granularity_req || '-' },
-          { label: '水分要求', value: d.moisture_req || '-' },
-          { label: '杂质要求', value: d.impurity_req || '-' },
+          { label: '品位要求', value: fmtGrade(d.grade_req) },
+          { label: '预采购单价', value: d.src === 'mall' ? '¥' + fmtQty(d.unit_price) + ' /吨' : '-' },
+          { label: '总价格', value: d.src === 'mall' ? '¥' + fmtQty(d.total_amount) : '-', strong: d.src === 'mall' },
           { label: '期望到货', value: fmtDate(d.expected_arrival) },
           { label: '交货地点', value: d.delivery_place || '-' },
           { label: '状态', render: () => tag(d.status) },
@@ -151,6 +199,7 @@ App.registerView('r1.demand', {
         })) });
       }
       UI.detail({ title: '申报详情', sections, wide: true });
+    }
     }
   }
 });
@@ -194,22 +243,30 @@ App.registerView('r4.demand', {
       const genBtn = el('button', { class: 'btn btn-primary btn-sm', onclick: showGenerate }, '⚙ 生成集采清单');
 
       const table = UI.table({
+        className: 'tb-nowrap',
         columns: [
-          { title: '周期', render: r => `${TAG_MAP[r.period_type][0]} ${r.period}`, strong: true },
-          { title: '企业', key: 'company_name' },
-          { title: '品类', render: r => dictName(App.dict('ORE_CATEGORY'), r.ore_category) },
-          { title: '吨数', num: true, render: r => fmtQty(r.quantity) },
-          { title: '品位', key: 'grade_req' },
-          { title: '状态', render: r => tag(r.status) },
-          { title: '提交时间', render: r => fmtTime(r.create_time) },
-          { title: '操作', render: r => el('button', { class: 'btn btn-sm btn-link', onclick: () => UI.detail({
+          { title: '序号', width: '56px', render: (r, idx) => (table.state.page - 1) * 10 + idx + 1 },
+          { title: '单号', width: '190px', render: r => r.demand_no, strong: true },
+          { title: '周期', width: '118px', render: r => `${TAG_MAP[r.period_type][0]} ${r.period}` },
+          { title: '企业', render: r => r.company_name },
+          { title: '品类', width: '88px', render: r => dictName(App.dict('ORE_CATEGORY'), r.ore_category) },
+          { title: '矿种', width: '88px', render: r => r.ore_type ? dictName(App.dict('IRON_ORE_TYPE'), r.ore_type) : '-' },
+          { title: '吨数', width: '110px', num: true, render: r => fmtQty(r.quantity) },
+          { title: '品位', width: '96px', render: r => fmtGrade(r.grade_req) },
+          { title: '状态', width: '140px', render: r => tag(r.status) },
+          { title: '提交时间', width: '160px', render: r => fmtTime(r.create_time) },
+          { title: '操作', width: '80px', render: r => el('button', { class: 'btn btn-sm btn-link', onclick: () => UI.detail({
               title: `申报详情 · ${r.company_name}`,
               sections: [{ title: '申报信息', items: [
                 { label: '申报单号', value: r.demand_no }, { label: '品类', value: dictName(App.dict('ORE_CATEGORY'), r.ore_category) },
+                { label: '矿种', value: r.ore_type ? dictName(App.dict('IRON_ORE_TYPE'), r.ore_type) : '-' },
                 { label: '吨数', value: fmtQty(r.quantity) + ' 吨' }, { label: '品位', value: r.grade_req },
-                { label: '粒度', value: r.granularity_req || '-' }, { label: '水分', value: r.moisture_req || '-' },
-                { label: '杂质', value: r.impurity_req || '-' }, { label: '期望到货', value: fmtDate(r.expected_arrival) },
-                { label: '交货地点', value: r.delivery_place || '-' }, { label: '状态', render: () => tag(r.status) },
+                { label: '预采购单价', value: r.src === 'mall' ? '¥' + fmtQty(r.unit_price) + ' /吨' : '-' },
+                { label: '总价格', value: r.src === 'mall' ? '¥' + fmtQty(r.total_amount) : '-', strong: r.src === 'mall' },
+                { label: '期望到货', value: fmtDate(r.expected_arrival) },
+                { label: '交货地点', value: r.delivery_place || '-' },
+                { label: '联系人', value: r.contact_name || '-' }, { label: '联系方式', value: r.contact_phone || '-' },
+                { label: '状态', render: () => tag(r.status) },
                 { label: '备注', value: r.remark || '-', full: true }] }] }) }, '详情') }
         ],
         toolbar: { render: () => [periodIn, compIn, catSel, statusSel, el('span', { class: 'fb-sep' }), genBtn] },
@@ -227,7 +284,7 @@ App.registerView('r4.demand', {
             { key: 'period_type', label: '周期类型', type: 'select', required: true,
               options: App.dict('PERIOD_TYPE').map(d => ({ value: d.item_code, label: d.item_name })) },
             { key: 'period', label: '周期', type: 'text', required: true, placeholder: '如 2026-01 / 2026-Q1',
-              hint: '系统将该周期下「已提交/归集处理中」需求按品类归集为集采清单' }
+              hint: '系统将该周期下「已提交/归集处理中」需求（含商城集采预购订单）按品类归集为集采清单' }
           ],
           submitText: '生成',
           onSubmit: async v => {

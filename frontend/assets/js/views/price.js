@@ -6,10 +6,20 @@ const PRICE_COLORS = { market: '#2563eb', deal: '#f59e0b' };
 App.registerView('r4.price', {
   title: '行情维护', roles: ['R4'],
   async render(root) {
-    const state = { ore_category: '', date_from: '', date_to: '' };
+    const state = { ore_category: '', ore_type: '', date_from: '', date_to: '' };
     const catSel = el('select', null, [el('option', { value: '' }, '全部品类'),
       ...App.dict('ORE_CATEGORY').map(d => el('option', { value: d.item_code }, d.item_name))]);
-    catSel.addEventListener('change', () => { state.ore_category = catSel.value; table.reload(); });
+    catSel.addEventListener('change', () => { state.ore_category = catSel.value; state.ore_type = ''; rebuildTypeSel(); table.reload(); });
+    const typeSel = el('select', null);
+    const SUB_TYPE_MAP = { IRON: 'IRON_ORE_TYPE' };
+    function rebuildTypeSel() {
+      const opts = App.dict(SUB_TYPE_MAP[state.ore_category] || '');
+      typeSel.innerHTML = '';
+      typeSel.appendChild(el('option', { value: '' }, '全部矿种'));
+      typeSel.disabled = !state.ore_category || !opts.length;
+      opts.forEach(d => typeSel.appendChild(el('option', { value: d.item_code }, d.item_name)));
+    }
+    typeSel.addEventListener('change', () => { state.ore_type = typeSel.value; table.reload(); });
     const fromIn = el('input', { type: 'date' }); const toIn = el('input', { type: 'date' });
     const debounceReload = debounce(() => table.reload(), 300);
     fromIn.addEventListener('change', () => { state.date_from = fromIn.value; debounceReload(); });
@@ -21,6 +31,7 @@ App.registerView('r4.price', {
     const table = UI.table({
       columns: [
         { title: '品类', render: r => dictName(App.dict('ORE_CATEGORY'), r.ore_category) },
+        { title: '矿种', render: r => r.ore_type ? dictName(App.dict('IRON_ORE_TYPE'), r.ore_type) : '-' },
         { title: '指标规格', key: 'spec' },
         { title: '日期', key: 'quote_date' },
         { title: '市场参考价', num: true, render: r => fmtMoney(r.market_price) },
@@ -32,11 +43,12 @@ App.registerView('r4.price', {
           el('button', { class: 'btn btn-sm btn-link', style: { color: 'var(--red)' }, onclick: () => doDelete(r) }, '删除')
         ]) }
       ],
-      toolbar: { render: () => [catSel, fromIn, toIn, el('span', { class: 'fb-sep' }), addBtn, tplBtn, impBtn] },
+      toolbar: { render: () => [catSel, typeSel, fromIn, toIn, el('span', { class: 'fb-sep' }), addBtn, tplBtn, impBtn] },
       query: state, rowKey: 'id',
       fetch: q => API.get('/api/admin/price/list', q)
     });
     root.appendChild(el('div', { class: 'card' }, [table.root]));
+    rebuildTypeSel();
 
     function showForm(r) {
       UI.form({
@@ -45,6 +57,10 @@ App.registerView('r4.price', {
         fields: [
           { key: 'ore_category', label: '矿石品类', type: 'select', required: true, value: r ? r.ore_category : '',
             options: App.dict('ORE_CATEGORY').map(d => ({ value: d.item_code, label: d.item_name })) },
+          { key: 'ore_type', label: '矿种', type: 'select',
+            options: [{ value: '', label: '请选择' },
+              ...App.dict('IRON_ORE_TYPE').map(d => ({ value: d.item_code, label: d.item_name }))],
+            value: r ? (r.ore_type || '') : '', hint: '仅铁矿石品类使用' },
           { key: 'quote_date', label: '日期', type: 'date', required: true, value: r ? r.quote_date : '' },
           { key: 'spec', label: '指标规格', type: 'text', required: true, value: r ? r.spec : '', placeholder: '如 TFe 62%' },
           { key: 'market_price', label: '市场参考价（元/吨）', type: 'number', required: true, value: r ? r.market_price : '' },
@@ -115,27 +131,68 @@ App.registerView('r4.price', {
 App.registerView('r4.priceBoard', {
   title: '价格看板', roles: ['R4'],
   async render(root) {
-    const state = { ore_category: 'IRON', date_from: '', date_to: '' };
+    const state = { ore_category: 'IRON', ore_type: '', date_from: '', date_to: '' };
     const catSel = el('select', null, App.dict('ORE_CATEGORY').map(d =>
       el('option', Object.assign({ value: d.item_code }, d.item_code === 'IRON' ? { selected: true } : {}), d.item_name)));
-    catSel.addEventListener('change', () => { state.ore_category = catSel.value; reload(); });
+    const typeSel = el('select', null);
+    // 品类 ↔ 矿种对应：IRON → IRON_ORE_TYPE 字典；其他品类暂无子项
+    const SUB_TYPE_MAP = { IRON: 'IRON_ORE_TYPE' };
+    function rebuildTypeSel() {
+      const subCat = SUB_TYPE_MAP[state.ore_category];
+      const opts = App.dict(subCat || '');
+      state.ore_type = '';
+      typeSel.innerHTML = '';
+      typeSel.appendChild(el('option', { value: '' }, '全部矿种'));
+      typeSel.disabled = !opts.length;
+      opts.forEach(d => typeSel.appendChild(el('option', { value: d.item_code }, d.item_name)));
+    }
+    catSel.addEventListener('change', () => { state.ore_category = catSel.value; rebuildTypeSel(); reload(); });
+    typeSel.addEventListener('change', () => { state.ore_type = typeSel.value; reload(); });
     const fromIn = el('input', { type: 'date' }); const toIn = el('input', { type: 'date' });
-    fromIn.addEventListener('change', () => { state.date_from = fromIn.value; reload(); });
-    toIn.addEventListener('change', () => { state.date_to = toIn.value; reload(); });
+    fromIn.addEventListener('change', () => { state.date_from = fromIn.value; syncQuick(); reload(); });
+    toIn.addEventListener('change', () => { state.date_to = toIn.value; syncQuick(); reload(); });
 
-    const chartBox = el('div', { class: 'card', style: { height: '300px', padding: '12px' } },
-      el('canvas', { style: { width: '100%', height: '100%' } }));
+    // 图表右上角快捷区间：7天 / 30天 / 90天 / 1年
+    const RANGE_TO_DAY = { '7天': 7, '30天': 30, '90天': 90, '1年': 365 };
+    let activeRange = '30天';
+    const fmtDay = d => d.toISOString().slice(0, 10);
+    function applyRange(key) {
+      activeRange = key;
+      const days = RANGE_TO_DAY[key];
+      const end = new Date(), start = new Date();
+      start.setDate(start.getDate() - days + 1);
+      state.date_from = fmtDay(start); state.date_to = fmtDay(end);
+      fromIn.value = state.date_from; toIn.value = state.date_to;
+      rangeBtns.querySelectorAll('button').forEach(b =>
+        b.className = `btn btn-sm ${b.textContent === key ? 'btn-primary' : ''}`);
+      reload();
+    }
+    // 手动改日期后取消快捷选中态
+    function syncQuick() {
+      activeRange = '';
+      rangeBtns.querySelectorAll('button').forEach(b => b.className = 'btn btn-sm');
+    }
+    const rangeBtns = el('div', { style: { display: 'flex', gap: '6px' } },
+      Object.keys(RANGE_TO_DAY).map(k => el('button', { class: 'btn btn-sm', style: { borderRadius: '0' }, onclick: () => applyRange(k) }, k)));
+
+    const chartBox = el('div', { class: 'card', style: { height: '420px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '8px' } }, [
+      el('div', { style: { display: 'flex', justifyContent: 'flex-end', flex: 'none' } }, rangeBtns),
+      el('div', { style: { flex: '1', minHeight: '0' } }, el('canvas', { style: { width: '100%', height: '100%' } }))
+    ]);
     const statBox = el('div', { class: 'card', style: { marginTop: '12px' } });
 
     root.appendChild(el('div', { class: 'card', style: { marginBottom: '12px' } },
       el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' } }, [
         el('span', { style: { fontSize: '13px', color: 'var(--text-2)' } }, '品类'), catSel,
+        el('span', { style: { fontSize: '13px', color: 'var(--text-2)' } }, '矿种'), typeSel,
         el('span', { style: { fontSize: '13px', color: 'var(--text-2)' } }, '日期区间'), fromIn, toIn,
         el('span', { class: 'tag tag-blue', style: { marginLeft: 'auto' } }, '━ 市场参考价'),
         el('span', { class: 'tag tag-orange' }, '━ 平台成交均价')
       ])));
     root.appendChild(chartBox);
     root.appendChild(statBox);
+    rebuildTypeSel();
+    applyRange('30天');
 
     async function reload() {
       const res = await API.get('/api/admin/price/trend', state);
@@ -167,21 +224,126 @@ App.registerView('r4.priceBoard', {
 App.registerView('r1.market', {
   title: '行情浏览', roles: ['R1'],
   async render(root) {
-    const state = { ore_category: '', date_from: '', date_to: '', page: 1, page_size: 20 };
-    const catSel = el('select', null, [el('option', { value: '' }, '全部品类'),
-      ...App.dict('ORE_CATEGORY').map(d => el('option', { value: d.item_code }, d.item_name))]);
-    catSel.addEventListener('change', () => { state.ore_category = catSel.value; state.page = 1; reload(); });
-    const fromIn = el('input', { type: 'date' }); const toIn = el('input', { type: 'date' });
-    fromIn.addEventListener('change', () => { state.date_from = fromIn.value; state.page = 1; reload(); });
-    toIn.addEventListener('change', () => { state.date_to = toIn.value; state.page = 1; reload(); });
+    const state = { ore_category: '', ore_type: '', date_from: '', date_to: '', page: 1, page_size: 20 };
 
-    const chartBox = el('div', { class: 'card', style: { height: '260px', padding: '12px', marginBottom: '12px' } },
-      el('canvas', { style: { width: '100%', height: '100%' } }));
+    /* 品类↔矿种级联（与采购商城同款）：一级品类点击筛选，悬停浮出二级矿种 */
+    const SUB_TYPE_MAP = { IRON: 'IRON_ORE_TYPE' };
+    const catList = App.dict('ORE_CATEGORY');
+    let curCat = '', curType = '';
+    const cascLabel = el('span', null, '全部品类');
+    const cascPanel = el('div', {
+      style: {
+        position: 'absolute', top: 'calc(100% + 4px)', left: 0, zIndex: 60, display: 'none',
+        minWidth: '180px', background: '#fff', border: '1px solid var(--border, #e5e6eb)',
+        borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,.12)', padding: '6px'
+      }
+    });
+    const cascItem = (text, active, onclick, arrow) => {
+      const it = el('div', {
+        style: {
+          padding: '8px 12px', borderRadius: '6px', fontSize: '13.5px', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
+          background: active ? 'var(--blue-bg, #eef4ff)' : 'transparent',
+          color: active ? 'var(--blue, #2563eb)' : 'var(--text-1)', whiteSpace: 'nowrap', position: 'relative'
+        },
+        onmouseenter: () => { it.style.background = active ? 'var(--blue-bg, #eef4ff)' : '#f5f6f7'; },
+        onmouseleave: () => { it.style.background = active ? 'var(--blue-bg, #eef4ff)' : 'transparent'; },
+        onclick
+      }, [el('span', null, text), arrow ? el('span', { style: { color: 'var(--text-3)', fontSize: '11px' } }, '›') : null]);
+      return it;
+    };
+    function cascSelect(cat, type) {
+      curCat = cat; curType = type;
+      state.ore_category = cat; state.ore_type = type; state.page = 1;
+      cascLabel.textContent = !cat ? '全部品类'
+        : dictName(catList, cat) + (type ? ' · ' + dictName(App.dict(SUB_TYPE_MAP[cat] || ''), type) : '');
+      cascPanel.style.display = 'none';
+      reload();
+    }
+    (function buildCascPanel() {
+      cascPanel.innerHTML = '';
+      cascPanel.appendChild(cascItem('全部品类', !curCat && !curType, () => cascSelect('', '')));
+      catList.forEach(c => {
+        const subs = (SUB_TYPE_MAP[c.item_code] ? App.dict(SUB_TYPE_MAP[c.item_code]) : []);
+        const row = cascItem(dictName(catList, c.item_code), curCat === c.item_code && !curType,
+          () => cascSelect(c.item_code, ''), subs.length);
+        if (subs.length) {
+          const sub = el('div', {
+            style: {
+              position: 'absolute', left: '100%', top: '-6px', display: 'none',
+              minWidth: '150px', maxHeight: '320px', overflowY: 'auto',
+              background: '#fff', border: '1px solid var(--border, #e5e6eb)',
+              borderRadius: '8px', boxShadow: '0 8px 24px rgba(0,0,0,.12)', padding: '6px'
+            }
+          }, subs.map(s => cascItem(s.item_name, curType === s.item_code,
+            e => { e.stopPropagation(); cascSelect(c.item_code, s.item_code); })));   // 阻止冒泡，避免矿种被一级点击重置
+          row.appendChild(sub);
+          row.addEventListener('mouseenter', () => { sub.style.display = 'block'; });
+          row.addEventListener('mouseleave', () => { sub.style.display = 'none'; });
+        }
+        cascPanel.appendChild(row);
+      });
+    })();
+    const cascader = el('div', { style: { position: 'relative' } }, [
+      el('button', {
+        class: 'btn', style: { display: 'flex', alignItems: 'center', gap: '6px', height: '35px' },
+        onclick: e => {
+          e.stopPropagation();
+          cascPanel.style.display = cascPanel.style.display === 'none' ? 'block' : 'none';
+        }
+      }, [cascLabel, el('span', { style: { color: 'var(--text-3)', fontSize: '10px' } }, '▼')]),
+      cascPanel
+    ]);
+    document.addEventListener('click', () => { cascPanel.style.display = 'none'; });
+    cascPanel.addEventListener('click', e => e.stopPropagation());
+
+    /* 日期输入框：圆角矩形浅边框、内边距、聚焦高亮（同参考图样式，高度与级联按钮一致） */
+    const dateStyle = {
+      width: '220px', height: '35px', padding: '0 14px', border: '1px solid var(--border-2, #d8d9dc)', borderRadius: '6px',
+      fontSize: '13.5px', color: 'var(--text-1)', background: 'var(--panel, #fff)', outline: 'none',
+      boxSizing: 'border-box', transition: 'border-color .15s ease'
+    };
+    const bindFocus = inp => {
+      inp.addEventListener('focus', () => { inp.style.borderColor = 'var(--primary, #0071e3)'; });
+      inp.addEventListener('blur', () => { inp.style.borderColor = 'var(--border-2, #d8d9dc)'; });
+      return inp;
+    };
+    const fromIn = el('input', { type: 'date', style: dateStyle });
+    const toIn = el('input', { type: 'date', style: Object.assign({}, dateStyle) });
+    [fromIn, toIn].forEach(bindFocus);
+    fromIn.addEventListener('change', () => { state.date_from = fromIn.value; state.page = 1; syncQuick(); reload(); });
+    toIn.addEventListener('change', () => { state.date_to = toIn.value; state.page = 1; syncQuick(); reload(); });
+
+    // 图表右上角快捷区间（R1 行情浏览仅 7天/30天，长方形按钮）
+    const RANGE_TO_DAY = { '7天': 7, '30天': 30 };
+    const fmtDay = d => d.toISOString().slice(0, 10);
+    function applyRange(key) {
+      const days = RANGE_TO_DAY[key];
+      const end = new Date(), start = new Date();
+      start.setDate(start.getDate() - days + 1);
+      state.date_from = fmtDay(start); state.date_to = fmtDay(end);
+      fromIn.value = state.date_from; toIn.value = state.date_to;
+      state.page = 1;
+      rangeBtns.querySelectorAll('button').forEach(b =>
+        b.className = `btn btn-sm ${b.textContent === key ? 'btn-primary' : ''}`);
+      reload();
+    }
+    // 手动改日期后取消快捷选中态
+    function syncQuick() {
+      rangeBtns.querySelectorAll('button').forEach(b => b.className = 'btn btn-sm');
+    }
+    const rangeBtns = el('div', { style: { display: 'flex', gap: '6px' } },
+      Object.keys(RANGE_TO_DAY).map(k => el('button', { class: 'btn btn-sm', style: { borderRadius: '0' }, onclick: () => applyRange(k) }, k)));
+
+    const chartBox = el('div', { class: 'card', style: { height: '300px', padding: '12px', marginBottom: '12px', display: 'flex', flexDirection: 'column', gap: '6px' } }, [
+      el('div', { style: { display: 'flex', justifyContent: 'flex-end', flex: 'none' } }, rangeBtns),
+      el('div', { style: { flex: 1, minHeight: 0 } }, el('canvas', { style: { width: '100%', height: '100%' } }))
+    ]);
     const listBox = el('div', { class: 'card' });
 
     root.appendChild(el('div', { class: 'card', style: { marginBottom: '12px' } },
       el('div', { style: { display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' } }, [
-        catSel, fromIn, toIn,
+        cascader, fromIn, toIn,
         el('span', { class: 'hint', style: { marginLeft: 'auto', margin: 0 } }, '公开市场行情 · 仅供采购决策参考')
       ])));
     root.appendChild(chartBox);
@@ -196,14 +358,15 @@ App.registerView('r1.market', {
       ], { unit: '元' });
       listBox.innerHTML = '';
       const tb = el('table', { class: 'tb' }, [
-        el('thead', null, el('tr', null, ['品类', '指标规格', '日期', '市场参考价(元/吨)', '数据来源'].map(h => el('th', null, h)))),
+        el('thead', null, el('tr', null, ['品类', '矿种', '指标规格', '日期', '市场参考价(元/吨)', '数据来源'].map(h => el('th', null, h)))),
         el('tbody', null, res.list.length ? res.list.map(r => el('tr', null, [
           el('td', { class: 'strong' }, dictName(App.dict('ORE_CATEGORY'), r.ore_category)),
+          el('td', null, r.ore_type ? dictName(App.dict('IRON_ORE_TYPE'), r.ore_type) : '-'),
           el('td', null, r.spec),
           el('td', null, r.quote_date),
           el('td', { class: 'num' }, fmtMoney(r.market_price)),
           el('td', null, r.source || '-')
-        ])) : el('tr', null, el('td', { colspan: 5 }, UI.empty('暂无行情数据'))))
+        ])) : el('tr', null, el('td', { colspan: 6 }, UI.empty('暂无行情数据'))))
       ]);
       listBox.appendChild(el('div', { class: 'table-wrap' }, tb));
       if (res.total > res.page_size) {
@@ -218,6 +381,6 @@ App.registerView('r1.market', {
         listBox.appendChild(pager);
       }
     }
-    await reload();
+    applyRange('30天');   // 默认近30天（同价格看板）
   }
 });
