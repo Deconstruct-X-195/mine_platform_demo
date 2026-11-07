@@ -23,7 +23,7 @@
 → 归档(三条件校验) → 资料包导出(zip)
 ```
 
-全程伴随五类定时预警扫描：报价截止、订单超时、运单超时、质检超差、结算超时（同对象同类型未关闭预警唯一，AC-19 去重）。
+全程伴随五类定时预警扫描：报价截止、订单超时、运单超时、质检超差、结算超时（同对象同类型未关闭预警唯一，AC-19 去重）。后台定时任务（`backend/jobs.py`，默认间隔 3600 秒）除五类预警扫描外，还包含到期询价自动揭示与超时订单自动失效；`MINE_DISABLE_JOBS=1` 可整体禁用，`MINE_JOBS_INTERVAL` 可调整间隔。
 
 ---
 
@@ -89,7 +89,7 @@
 
 | 模块 | 职责 | | 模块 | 职责 |
 |---|---|---|---|---|
-| auth | 注册/登录/当前用户 | | order | 定标/订单确认/订单查询 |
+| auth | 注册执照上传/注册/登录/当前用户 | | order | 定标/订单确认/订单查询 |
 | company | 企业档案与准入 | | contract | 合同生成/签署/作废 |
 | files | 附件上传下载 | | logistics | 物流方案/运单作业 |
 | base | 品种与基准价查询 | | track | 履约时间轴/签收 |
@@ -98,13 +98,14 @@
 | forecast | 远期预报挂价 | | message | 站内消息 |
 | inquiry | 询价/报价/揭示比价 | | bargain | 议价 |
 
-### 3.2 接口明细（共 82 个端点）
+### 3.2 接口明细（共 83 个端点）
 
 **认证与用户（auth）**
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | /auth/register | 企业注册（营业执照附件） |
+| POST | /auth/license | 注册专用营业执照上传（免登录，≤20MB，返回 file_id） |
+| POST | /auth/register | 企业注册（携带 licenseFileId） |
 | POST | /auth/login | 登录签发 JWT |
 | GET | /auth/me | 当前用户与企业信息 |
 
@@ -262,8 +263,8 @@
 
 | 分组 | 表 | 说明 |
 |---|---|---|
-| 系统支撑 | sys_seq | 单据编号序列（需求单/询价单/订单等前缀发号） |
-| | sys_user | 用户（手机号登录，bcrypt 散列，角色 R0-R3） |
+| 系统支撑 | sys_seq | 单据编号序列（前缀+日期发号，见 4.2） |
+| | sys_user | 用户（手机号登录，bcrypt 散列，角色 PLAT_ADMIN/STEEL_BUYER/SUPPLIER/LOGISTICS_CARRIER） |
 | | sys_operation_log | 操作日志（状态机流转前后值快照） |
 | | sys_message | 站内消息 |
 | | sys_file | 附件元数据 |
@@ -271,20 +272,20 @@
 | | ent_qualification | 企业资质（证照有效期预警依据） |
 | 基础数据 | base_variety | 品种档案（粉矿/块矿/精粉/球团等） |
 | | base_price | 品种基准价（按日，湿基/干基） |
-| 需求域 | biz_demand | 需求单（DRAFT/SUBMITTED/WITHDRAWN，脱敏字段） |
+| 需求域 | biz_demand | 需求单（DRAFT→SUBMITTED→INQUIRING/DEALT/CLOSED，含 WITHDRAWN，脱敏字段） |
 | | biz_demand_item | 需求明细行（品种/牌号 grade NUMERIC(5,2)/数量/交期） |
-| 询价域 | biz_inquiry | 询价单（需求关联/截止时间/状态） |
+| 询价域 | biz_inquiry | 询价单（需求关联/截止时间；DRAFT→SENT→QUOTING→CLOSED→BARGAINING→AWARDED/FAILED，订单超时失效可回退重开定标） |
 | | biz_inquiry_invite | 邀请记录（INVITED） |
-| | biz_quote | 密封报价（版本留痕，WIN/LOSE/REJECTED） |
+| | biz_quote | 密封报价（版本留痕；SUBMITTED→REVEALED→BARGAINING→WIN/LOSE，REJECTED） |
 | | biz_bargain | 议价轮次（PENDING/ACCEPTED/REJECTED/EXPIRED） |
 | | biz_forecast_quote | 远期预报挂价 |
-| 交易域 | biz_order | 订单（PENDING_CONFIRM → 确认/超时关闭） |
-| | biz_contract | 合同（版本 + SHA-256 留痕，顺序签署） |
+| 交易域 | biz_order | 订单（PENDING_CONFIRM→PENDING_CONTRACT→PENDING_EFFECT→PERFORMING→COMPLETED，含 CANCELLED 分支与超时失效） |
+| | biz_contract | 合同（版本 + SHA-256 留痕；PENDING_GENERATE→PENDING_BUYER→PENDING_SUPPLIER→EFFECTIVE，可 VOID 作废重签） |
 | 物流域 | biz_logistics_plan | 物流方案 |
 | | biz_waybill | 运单（派车/接单/节点/签收） |
 | | biz_track_node | 履约节点 |
 | 结算域 | biz_quality_check | 质检记录（超差触发预警） |
-| | biz_settlement | 结算单（双向确认冻结） |
+| | biz_settlement | 结算单（PENDING_CONFIRM_SUPPLIER→PENDING_CONFIRM_BUYER→CONFIRMED→COMPLETED，双向确认） |
 | | biz_payment | 付款登记 |
 | 预警 | biz_alert | 五类预警（部分唯一索引实现 AC-19 去重） |
 
@@ -292,7 +293,7 @@
 
 - **建表**：`run.py` 启动时调用 `backend/db.init_schema(conn)`，读取 `docs/schema_postgresql.sql` **幂等执行**（CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT EXISTS / DROP trigger 守护），重复启动无副作用。
 - **演示数据**：`backend/seed.py` 幂等写入——平台管理员、5 家演示企业与 6 个账号、4 个品种档案、当日基准价 8 行、字典项。
-- **序列编号**：`sys_seq` 按单据类型发号（如 `XJ20261107000001`），保证编号连续唯一。
+- **序列编号**：`sys_seq` 按「单据类型前缀 + 日期」发号，格式 `前缀-YYYYMMDD-4位流水`（如 `XJ-20261107-0001`），流水按日重置、作废不复用，保证编号连续唯一。
 - **重置**：清空数据库（或删除库重建）后重跑 `python run.py` 即恢复初始演示状态。
 
 ---
@@ -335,7 +336,8 @@ python run.py          # → http://127.0.0.1:8000
 | `MINE_PG_DSN` | `postgresql://postgres:Langchain2026@127.0.0.1:5432/mine_platform` | 数据库连接串（生产必改） |
 | `MINE_JWT_SECRET` | 内置演示密钥 | JWT 签名密钥（生产必改） |
 | `MINE_PORT` | 8000 | 服务端口 |
-| `MINE_DISABLE_JOBS` | 未设置 | `1` = 禁用后台定时预警扫描 |
+| `MINE_DISABLE_JOBS` | 未设置 | `1` = 禁用后台定时任务（预警扫描/到期揭示/订单超时失效） |
+| `MINE_JOBS_INTERVAL` | 3600 | 后台定时任务扫描间隔（秒） |
 
 ### 5.5 常用运维操作
 
