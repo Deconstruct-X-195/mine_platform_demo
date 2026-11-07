@@ -2,7 +2,8 @@
 """E2E 全链路测试（PRD 10.2 + AC 验收清单）：注册→准入→基准价→需求→询价→密封报价→揭示→
 议价→定标→订单确认→合同（作废重签）→物流→质检预警→结算→付款→归档→导出→越权隔离。
 
-前置：Flask 运行于 127.0.0.1:8000（init_schema + seed 已执行，PostgreSQL 14 可达）。
+前置：Flask 运行于 127.0.0.1:8000（PostgreSQL 14 可达），库内存在已审批的
+钢厂/供应商/承运商基线账号（清理后基线或 seed 演示数据均可，账号动态发现）。
 运行：python tests/e2e_full_chain.py
 """
 import hashlib
@@ -12,13 +13,15 @@ import sys
 import zipfile
 from datetime import datetime, timedelta
 
-from e2e_helpers import (ADMIN, BASE, CARRIER, PASS, SUP1, SUP2, SUP3, STEEL,
-                         Client, check, dl_bytes, summary)
+from e2e_helpers import (ADMIN, BASE, PASS, Client, check, discover_accounts,
+                         dl_bytes, pg_one, summary)
 
 # E2E 直连库必须与被测服务一致：默认本机演示库，多环境验证时用 MINE_PG_DSN 覆盖
 PG_DSN = os.environ.get('MINE_PG_DSN', 'postgresql://postgres:Langchain2026@127.0.0.1:5432/mine_platform')
 PDF = b'%PDF-1.4\nE2E test file\n%%EOF'
 PNG = b'\x89PNG\r\n\x1a\nE2E-FAKE-STAMP-IMAGE'
+
+MIN_SUPPLIERS = 3  # 密封报价/揭示比价的最少供应商数
 
 
 def pg_exec(sql, args=()):
@@ -36,45 +39,89 @@ def upload(client, filename, data, ctype):
     return b['data']['fileId']
 
 
+def upload_license(anon, tag, suffix='pdf'):
+    """免登录执照上传（POST /auth/license）：注册流程专用公开接口。"""
+    r = anon.s.post(BASE + '/auth/license',
+                    files={'file': ('license-%s.%s' % (tag, suffix), PDF, 'application/pdf')},
+                    timeout=15)
+    b = r.json()
+    assert r.status_code == 200 and b.get('code') == 0, '免登录执照上传失败：%s %s' % (r.status_code, b)
+    return b['data']['fileId']
+
+
+def login_user(username):
+    """自适应登录：基线/seed 账号用 demo123456，E2E 历史注册账号用 new123456。"""
+    last = None
+    for pw in (PASS, 'new123456'):
+        try:
+            return Client.login(username, pw)
+        except Exception as e:  # noqa: BLE001 - 记录最后一次失败
+            last = e
+    raise last
+
+
 def run():
     plat = Client.login(*ADMIN)
-    steel = Client.login(STEEL, PASS)
-    sup1 = Client.login(SUP1, PASS)
-    sup2 = Client.login(SUP2, PASS)
-    sup3 = Client.login(SUP3, PASS)
-    carrier = Client.login(CARRIER, PASS)
     now = datetime.now()
     tag = now.strftime('%m%d%H%M%S')
     today = now.strftime('%Y-%m-%d')
+    anon = Client()  # 未登录客户端：验证注册链路为公开接口
 
+    # 自适应发现基线账号（兼容"清理后基线"与"seed 演示数据"两种环境）
+    acc = discover_accounts()
+    assert acc['steel'] and acc['suppliers'] and acc['carrier'], \
+        '基线账号缺失：钢厂 %s / 供应商 %s / 承运商 %s' % acc
+    print('[基线] 钢厂 %s | 供应商 %d 家 | 承运商 %s'
+          % (acc['steel'][0], len(acc['suppliers']), acc['carrier'][0]))
+    steel = login_user(acc['steel'][0])
+    sup1 = login_user(acc['suppliers'][0])
+    carrier = login_user(acc['carrier'][0])
     sup1_cid = sup1.user['company']['id']
-    sup2_cid = sup2.user['company']['id']
-    sup3_cid = sup3.user['company']['id']
     carrier_cid = carrier.user['company']['id']
 
-    # ---- AC-01 企业注册 ----
+    # ---- AC-01 企业注册（免登录执照上传 + 类型别名归一）----
     print('\n[AC-01] 企业注册')
-    lic = upload(plat, 'license-%s.pdf' % tag, PDF, 'application/pdf')
+    lic = upload_license(anon, tag)
     credit1 = '91340100MA1T%05dX' % (now.second * 1000 + now.microsecond // 1000)
     u1 = '139%02d%06d' % (now.second, now.microsecond)
     reg1 = {'companyName': 'E2E钢厂二' + tag, 'creditCode': credit1,
-            'companyTypes': 'STEEL', 'province': '河北省', 'city': '唐山市',
+            'companyTypes': 'STEEL_BUYER', 'province': '河北省', 'city': '唐山市',
             'contactName': 'E2E 联系人一', 'contactPhone': '13900000001',
             'username': u1, 'password': 'new123456', 'licenseFileId': lic}
-    r1 = plat.post('/auth/register', reg1)
+    r1 = anon.post('/auth/register', reg1)
     check('AC-01 注册成功待准入', r1['auditStatus'] == 'PENDING', r1)
+    t1 = pg_one("SELECT company_types FROM ent_company WHERE id=%s", (r1['companyId'],))[0]
+    check('AC-01 企业类型别名归一(STEEL_BUYER→STEEL)', t1 == 'STEEL', t1)
     bad = dict(reg1)
     bad.pop('licenseFileId')
     bad['username'] = '138%02d%06d' % (now.minute, now.microsecond)
-    s, c, m = plat.try_code('POST', '/auth/register', bad)
+    s, c, m = anon.try_code('POST', '/auth/register', bad)
     check('AC-01 缺营业执照附件被拦截(40001)', c == 40001, m)
-    lic2 = upload(plat, 'license-dup-%s.pdf' % tag, PDF, 'application/pdf')
+    lic2 = upload_license(anon, tag + '-dup')
     dup = dict(reg1)
     dup['username'] = '137%02d%06d' % (now.minute, now.microsecond)
     dup['contactPhone'] = '13700000000'
     dup['licenseFileId'] = lic2
-    s, c, m = plat.try_code('POST', '/auth/register', dup)
+    s, c, m = anon.try_code('POST', '/auth/register', dup)
     check('AC-01 重复信用代码被拦截(40902)', c == 40902, m)
+
+    # 供应商不足 3 家时，随注册流程补齐（密封报价/揭示比价需要）
+    new_regs = []
+    for i in range(max(0, MIN_SUPPLIERS - len(acc['suppliers']))):
+        lic_i = upload_license(anon, '%s-sup%d' % (tag, i))
+        credit_i = '91340100MA2T%05dX' % (now.second * 1000 + now.microsecond // 1000 + i + 1)
+        ui = '138%02d%06d' % (now.second + i + 1, now.microsecond)
+        regi = {'companyName': 'E2E补位供应商%s%s' % (i + 1, tag), 'creditCode': credit_i,
+                'companyTypes': 'SUPPLIER', 'province': '山东省', 'city': '青岛市',
+                'contactName': 'E2E 供应商联系人', 'contactPhone': '1390000%04d' % (i + 1),
+                'username': ui, 'password': 'new123456', 'licenseFileId': lic_i}
+        ri = anon.post('/auth/register', regi)
+        ti = pg_one("SELECT company_types FROM ent_company WHERE id=%s", (ri['companyId'],))[0]
+        check('AC-01 补位供应商注册并归一(SUPPLIER)', ti == 'SUPPLIER', ti)
+        new_regs.append(regi)
+    if new_regs:
+        print('[AC-01] 基线供应商 %d 家，已补位注册 %d 家'
+              % (len(acc['suppliers']), len(new_regs)))
 
     # ---- AC-02 平台准入审批 ----
     print('\n[AC-02] 平台准入审批')
@@ -83,21 +130,40 @@ def run():
     s, c, m = plat.try_code('PUT', '/admin/companies/0/audit', {})
     check('AC-02 审批参数缺失返回 40001', c == 40001, m)
     pend = plat.get('/admin/companies', size=100)['list']
+    to_approve = [reg1] + new_regs
     cid2 = next(x['id'] for x in pend if x['companyName'] == reg1['companyName'])
     s, c, m = plat.try_code('PUT', '/admin/companies/%d/audit' % cid2, {'approve': 'false'})
     check('AC-02 驳回缺原因返回 40001', c == 40001, m)
-    plat.put('/admin/companies/%d/audit' % cid2, {'approve': 'true', 'remark': 'E2E 准入'})
+    for regx in to_approve:
+        cx = next(x['id'] for x in pend if x['companyName'] == regx['companyName'])
+        plat.put('/admin/companies/%d/audit' % cx, {'approve': 'true', 'remark': 'E2E 准入'})
     steel2 = Client.login(u1, 'new123456')
     me = steel2.get('/auth/me')
     check('AC-02 审批后 APPROVED 且开放菜单',
           me['company']['auditStatus'] == 'APPROVED' and len(me['menus']) > 0,
           me.get('company'))
 
+    # 审批完成后装配供应商池（sup2/sup3 可能为本次新注册账号，统一走双密码回退登录）
+    sup_pool = list(acc['suppliers']) + [r['username'] for r in new_regs]
+    sup2 = login_user(sup_pool[1])
+    sup3 = login_user(sup_pool[2])
+    sup2_cid = sup2.user['company']['id']
+    sup3_cid = sup3.user['company']['id']
+
     # ---- AC-05 品种与基准价 ----
     print('\n[AC-05] 品种与基准价')
     vs = steel.get('/base/varieties')['list']
-    check('AC-05 品种列表非空', len(vs) >= 4, vs)
-    pb = next(v for v in vs if v['varietyCode'] == 'IRON_ORE_POWDER')
+    check('AC-05 品种列表非空', len(vs) >= 1, [v['varietyName'] for v in vs])
+    # 优先选取基线品种（PB粉），seed 环境回退到 IRON_ORE_POWDER，再回退首品种
+    pb = next((v for v in vs if 'PB' in (v.get('varietyName') or '').upper()
+               or v.get('varietyCode') == 'IRON_ORE_POWDER'), vs[0])
+    # 默认牌号数值校验（回归：非法值返回 40001 业务错误而非 500）
+    s, c, m = plat.try_code('POST', '/admin/varieties',
+                            {'varietyCode': 'E2EGRD%s' % tag, 'varietyName': 'E2E 牌号校验品种',
+                             'defaultGrade': 'abc'})
+    check('AC-05 默认牌号非数值被拦截(40001)', c == 40001, m)
+    s, c, m = plat.try_code('PUT', '/admin/varieties/%d' % pb['id'], {'defaultGrade': 999})
+    check('AC-05 默认牌号超范围被拦截(40001)', c == 40001, m)
     # 幂等：清掉上次运行当日基准价残留（验收要求"首次录入为新增"）
     pg_exec("DELETE FROM base_price WHERE variety_id=%s AND price_date=%s", (pb['id'], today))
     b1 = plat.post('/admin/base-prices', {'varietyId': pb['id'], 'priceDate': today,

@@ -12,15 +12,15 @@ from . import bp
 
 
 def grade_value(raw):
-    """默认牌号落库前校验：列类型为 NUMERIC(5,2)，空值存 NULL，非法输入报业务错误而非 500。"""
+    """默认牌号落库前校验：品位百分数，业务域 0～100；空值存 NULL，非法输入报业务错误而非 500。"""
     if raw is None or str(raw).strip() == '':
         return None
     try:
         d = Decimal(str(raw))
     except Exception:
         raise ApiError(40001, '默认牌号必须为数字（如 61.5，品位百分数）')
-    if not (Decimal('0') <= d <= Decimal('999.99')):
-        raise ApiError(40001, '默认牌号需在 0～999.99 之间')
+    if not (Decimal('0') <= d <= Decimal('100')):
+        raise ApiError(40001, '默认牌号需在 0～100 之间（品位百分数）')
     return d
 
 

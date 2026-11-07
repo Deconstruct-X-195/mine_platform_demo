@@ -3,8 +3,8 @@
   window.Pages = window.Pages || {};
 
   Pages.login = function (box, _user) {
-    const username = UI.input('text', '13800000001', { placeholder: '手机号 / 用户名' });
-    const password = UI.input('password', 'demo123456', { placeholder: '密码' });
+    const username = UI.input('text', '', { placeholder: '手机号 / 用户名' });
+    const password = UI.input('password', '', { placeholder: '密码' });
     const submit = async () => {
       try {
         const data = await API.post('/auth/login', {
@@ -25,7 +25,7 @@
       UI.h('div', { class: 'switch' },
         '还没有账号？', UI.h('a', { href: '#/register' }, '企业注册')),
       UI.h('div', { class: 'hint', style: 'margin-top:14px' },
-        '演示账号：钢厂 13800000001 / 供应商 13800000002~04 / 承运商 13800000005（密码 demo123456）；平台 13800000000 / admin123456')));
+        '演示账号：供应商 13900000001 / 钢厂 13900000002 / 承运商 13900000003（密码 demo123456）；平台 13800000000 / admin123456')));
     password.addEventListener('keyup', (e) => { if (e.key === 'Enter') submit(); });
     username.addEventListener('keyup', (e) => { if (e.key === 'Enter') submit(); });
   };

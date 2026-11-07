@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
-"""E2E 全链路测试公共封装（PRD 10.2）：HTTP 客户端、断言助手、演示账号常量。"""
-import json
+"""E2E 全链路测试公共封装（PRD 10.2）：HTTP 客户端、断言助手、账号发现。"""
 import os
 
 import requests
@@ -9,11 +8,46 @@ import requests
 BASE = os.environ.get('MINE_BASE', 'http://127.0.0.1:8000') + '/api/v1'
 PASS = 'demo123456'
 
-# 演示账号（seed.py）：13800000001 钢厂 / 02-04 供应商 / 05 承运商
-STEEL = '13800000001'
-SUP1, SUP2, SUP3 = '13800000002', '13800000003', '13800000004'
-CARRIER = '13800000005'
+# 管理员账号（seed 与清理后基线均保留）
 ADMIN = ('13800000000', 'admin123456')
+
+# E2E 直连库：与被测服务一致，多环境验证时用 MINE_PG_DSN 覆盖
+PG_DSN = os.environ.get(
+    'MINE_PG_DSN', 'postgresql://postgres:Langchain2026@127.0.0.1:5432/mine_platform')
+
+
+def pg_one(sql, args=()):
+    """只读直连查询：用于断言库内持久化状态（如企业类型归一结果）。"""
+    import psycopg
+    with psycopg.connect(PG_DSN) as conn:
+        return conn.execute(sql, args).fetchone()
+
+
+def discover_accounts():
+    """自适应发现基线企业账号（兼容"清理后基线"与"seed 演示数据"两种环境）。
+
+    返回 {'steel': [...], 'suppliers': [...], 'carrier': [...]}（username 列表）。
+    """
+    import psycopg
+    with psycopg.connect(PG_DSN) as conn:
+        rows = conn.execute("""
+            SELECT u.username, c.company_types
+            FROM sys_user u
+            JOIN ent_company c ON c.id = u.company_id
+            WHERE u.status = 'ENABLED' AND u.is_deleted = 0
+              AND c.audit_status = 'APPROVED' AND c.is_deleted = 0
+            ORDER BY u.id
+            """).fetchall()
+    steel, suppliers, carrier = [], [], []
+    for username, types in rows:
+        t = (types or '').upper()
+        if 'STEEL' in t:
+            steel.append(username)
+        if 'SUPPLIER' in t:
+            suppliers.append(username)
+        if 'LOGISTICS' in t:
+            carrier.append(username)
+    return {'steel': steel, 'suppliers': suppliers, 'carrier': carrier}
 
 _passed = 0
 _failed = []
