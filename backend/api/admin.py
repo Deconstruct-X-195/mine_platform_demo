@@ -1,4 +1,6 @@
 """运营后台（PRD 4.10）：企业审核、品种与基准价维护、单据总览、数据字典、操作日志。"""
+from decimal import Decimal
+
 from flask import g, request
 
 from ..common import (ApiError, get_params, json_payload, ok, op_log,
@@ -7,6 +9,19 @@ from ..db import execute, qall, q1
 from ..security import plat_required
 from ..state_machine import transition
 from . import bp
+
+
+def grade_value(raw):
+    """默认牌号落库前校验：列类型为 NUMERIC(5,2)，空值存 NULL，非法输入报业务错误而非 500。"""
+    if raw is None or str(raw).strip() == '':
+        return None
+    try:
+        d = Decimal(str(raw))
+    except Exception:
+        raise ApiError(40001, '默认牌号必须为数字（如 61.5，品位百分数）')
+    if not (Decimal('0') <= d <= Decimal('999.99')):
+        raise ApiError(40001, '默认牌号需在 0～999.99 之间')
+    return d
 
 
 # ---------- 企业审核台 ----------
@@ -79,12 +94,13 @@ def toggle_company(cid):
 def create_variety():
     p = get_params()
     require_fields(p, 'varietyCode', 'varietyName')
+    grade = grade_value(p.get('defaultGrade'))
     if q1(g.conn, "SELECT id FROM base_variety WHERE variety_code=%s", (p['varietyCode'],)):
         raise ApiError(40902, '品种代码已存在')
     vid = execute(g.conn, """
         INSERT INTO base_variety (variety_code, variety_name, default_grade, unit, sort_no, created_by, updated_by)
         VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id
-        """, (p['varietyCode'], p['varietyName'], p.get('defaultGrade'), p.get('unit') or '吨',
+        """, (p['varietyCode'], p['varietyName'], grade, p.get('unit') or '吨',
               p.get('sortNo') or 0, g.ctx.user['id'], g.ctx.user['id']), returning_id=True)
     op_log(g.conn, g.ctx, 'base_variety', vid, 'CREATE', None, p)
     return ok({'id': vid})
@@ -100,6 +116,8 @@ def update_variety(vid):
     fields = {'varietyName': 'variety_name', 'defaultGrade': 'default_grade',
               'unit': 'unit', 'sortNo': 'sort_no', 'status': 'status'}
     updates = {fields[k]: p[k] for k in fields if p.get(k) is not None}
+    if 'default_grade' in updates:
+        updates['default_grade'] = grade_value(updates['default_grade'])
     if not updates:
         raise ApiError(40001, '无有效变更字段')
     sets = ', '.join('%s=%%s' % c for c in updates)

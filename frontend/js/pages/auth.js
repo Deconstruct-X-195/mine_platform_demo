@@ -79,7 +79,7 @@
           const body = {
             companyName: f.companyName.value.trim(),
             creditCode: f.creditCode.value.trim(),
-            companyTypes: typeBoxes
+            companyTypes: TYPES
               .map(([code], i) => (typeBoxes[i].querySelector('input').checked ? code : null))
               .filter(Boolean).join(','),
             province: f.province,
@@ -101,7 +101,7 @@
           if (!body.contactName || !body.contactPhone) { UI.toast('联系人与联系电话为必填', 'err'); return; }
           if (!license.files || !license.files.length) { UI.toast('请上传营业执照', 'err'); return; }
           try {
-            const up = await API.upload(license.files[0]);
+            const up = await API.upload(license.files[0], '/auth/license');
             body.licenseFileId = up.fileId != null ? up.fileId : up.id;
             const res = await API.post('/auth/register', body);
             UI.toast('注册成功，等待平台审核（企业 ' + res.companyId + '）', 'ok');

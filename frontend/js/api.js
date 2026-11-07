@@ -60,10 +60,10 @@
     post: (p, b, opts) => request('POST', p, b, opts),
     put: (p, b, opts) => request('PUT', p, b, opts),
     del: (p, opts) => request('DELETE', p, undefined, opts),
-    upload(file) {
+    upload(file, path) {
       const fd = new FormData();
       fd.append('file', file);
-      return request('POST', '/files', fd);
+      return request('POST', path || '/files', fd);
     },
     async download(path, filename) {
       const headers = {};

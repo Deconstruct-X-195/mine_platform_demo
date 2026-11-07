@@ -156,7 +156,7 @@
     function varietyForm() {
       const code = UI.input('text', '', { placeholder: '如 PB、FMG' });
       const name = UI.input('text', '', { placeholder: '如 PB 粉、高品位铁矿' });
-      const grade = UI.input('text', '', { placeholder: '如 Fe≥61.5%' });
+      const grade = UI.input('text', '', { placeholder: '如 61.5（品位百分数，纯数字）' });
       const unit = UI.input('text', '吨');
       const m = UI.modal('新增品种', UI.h('form', { onsubmit: (e) => e.preventDefault() },
         UI.h('div', { class: 'form-grid' },
@@ -166,8 +166,12 @@
           UI.formRow('计量单位', unit))), [
         UI.h('button', { class: 'primary', onclick: async () => {
           if (!code.value.trim() || !name.value.trim()) { UI.toast('请填写品种代码与名称', 'err'); return; }
+          const g = grade.value.trim();
+          if (g !== '' && (isNaN(Number(g)) || Number(g) < 0 || Number(g) > 999.99)) {
+            UI.toast('默认牌号必须为 0～999.99 的数字（如 61.5）', 'err'); return;
+          }
           try {
-            await API.post('/admin/varieties', { varietyCode: code.value.trim(), varietyName: name.value.trim(), defaultGrade: grade.value.trim(), unit: unit.value.trim() });
+            await API.post('/admin/varieties', { varietyCode: code.value.trim(), varietyName: name.value.trim(), defaultGrade: g || null, unit: unit.value.trim() });
             m.close(); UI.toast('品种已新增', 'ok'); load();
           } catch (e) { /* toast 已提示 */ }
         } }, '保 存'),
