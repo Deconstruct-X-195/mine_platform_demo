@@ -276,12 +276,14 @@
     const wrap = UI.h('div', { class: 'card' }, UI.h('h3', {}, '状态机字典（FR-10-05）'));
     Object.entries(d.transitions || {}).forEach(([biz, trs]) => {
       wrap.appendChild(UI.h('h4', { style: 'margin:14px 0 6px' }, biz));
+      // BUG-01 修复：后端 TRANSITIONS 为嵌套 dict {from: [to...]}，须展开为行数组
+      // 再交给 UI.table 渲染；此前直接传 dict 导致判空显示"无流转"。
+      const rows = [];
+      Object.entries(trs || {}).forEach(([from, tos]) => (tos || []).forEach((to) => rows.push({ from, to })));
       wrap.appendChild(UI.table([
         { key: 'from', label: '起始状态' },
         { key: 'to', label: '目标状态' },
-        { key: 'event', label: '触发事件' },
-        { key: 'roles', label: '允许角色', render: (r) => (r.roles || []).join(', ') },
-      ], trs, '无流转'));
+      ], rows, '无流转'));
     });
     page.appendChild(wrap);
   };
