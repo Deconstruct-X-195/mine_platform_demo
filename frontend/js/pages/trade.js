@@ -278,7 +278,7 @@
           UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '询价说明'), desc),
           UI.h('div', { class: 'form-row full' }, UI.h('label', { class: 'req' }, '邀请供应商'), supBox)),
         UI.h('div', { class: 'hint' }, '保存后为草稿，可在详情中发出'),
-        errBox)), [
+        errBox), [
         UI.h('button', { class: 'primary', onclick: async () => {
           const fail = (msg) => { errBox.textContent = msg; if (errBox.scrollIntoView) errBox.scrollIntoView({ block: 'nearest' }); };
           const inviteIds = Array.from(supBox.querySelectorAll('input:checked')).map((i) => Number(i.value));
