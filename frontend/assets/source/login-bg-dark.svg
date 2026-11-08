@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1200" viewBox="0 0 1920 1200">
+  <!-- 登录页定制背景 · 暗色模式（设计源文件）
+       与亮色版同构图：中轴留白｜左下·矿石晶簇｜右上·钢铁线稿
+       暗夜蓝灰调，元素反差减弱至 ≤30%，登录白卡浮于其上（macOS 登录质感） -->
+  <defs>
+    <linearGradient id="base" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0e1219"/>
+      <stop offset=".55" stop-color="#131926"/>
+      <stop offset="1" stop-color="#101622"/>
+    </linearGradient>
+    <radialGradient id="glowBlue" cx=".16" cy=".04" r=".85">
+      <stop offset="0" stop-color="#0a84ff" stop-opacity=".16"/>
+      <stop offset=".55" stop-color="#0a84ff" stop-opacity=".05"/>
+      <stop offset="1" stop-color="#0a84ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowIndigo" cx=".9" cy=".98" r=".8">
+      <stop offset="0" stop-color="#5e5ce6" stop-opacity=".12"/>
+      <stop offset="1" stop-color="#5e5ce6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="lightBand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#9cc7ff" stop-opacity="0"/>
+      <stop offset=".5" stop-color="#9cc7ff" stop-opacity=".10"/>
+      <stop offset="1" stop-color="#9cc7ff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="oreFace" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#31435f" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#26364e" stop-opacity=".30"/>
+    </linearGradient>
+    <filter id="grain">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/>
+      <feColorMatrix type="saturate" values="0"/>
+    </filter>
+  </defs>
+
+  <!-- L1 基底渐变 + 氛围光 -->
+  <rect width="1920" height="1200" fill="url(#base)"/>
+  <rect width="1920" height="1200" fill="url(#glowBlue)"/>
+  <rect width="1920" height="1200" fill="url(#glowIndigo)"/>
+
+  <!-- 斜向光带 -->
+  <polygon points="480,-80 760,-80 1440,1280 1160,1280" fill="url(#lightBand)" opacity=".55"/>
+
+  <!-- 矿石：低多边形晶簇（左下角） -->
+  <g stroke="#a9c0e2" stroke-opacity=".10" stroke-width="1.4" stroke-linejoin="round">
+    <polygon points="118,1200 168,962 236,905 296,1200" fill="url(#oreFace)"/>
+    <polygon points="236,905 296,1200 372,1200 322,948" fill="#2c3d57" fill-opacity=".45"/>
+    <polygon points="296,860 322,948 236,905" fill="#3a4d6d" fill-opacity=".45"/>
+    <polygon points="352,1200 418,1010 468,986 508,1200" fill="url(#oreFace)"/>
+    <polygon points="468,986 508,1200 560,1200 516,1032" fill="#2c3d57" fill-opacity=".35"/>
+    <polygon points="42,1200 74,1088 118,1064 142,1200" fill="#3a4d6d" fill-opacity=".38"/>
+    <polygon points="118,1064 142,1200 118,1200 168,962 74,1088" fill="#26364e" fill-opacity=".35"/>
+    <polygon points="560,1200 604,1092 646,1200" fill="url(#oreFace)"/>
+    <polygon points="-30,1130 42,1104 74,1088 42,1200 -30,1200" fill="#2c3d57" fill-opacity=".40"/>
+  </g>
+  <g fill="#a9c0e2">
+    <circle cx="332" cy="872" r="2.5" fill-opacity=".12"/>
+    <circle cx="486" cy="964" r="2" fill-opacity=".10"/>
+    <circle cx="196" cy="936" r="1.8" fill-opacity=".09"/>
+    <circle cx="576" cy="1052" r="2.2" fill-opacity=".08"/>
+    <circle cx="88" cy="1032" r="1.6" fill-opacity=".09"/>
+  </g>
+
+  <!-- 钢铁：工字钢截面 + 钢板叠层线稿（右上角） -->
+  <g fill="none" stroke="#9db4d6" stroke-opacity=".10" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"
+     transform="rotate(-14 1660 210)">
+    <path d="M1568 118h184v46h-56v150h56v46h-184v-46h56V164h-56z"/>
+    <path d="M1600 96h120M1612 384h96" stroke-opacity=".08"/>
+  </g>
+  <g fill="none" stroke="#9db4d6" stroke-opacity=".08" stroke-width="1.4" stroke-linecap="round">
+    <path d="M1484 436 1848 322"/>
+    <path d="M1500 470 1864 356"/>
+    <path d="M1516 504 1880 390"/>
+  </g>
+  <g fill="none" stroke="#9db4d6" stroke-opacity=".06" stroke-width="1.4">
+    <circle cx="1888" cy="812" r="132"/>
+    <circle cx="1888" cy="812" r="92"/>
+    <circle cx="1888" cy="812" r="52"/>
+  </g>
+
+  <!-- L3 细噪点 -->
+  <rect width="1920" height="1200" filter="url(#grain)" opacity=".05"/>
+</svg>

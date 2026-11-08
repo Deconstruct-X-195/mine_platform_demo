@@ -236,13 +236,13 @@
       const demandSel = UI.selectField(demands.map((r) => [r.id, r.demand_no + ' ' + r.demand_name]), demands[0].id);
       const itemSel = UI.h('select', {});
       const qty = UI.input('number', '', { placeholder: '询价数量' });
-      const arrive = UI.input('date', '');
-      const deadline = UI.h('input', { type: 'datetime-local' });
-      const minResp = UI.input('number', '2');
+      const arrive = UI.input('date', '', { placeholder: '期望到货日' });
+      const deadline = UI.h('input', { type: 'datetime-local', placeholder: '报价截止时间' });
+      const minResp = UI.input('number', '2', { placeholder: '最少响应家数（默认 2）' });
       const dType = UI.selectField([['', '跟随需求'], ['PORT_FOB', '港口FOB'], ['PORT_TRUCK', '港口汽运'], ['PLANT', '厂内自提']], '');
       const place = UI.input('text', '', { placeholder: '交货地点（选填）' });
       const settle = UI.selectField([['', '跟随需求']].concat(Object.entries(SETTLE)), '');
-      const desc = UI.h('textarea', { rows: 2, style: 'width:100%' });
+      const desc = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '选填，询价补充说明' });
       const supBox = UI.h('div', { class: 'inline-flex', style: 'flex-wrap:wrap' });
 
       async function loadItems() {
@@ -394,12 +394,12 @@
       if (quoteId) q = (await API.get('/quotes/' + quoteId));
       const price = UI.input('number', q ? q.price : '', { placeholder: '单价（元/吨）' });
       const qty = UI.input('number', q ? q.quantity : r.quantity, { placeholder: '数量' });
-      const ddate = UI.input('date', q ? UI.fmtDate(q.delivery_date) : '');
+      const ddate = UI.input('date', q ? UI.fmtDate(q.delivery_date) : '', { placeholder: '到货日' });
       const place = UI.input('text', q ? q.delivery_place : '', { placeholder: '交货地（选填）' });
       const pay = UI.input('text', q ? q.pay_terms : '', { placeholder: '付款条款（选填）' });
       const quality = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '质量承诺（选填）' });
       if (q) quality.value = q.quality_commit || '';
-      const valid = UI.input('date', q ? UI.fmtDate(q.valid_until) : '');
+      const valid = UI.input('date', q ? UI.fmtDate(q.valid_until) : '', { placeholder: '报价有效期截止日' });
       const remark = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '备注（数量低于询价量 80% 必填）' });
       if (q) remark.value = q.remark || '';
       const m = UI.modal(quoteId ? '修改报价（将留痕新版本）' : '密封报价', UI.h('form', { onsubmit: (e) => e.preventDefault() },

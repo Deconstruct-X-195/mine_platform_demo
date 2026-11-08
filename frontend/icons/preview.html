@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>图标系统 · 大宗矿产集采平台</title>
+<style>
+  :root{
+    --blue:#007aff; --green:#34c759; --red:#ff3b30; --orange:#ff9500;
+    --label:#1d1d1f; --label-2:rgba(60,60,67,.62); --label-3:rgba(60,60,67,.34);
+    --sep:rgba(60,60,67,.14); --bg:#f5f5f7; --card:#fff;
+    --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:var(--font);background:var(--bg);color:var(--label);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;padding:40px 32px 64px}
+  .wrap{max-width:1080px;margin:0 auto}
+  header.hero{display:flex;align-items:center;gap:16px;margin-bottom:8px}
+  .hero img{width:52px;height:52px;border-radius:12px;box-shadow:0 4px 14px rgba(0,113,227,.3)}
+  .hero h1{font-size:26px;font-weight:700;letter-spacing:-.5px}
+  .hero p{color:var(--label-2);font-size:13px;margin-top:2px}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin:18px 0 8px}
+  .chip{background:#fff;border:1px solid var(--sep);border-radius:999px;padding:5px 14px;font-size:12px;font-weight:600;color:var(--label-2)}
+  .chip b{color:var(--blue);font-weight:700}
+  h2{font-size:17px;font-weight:700;letter-spacing:-.2px;margin:36px 0 14px;padding-bottom:10px;border-bottom:1px solid var(--sep)}
+  h2 small{font-weight:500;color:var(--label-2);font-size:12px;margin-left:8px}
+  .card{background:var(--card);border:1px solid rgba(0,0,0,.05);border-radius:12px;padding:20px;box-shadow:0 1px 2px rgba(0,0,0,.04),0 4px 14px rgba(0,0,0,.04)}
+
+  /* 规范区 */
+  .spec-grid{display:grid;grid-template-columns:180px 1fr;gap:28px;align-items:center}
+  .grid-demo{width:96px;height:96px;position:relative;border:1px solid var(--sep);border-radius:10px;
+    background-image:linear-gradient(to right,rgba(0,122,255,.10) 1px,transparent 1px),linear-gradient(to bottom,rgba(0,122,255,.10) 1px,transparent 1px);
+    background-size:12px 12px;background-position:center center;display:flex;align-items:center;justify-content:center}
+  .grid-demo svg{width:48px;height:48px;color:var(--blue)}
+  .tokens{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+  .token{border:1px solid var(--sep);border-radius:10px;padding:12px 14px}
+  .token .tv{font-size:15px;font-weight:700;font-variant-numeric:tabular-nums}
+  .token .tk{font-size:11px;color:var(--label-2);margin-top:2px;letter-spacing:.3px}
+  .swatches{display:flex;gap:8px;margin-top:10px}
+  .sw{width:34px;height:34px;border-radius:9px;border:1px solid var(--sep);position:relative}
+  .sw span{position:absolute;top:100%;left:50%;transform:translateX(-50%);font-size:10px;color:var(--label-2);margin-top:4px;white-space:nowrap}
+  .swatches{margin-bottom:18px}
+
+  /* 线宽对比 */
+  .stroke-row{display:flex;gap:28px;align-items:flex-end}
+  .stroke-item{text-align:center}
+  .stroke-item svg{display:block;margin:0 auto 8px;color:var(--label)}
+  .stroke-item b{font-size:12px;font-variant-numeric:tabular-nums}
+  .stroke-item .ok{color:var(--green);font-weight:700}
+  .stroke-item .no{color:var(--label-3);font-weight:500}
+
+  /* 全集 */
+  .icon-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:10px}
+  .ic-cell{background:#fff;border:1px solid var(--sep);border-radius:12px;padding:16px 8px 12px;text-align:center;transition:box-shadow .18s}
+  .ic-cell:hover{box-shadow:0 4px 14px rgba(0,0,0,.08)}
+  .ic-cell svg{width:24px;height:24px;color:var(--blue)}
+  .ic-cell .nm{font-size:12px;font-weight:600;margin-top:8px}
+  .ic-cell .ky{font-size:10px;color:var(--label-3);margin-top:1px;font-family:ui-monospace,Menlo,monospace}
+
+  /* 尺寸阶梯 */
+  .size-row{display:flex;gap:34px;align-items:flex-end;flex-wrap:wrap}
+  .size-item{text-align:center}
+  .size-item .demo{display:flex;align-items:flex-end;gap:6px;height:52px}
+  .size-item .demo svg{color:var(--label)}
+  .size-item b{display:block;font-size:11px;color:var(--label-2);margin-top:8px;font-variant-numeric:tabular-nums}
+
+  /* 场景 */
+  .scene-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px}
+  .scene h3{font-size:12px;font-weight:600;color:var(--label-2);margin-bottom:10px;letter-spacing:.5px}
+  .mock-side{background:#f4f4f6;border-radius:12px;padding:12px 10px;width:100%}
+  .mock-side a{display:flex;align-items:center;gap:9px;padding:7px 10px;border-radius:7px;font-size:13px;font-weight:500;color:var(--label);text-decoration:none;margin-bottom:1px}
+  .mock-side a svg{width:16px;height:16px}
+  .mock-side a.on{background:var(--blue);color:#fff;box-shadow:0 1px 3px rgba(0,122,255,.35)}
+  .mock-side a:not(.on) svg{color:var(--label)}
+  .mock-top{background:#fff;border:1px solid var(--sep);border-radius:12px;padding:0 16px;height:52px;display:flex;align-items:center;gap:16px;font-size:14px;font-weight:600}
+  .mock-top .bell{position:relative;display:flex;color:var(--label-2)}
+  .mock-top .bell svg{width:16px;height:16px}
+  .mock-top .bdg{position:absolute;top:-7px;right:-9px;background:var(--red);color:#fff;font-size:10px;font-weight:600;min-width:16px;height:16px;line-height:16px;border-radius:999px;text-align:center;padding:0 4px}
+  .mock-empty{text-align:center;color:var(--label-2);font-size:12px;padding:18px 0}
+  .mock-empty svg{width:40px;height:40px;color:var(--label-3);display:block;margin:0 auto 10px}
+  .lockups{display:flex;gap:22px;align-items:flex-end;flex-wrap:wrap}
+  .lockups .lk{text-align:center}
+  .lockups img{border-radius:22%;box-shadow:0 4px 14px rgba(0,113,227,.28);display:block;margin:0 auto 8px}
+  .lockups b{font-size:11px;color:var(--label-2);font-weight:500}
+  .wordmark{display:flex;align-items:center;gap:10px}
+  .wordmark .wm-t{font-size:17px;font-weight:700;letter-spacing:-.2px}
+  .wordmark .wm-s{font-size:10px;color:var(--label-2)}
+
+  /* 反色 */
+  .dark{background:#1d1d1f;border-radius:12px;padding:20px;display:flex;gap:26px;align-items:center;flex-wrap:wrap}
+  .dark svg{color:#fff}
+  .dark .dim{color:rgba(255,255,255,.6)}
+  .dark .blue{color:#0a84ff}
+  .dark span{font-size:11px;color:rgba(255,255,255,.5);display:block;text-align:center;margin-top:6px}
+
+  footer{margin-top:40px;font-size:12px;color:var(--label-3);text-align:center}
+  footer code{font-family:ui-monospace,Menlo,monospace;background:#fff;border:1px solid var(--sep);border-radius:6px;padding:2px 8px;font-size:11px}
+</style>
+</head>
+<body>
+<!-- 内嵌 symbol（与 frontend/icons/sprite.svg 同源） -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="ic-demand" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="2.2" width="9" height="11.6" rx="1.7"/><path d="M6.1 6.1h3.8M6.1 8.7h3.8"/></g></symbol>
+  <symbol id="ic-pool" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.7 9.4V5.2a1.7 1.7 0 011.7-1.7h7.2a1.7 1.7 0 011.7 1.7v4.2"/><path d="M2.7 9.4h2.6l1.1 1.9h3.2l1.1-1.9h2.6v2.5a1.7 1.7 0 01-1.7 1.7H4.4a1.7 1.7 0 01-1.7-1.7z"/></g></symbol>
+  <symbol id="ic-price" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.9 13.1h10.2"/><path d="M3.7 10.4l2.7-3 2 1.9 3.9-4.6"/></g></symbol>
+  <symbol id="ic-forecast" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.9 13.1h10.2"/><path d="M3 11c2.5 0 2.5-4.5 5-4.5s2.5 3 5 3"/><circle cx="12.5" cy="4" r="1.4"/></g></symbol>
+  <symbol id="ic-inquiry" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.4 6.5a1.8 1.8 0 00-1.8-1.8H4.4a1.8 1.8 0 00-1.8 1.8v2.6a1.8 1.8 0 001.8 1.8h2.9v2.9l2.9-2.9h1.4a1.8 1.8 0 001.8-1.8z"/></g></symbol>
+  <symbol id="ic-bargain" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.2 5.4h8M10.1 3.3l2.3 2.1-2.3 2.1"/><path d="M11.8 10.6h-8M6.1 8.5L3.8 10.6l2.3 2.1"/></g></symbol>
+  <symbol id="ic-order" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.8 5.7h8.4l-.7 7.2a1.6 1.6 0 01-1.6 1.45H6.1a1.6 1.6 0 01-1.6-1.45z"/><path d="M5.7 5.5V5a2.3 2.3 0 014.6 0v.5"/></g></symbol>
+  <symbol id="ic-contract" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="2.2" width="9" height="11.6" rx="1.7"/><path d="M5.9 10.9c1-2.2 1.9.9 3.4-2.2M9.7 11h1.4"/></g></symbol>
+  <symbol id="ic-logistics" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.9" y="4.7" width="7.5" height="6.3" rx="1.1"/><path d="M9.4 6.7h2.3a1.1 1.1 0 01.9.45l1.7 2.15v1.7h-1.9"/><circle cx="4.6" cy="12.1" r="1.35"/><circle cx="11.3" cy="12.1" r="1.35"/></g></symbol>
+  <symbol id="ic-waybill" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.2l5.8 2.9v5.8L8 13.8l-5.8-2.9V5.1z"/><path d="M2.2 5.1L8 8l5.8-2.9M8 8v5.8"/></g></symbol>
+  <symbol id="ic-track" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13.6S3.5 9.9 3.5 6.9a4.5 4.5 0 019 0c0 3-4.5 6.7-4.5 6.7z"/><circle cx="8" cy="6.9" r="1.65"/></g></symbol>
+  <symbol id="ic-settlement" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.9" y="4.4" width="12.2" height="7.2" rx="1.5"/><circle cx="8" cy="8" r="1.9"/><path d="M4.3 8h.01M11.7 8h.01"/></g></symbol>
+  <symbol id="ic-profile" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3.7" y="2.2" width="8.6" height="11.6" rx="1.3"/><path d="M6.1 5.1h1.2M8.7 5.1h1.2M6.1 8h1.2M8.7 8h1.2M6.5 13.8v-2.5h3v2.5"/></g></symbol>
+  <symbol id="ic-dashboard" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 11.5a5.4 5.4 0 1110.8 0"/><path d="M2.6 11.5h10.8M8 11.5l2.4-3.3"/></g></symbol>
+  <symbol id="ic-admin_companies" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.1l4.9 1.75v3.85c0 3.3-2.35 5.3-4.9 6.2-2.55-.9-4.9-2.9-4.9-6.2V3.85z"/><path d="M5.9 7.85l1.5 1.5 2.9-3.1"/></g></symbol>
+  <symbol id="ic-base_data" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="8" cy="3.9" rx="5.4" ry="1.9"/><path d="M2.6 3.9v8.2c0 1.05 2.42 1.9 5.4 1.9s5.4-.85 5.4-1.9V3.9"/><path d="M2.6 8c0 1.05 2.42 1.9 5.4 1.9s5.4-.85 5.4-1.9"/></g></symbol>
+  <symbol id="ic-doc_overview" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="3.5" width="7.9" height="10.3" rx="1.5"/><path d="M2.6 12.3V5.1A1.6 1.6 0 014.2 3.5h6.1"/></g></symbol>
+  <symbol id="ic-alerts" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.9l6.1 10H1.9z"/><path d="M8 6.9v2.8M8 11.5h.01"/></g></symbol>
+  <symbol id="ic-dict" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.7 4.1h7.8M5.7 8h7.8M5.7 11.9h7.8"/><path d="M2.7 4.1h.01M2.7 8h.01M2.7 11.9h.01"/></g></symbol>
+  <symbol id="ic-logs" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.5"/><path d="M8 4.9V8l2.3 1.4"/></g></symbol>
+  <symbol id="ic-bell" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.4a4.05 4.05 0 014.05 4.05v2.3l1.3 2.35H2.65l1.3-2.35v-2.3A4.05 4.05 0 018 2.4z"/><path d="M6.4 13.2a1.65 1.65 0 003.2 0"/></g></symbol>
+  <symbol id="ic-logo" viewBox="0 0 16 16"><path fill="currentColor" fill-rule="evenodd" d="M3.6 0h8.8A3.6 3.6 0 0116 3.6v8.8a3.6 3.6 0 01-3.6 3.6H3.6A3.6 3.6 0 010 12.4V3.6A3.6 3.6 0 013.6 0zM3.2 11.6L6.8 5.7l2.2 3.3 1.2-1.8 2.6 4.4zM10.8 3.6a1.15 1.15 0 110 2.3 1.15 1.15 0 010-2.3z"/></symbol>
+</svg>
+
+<div class="wrap">
+  <header class="hero">
+    <img src="favicon.svg" alt="logo">
+    <div>
+      <h1>功能图标系统</h1>
+      <p>大宗矿产集采平台 · 22 枚矢量图标 · 与 Apple HIG / SF Symbols 对齐</p>
+    </div>
+  </header>
+
+  <div class="chips">
+    <span class="chip">画布 <b>16 × 16</b></span>
+    <span class="chip">线宽 <b>1.4 px</b> 统一</span>
+    <span class="chip">端点/拐角 <b>Round</b></span>
+    <span class="chip">矩形圆角 <b>rx 1.1 ~ 1.7</b></span>
+    <span class="chip">色彩 <b>currentColor</b> 单色模板</span>
+    <span class="chip">填充 <b>fill:none</b>（仅 logo 除外）</span>
+  </div>
+
+  <h2>设计规范 <small>Design Tokens</small></h2>
+  <div class="card spec-grid">
+    <div class="grid-demo"><svg><use href="#ic-demand"/></svg></div>
+    <div>
+      <div class="tokens">
+        <div class="token"><div class="tv">16 px</div><div class="tk">基准网格 · 造型落于 1.5~14.5 安全区</div></div>
+        <div class="token"><div class="tv">1.4 px</div><div class="tk">统一描边线宽（含最小尺寸场景）</div></div>
+        <div class="token"><div class="tv">Round</div><div class="tk">端点与拐角 · 圆角矩形 rx 1.1~1.7</div></div>
+        <div class="token"><div class="tv">正视扁平</div><div class="tk">无透视 · 无渐变 · 无投影</div></div>
+      </div>
+      <div class="swatches">
+        <div class="sw" style="background:#1d1d1f"><span>label</span></div>
+        <div class="sw" style="background:rgba(60,60,67,.62)"><span>secondary</span></div>
+        <div class="sw" style="background:#007aff"><span>systemBlue</span></div>
+        <div class="sw" style="background:#34c759"><span>green</span></div>
+        <div class="sw" style="background:#ff3b30"><span>red</span></div>
+        <div class="sw" style="background:#ff9500"><span>orange</span></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>线宽标准 <small>Stroke Weight — 1.4px 为最优识别阈值</small></h2>
+  <div class="card stroke-row">
+    <div class="stroke-item"><svg width="32" height="32" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.0" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="2.2" width="9" height="11.6" rx="1.7"/><path d="M6.1 6.1h3.8M6.1 8.7h3.8"/></svg><b class="no">1.0 过细</b></div>
+    <div class="stroke-item"><svg width="32" height="32" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="2.2" width="9" height="11.6" rx="1.7"/><path d="M6.1 6.1h3.8M6.1 8.7h3.8"/></svg><b class="ok">1.4 标准 ✓</b></div>
+    <div class="stroke-item"><svg width="32" height="32" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="2.2" width="9" height="11.6" rx="1.7"/><path d="M6.1 6.1h3.8M6.1 8.7h3.8"/></svg><b class="no">1.8 过重</b></div>
+  </div>
+
+  <h2>图标全集 <small>22 glyphs · 功能优先命名</small></h2>
+  <div class="icon-grid" id="grid"></div>
+
+  <h2>尺寸适配 <small>12 / 14 / 16 / 20 / 24 / 32 / 48 px — 最小尺寸保持清晰</small></h2>
+  <div class="card size-row" id="sizes"></div>
+
+  <h2>场景验证 <small>侧栏 / 顶栏 / 空态 / Logo</small></h2>
+  <div class="scene-grid">
+    <div class="scene"><h3>侧栏导航（active = systemBlue）</h3>
+      <div class="mock-side">
+        <a class="on" href="#"><svg><use href="#ic-demand"/></svg>需求管理</a>
+        <a href="#"><svg><use href="#ic-price"/></svg>基准价行情</a>
+        <a href="#"><svg><use href="#ic-inquiry"/></svg>询价报价</a>
+        <a href="#"><svg><use href="#ic-order"/></svg>订单</a>
+      </div>
+    </div>
+    <div class="scene"><h3>顶栏消息铃铛 + 徽标</h3>
+      <div class="mock-top">需求管理<span style="flex:1"></span><span class="bell"><svg><use href="#ic-bell"/></svg><span class="bdg">61</span></span></div>
+      <div class="mock-empty" style="padding-top:24px">
+        <svg><use href="#ic-pool"/></svg>暂无待办事项
+      </div>
+    </div>
+    <div class="scene"><h3>Logo 锁定组合</h3>
+      <div class="lockups">
+        <div class="lk"><img src="favicon.svg" width="64" height="64"><b>64</b></div>
+        <div class="lk"><img src="favicon.svg" width="32" height="32"><b>32</b></div>
+        <div class="lk"><img src="favicon.svg" width="24" height="24"><b>24</b></div>
+        <div class="lk"><div class="wordmark"><img src="favicon.svg" width="28" height="28"><span class="wm-t">大宗矿产集采平台</span></div><b>组合</b></div>
+      </div>
+    </div>
+  </div>
+
+  <h2>反色验证 <small>Dark Surface — currentColor 继承</small></h2>
+  <div class="dark">
+    <div><svg width="24" height="24"><use href="#ic-track"/></svg><span>#FFF</span></div>
+    <div><svg class="dim" width="24" height="24"><use href="#ic-demand"/></svg><span>60%</span></div>
+    <div><svg class="blue" width="24" height="24"><use href="#ic-price"/></svg><span>iOS Blue</span></div>
+    <div><svg width="24" height="24"><use href="#ic-settlement"/></svg><span>#FFF</span></div>
+    <div><svg class="dim" width="24" height="24"><use href="#ic-logistics"/></svg><span>60%</span></div>
+    <div><svg class="blue" width="24" height="24"><use href="#ic-admin_companies"/></svg><span>iOS Blue</span></div>
+  </div>
+
+  <footer>矢量源文件 <code>frontend/icons/sprite.svg</code> · 校验 <code>python tests/ui_icons_validate.py</code></footer>
+</div>
+
+<script>
+  // 全集网格：22 枚（名称 + data-menu 键）
+  var ICONS = [
+    ['ic-demand','需求单','demand'],['ic-pool','需求池','pool'],['ic-price','基准价','price'],
+    ['ic-forecast','走势预测','forecast'],['ic-inquiry','询价报价','inquiry'],['ic-bargain','议价定标','bargain'],
+    ['ic-order','订单','order'],['ic-contract','合同','contract'],['ic-logistics','物流方案','logistics'],
+    ['ic-waybill','运单作业','waybill'],['ic-track','履约跟踪','track'],['ic-settlement','结算管理','settlement'],
+    ['ic-profile','企业信息','profile'],['ic-dashboard','运营看板','dashboard'],['ic-admin_companies','企业准入','admin_companies'],
+    ['ic-base_data','基础数据','base_data'],['ic-doc_overview','单据总览','doc_overview'],['ic-alerts','预警处理','alerts'],
+    ['ic-dict','状态字典','dict'],['ic-logs','操作日志','logs'],['ic-bell','消息通知','bell'],['ic-logo','品牌标识','logo']
+  ];
+  document.getElementById('grid').innerHTML = ICONS.map(function(it){
+    return '<div class="ic-cell"><svg><use href="#'+it[0]+'"/></svg><div class="nm">'+it[1]+'</div><div class="ky">'+it[2]+'</div></div>';
+  }).join('');
+  // 尺寸阶梯：四种代表字形 × 七档尺寸
+  var SIZES = [12,14,16,20,24,32,48], DEMOS = ['ic-demand','ic-track','ic-price','ic-bell'];
+  document.getElementById('sizes').innerHTML = SIZES.map(function(s){
+    var inner = DEMOS.map(function(id){
+      return '<svg width="'+s+'" height="'+s+'"><use href="#'+id+'"/></svg>';
+    }).join('');
+    return '<div class="size-item"><div class="demo">'+inner+'</div><b>'+s+'px</b></div>';
+  }).join('');
+</script>
+</body>
+</html>

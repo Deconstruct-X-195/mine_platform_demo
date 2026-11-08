@@ -1,0 +1,127 @@
+[
+ {
+  "step": "注册页加载",
+  "ok": true,
+  "detail": "role-card×3"
+ },
+ {
+  "step": "宽卡宽度≈960",
+  "ok": true,
+  "detail": "width=960.0 height=1233.4"
+ },
+ {
+  "step": "宽高比改善",
+  "ok": true,
+  "detail": "ratio=0.78（原 520 窄条约 0.45）"
+ },
+ {
+  "step": "表单双列布局",
+  "ok": true,
+  "detail": "418px 418px"
+ },
+ {
+  "step": "分区小标题",
+  "ok": true,
+  "detail": "sec×3"
+ },
+ {
+  "step": "选中供应商后仅1个checked",
+  "ok": true,
+  "detail": "checked=1 class=role-card on"
+ },
+ {
+  "step": "改选承运商自动取消供应商(严格单选)",
+  "ok": true,
+  "detail": "checked=1 val=LOGISTICS_CARRIER 前=role-card 现=role-card on"
+ },
+ {
+  "step": "选中态视觉反馈(role-check蓝底白勾)",
+  "ok": true,
+  "detail": "rgb(0, 122, 255)"
+ },
+ {
+  "step": "省份选项共35项(34省级行政区+其他)",
+  "ok": true,
+  "detail": "items=35"
+ },
+ {
+  "step": "分组标题7个(六大区+港澳台)",
+  "ok": true,
+  "detail": "groups=7"
+ },
+ {
+  "step": "标准排序(北京/天津/河北/山西/内蒙古开头)",
+  "ok": true,
+  "detail": "['北京', '天津', '河北', '山西', '内蒙古']"
+ },
+ {
+  "step": "默认河北带选中标记",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "step": "搜索\"河\"过滤为 河北/河南",
+  "ok": true,
+  "detail": "['河北', '河南']"
+ },
+ {
+  "step": "搜索\"广\"过滤为 广东/广西",
+  "ok": true,
+  "detail": "['广东', '广西']"
+ },
+ {
+  "step": "无结果显示空态提示",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "step": "点选山东生效并收起面板",
+  "ok": true,
+  "detail": "value=山东"
+ },
+ {
+  "step": "Enter 选中首项(北京)",
+  "ok": true,
+  "detail": "北京"
+ },
+ {
+  "step": "Esc 还原已选并收起",
+  "ok": true,
+  "detail": ""
+ },
+ {
+  "step": "空表单提交被拦截并提示",
+  "ok": true,
+  "detail": "企业名称、信用代码、企业角色为必填（角色仅可选择一个）"
+ },
+ {
+  "step": "800px 单列 + 卡片随视口收缩",
+  "ok": true,
+  "detail": "w=719 innerWidth=774 cols=675px"
+ },
+ {
+  "step": "500px 角色卡单列 + 卡片适配",
+  "ok": true,
+  "detail": "w=441 innerWidth=496 cols=397px"
+ },
+ {
+  "step": "表单填写与执照上传",
+  "ok": true,
+  "detail": "已填必填项并选择执照文件"
+ },
+ {
+  "step": "完整注册提交成功",
+  "ok": true,
+  "detail": "注册成功，等待平台审核（企业 48）"
+ },
+ {
+  "step": "注册后跳转登录页",
+  "ok": true,
+  "detail": "http://127.0.0.1:8000/#/login"
+ },
+ {
+  "step": "无 console 严重错误",
+  "ok": true,
+  "detail": ""
+ }
+]

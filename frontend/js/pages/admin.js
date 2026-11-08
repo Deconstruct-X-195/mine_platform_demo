@@ -157,7 +157,7 @@
       const code = UI.input('text', '', { placeholder: '如 PB、FMG' });
       const name = UI.input('text', '', { placeholder: '如 PB 粉、高品位铁矿' });
       const grade = UI.input('text', '', { placeholder: '如 61.5（品位百分数，纯数字）' });
-      const unit = UI.input('text', '吨');
+      const unit = UI.input('text', '吨', { placeholder: '计量单位，默认 吨' });
       const m = UI.modal('新增品种', UI.h('form', { onsubmit: (e) => e.preventDefault() },
         UI.h('div', { class: 'form-grid' },
           UI.formRow('品种代码', code, true),
@@ -182,7 +182,7 @@
       API.get('/base/varieties').then((vd) => {
         const vars = vd.list || [];
         const sel = UI.selectField(vars.map((v) => [v.id, v.varietyName]), varietyId || (vars[0] && vars[0].id));
-        const pdate = UI.input('date', new Date().toISOString().slice(0, 10));
+        const pdate = UI.input('date', new Date().toISOString().slice(0, 10), { placeholder: '报价日期' });
         const price = UI.input('number', '', { placeholder: '基准价（元/吨）' });
         const basis = UI.selectField([['WET', '湿基'], ['DRY', '干基']], 'WET');
         const src = UI.input('text', '', { placeholder: '数据来源说明（如 Mysteel 旬报）' });

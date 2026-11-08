@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <!-- favicon：品牌渐变圆角方 + 白色山体/矿点（与 ic-logo 同源造型） -->
+  <defs>
+    <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0A84FF"/>
+      <stop offset="1" stop-color="#0055D4"/>
+    </linearGradient>
+  </defs>
+  <path fill="url(#lg)" d="M3.6 0h8.8A3.6 3.6 0 0116 3.6v8.8a3.6 3.6 0 01-3.6 3.6H3.6A3.6 3.6 0 010 12.4V3.6A3.6 3.6 0 013.6 0z"/>
+  <path fill="#fff" d="M3.2 11.6L6.8 5.7l2.2 3.3 1.2-1.8 2.6 4.4z"/>
+  <circle fill="#fff" cx="10.8" cy="4.75" r="1.15"/>
+</svg>

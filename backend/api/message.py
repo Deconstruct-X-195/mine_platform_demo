@@ -45,3 +45,15 @@ def mark_read(mid):
         raise ApiError(40301, '无权限操作该消息')
     execute(g.conn, "UPDATE sys_message SET is_read=1 WHERE id=%s", (mid,))
     return ok({'id': mid, 'isRead': 1})
+
+
+@bp.put('/messages/read-all')
+@auth_required
+def mark_all_read():
+    """一键全读：将当前用户企业全部未读消息批量标记为已读。"""
+    if not g.ctx.company:
+        return ok({'updated': 0})
+    n = execute(g.conn,
+                "UPDATE sys_message SET is_read=1 WHERE receiver_company_id=%s AND is_read=0",
+                (g.ctx.company['id'],))
+    return ok({'updated': n})
