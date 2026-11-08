@@ -82,14 +82,14 @@
     function forecastForm(onDone) {
       const varietySel = UI.selectField(vOpts, vOpts.length ? vOpts[0][0] : '');
       const pt = UI.selectField(Object.entries(PT), 'MONTHLY');
-      const start = UI.input('date', '');
-      const end = UI.input('date', '');
+      const start = UI.input('date', '', { placeholder: '周期开始日，如 2026-11-01' });
+      const end = UI.input('date', '', { placeholder: '周期结束日，如 2026-11-30' });
       const qty = UI.input('number', '', { placeholder: '可供数量（吨）' });
       const price = UI.input('number', '', { placeholder: '预判价（元/吨）' });
       const basis = UI.selectField(Object.entries(PB), 'WET');
       const port = UI.input('text', '', { placeholder: '交货港口（选填）' });
-      const valid = UI.input('date', '');
-      const remark = UI.h('textarea', { rows: 2, style: 'width:100%' });
+      const valid = UI.input('date', '', { placeholder: '预报有效期截止日' });
+      const remark = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '选填，补充说明' });
       const m = UI.modal('新增远期预报', UI.h('form', { onsubmit: (e) => e.preventDefault() },
         UI.h('div', { class: 'form-grid' },
           UI.formRow('品种', varietySel, true),

@@ -1,0 +1,164 @@
+[
+  {
+    "role": "guest",
+    "menu": "login",
+    "title": "登录",
+    "console_errs": []
+  },
+  {
+    "role": "guest",
+    "menu": "register",
+    "title": "注册",
+    "console_errs": []
+  },
+  {
+    "role": "buyer",
+    "menu": "demand",
+    "title": "需求管理",
+    "console_errs": []
+  },
+  {
+    "role": "buyer",
+    "menu": "price",
+    "title": "基准价行情",
+    "console_errs": []
+  },
+  {
+    "role": "buyer",
+    "menu": "inquiry",
+    "title": "询价报价",
+    "console_errs": []
+  },
+  {
+    "role": "buyer",
+    "menu": "bargain",
+    "title": "议价定标",
+    "console_errs": []
+  },
+  {
+    "role": "buyer",
+    "menu": "order",
+    "title": "订单",
+    "console_errs": []
+  },
+  {
+    "role": "buyer",
+    "menu": "contract",
+    "title": "合同",
+    "console_errs": []
+  },
+  {
+    "role": "buyer",
+    "menu": "logistics",
+    "title": "物流方案",
+    "console_errs": []
+  },
+  {
+    "role": "buyer",
+    "menu": "track",
+    "title": "履约跟踪",
+    "console_errs": []
+  },
+  {
+    "role": "buyer",
+    "menu": "settlement",
+    "title": "结算管理",
+    "console_errs": []
+  },
+  {
+    "role": "buyer",
+    "menu": "profile",
+    "title": "企业信息",
+    "console_errs": []
+  },
+  {
+    "role": "supplier",
+    "menu": "demand",
+    "title": "需求池",
+    "console_errs": []
+  },
+  {
+    "role": "supplier",
+    "menu": "inquiry",
+    "title": "询价报价",
+    "console_errs": []
+  },
+  {
+    "role": "supplier",
+    "menu": "bargain",
+    "title": "议价定标",
+    "console_errs": []
+  },
+  {
+    "role": "supplier",
+    "menu": "order",
+    "title": "订单",
+    "console_errs": []
+  },
+  {
+    "role": "supplier",
+    "menu": "contract",
+    "title": "合同",
+    "console_errs": []
+  },
+  {
+    "role": "supplier",
+    "menu": "settlement",
+    "title": "结算管理",
+    "console_errs": []
+  },
+  {
+    "role": "carrier",
+    "menu": "logistics",
+    "title": "运单作业",
+    "console_errs": []
+  },
+  {
+    "role": "carrier",
+    "menu": "waybill",
+    "title": "运单作业",
+    "console_errs": []
+  },
+  {
+    "role": "carrier",
+    "menu": "track",
+    "title": "履约跟踪",
+    "console_errs": []
+  },
+  {
+    "role": "admin",
+    "menu": "dashboard",
+    "title": "运营看板",
+    "console_errs": []
+  },
+  {
+    "role": "admin",
+    "menu": "admin_companies",
+    "title": "企业准入",
+    "console_errs": []
+  },
+  {
+    "role": "admin",
+    "menu": "base_data",
+    "title": "基础数据",
+    "console_errs": []
+  },
+  {
+    "role": "admin",
+    "menu": "dict",
+    "title": "状态字典",
+    "console_errs": []
+  },
+  {
+    "role": "admin",
+    "menu": "logs",
+    "title": "操作日志",
+    "console_errs": []
+  },
+  {
+    "role": "admin",
+    "menu": "alerts",
+    "title": "预警处理",
+    "console_errs": []
+  }
+]

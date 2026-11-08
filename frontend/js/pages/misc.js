@@ -53,18 +53,18 @@
     }
 
     function editForm() {
-      const companyName = UI.input('text', c.companyName || c.company_name || '');
-      const creditCode = UI.input('text', c.creditCode || c.credit_code || '');
-      const province = UI.input('text', c.province || '');
-      const city = UI.input('text', c.city || '');
-      const address = UI.input('text', c.address || '');
-      const legalPerson = UI.input('text', c.legalPerson || c.legal_person || '');
-      const contactName = UI.input('text', c.contactName || c.contact_name || '');
-      const contactPhone = UI.input('text', c.contactPhone || c.contact_phone || '');
-      const contactEmail = UI.input('text', c.contactEmail || c.contact_email || '');
-      const bankName = UI.input('text', c.bankName || c.bank_name || '');
-      const bankAccount = UI.input('text', c.bankAccount || c.bank_account || '');
-      const businessScope = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '经营范围' });
+      const companyName = UI.input('text', c.companyName || c.company_name || '', { placeholder: '请输入工商注册全称' });
+      const creditCode = UI.input('text', c.creditCode || c.credit_code || '', { placeholder: '18 位字母数字，如 91130000XXXXXXXXXX' });
+      const province = UI.input('text', c.province || '', { placeholder: '如：河北' });
+      const city = UI.input('text', c.city || '', { placeholder: '如：邯郸市' });
+      const address = UI.input('text', c.address || '', { placeholder: '省/市之后的具体经营地址' });
+      const legalPerson = UI.input('text', c.legalPerson || c.legal_person || '', { placeholder: '选填' });
+      const contactName = UI.input('text', c.contactName || c.contact_name || '', { placeholder: '请输入联系人姓名' });
+      const contactPhone = UI.input('text', c.contactPhone || c.contact_phone || '', { placeholder: '11 位手机号' });
+      const contactEmail = UI.input('text', c.contactEmail || c.contact_email || '', { placeholder: '如 name@company.com' });
+      const bankName = UI.input('text', c.bankName || c.bank_name || '', { placeholder: '开户银行全称' });
+      const bankAccount = UI.input('text', c.bankAccount || c.bank_account || '', { placeholder: '对公账户号码' });
+      const businessScope = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '如：铁矿石进口、销售' });
       const m = UI.modal('企业信息维护', UI.h('form', { onsubmit: (e) => e.preventDefault() },
         UI.h('div', { class: 'form-grid' },
           UI.formRow('企业名称', companyName, true),
@@ -80,7 +80,14 @@
           UI.formRow('银行账户', bankAccount),
           UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '经营范围'), businessScope))), [
         UI.h('button', { class: 'primary', onclick: async () => {
+          const phone = contactPhone.value.trim();
+          const email = contactEmail.value.trim();
+          const code = creditCode.value.trim();
           if (!companyName.value.trim()) { UI.toast('请填写企业名称', 'err'); return; }
+          if (code && !/^[0-9A-Z]{15,18}$/.test(code)) { UI.toast('统一社会信用代码应为 15~18 位大写字母或数字', 'err'); return; }
+          if (phone && !/^1\d{10}$/.test(phone)) { UI.toast('联系电话应为 11 位手机号', 'err'); return; }
+          if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { UI.toast('联系邮箱格式不正确，如 name@company.com', 'err'); return; }
+          if (!contactName.value.trim()) { UI.toast('请填写联系人', 'err'); return; }
           try {
             const r = await API.put('/companies/me', {
               companyName: companyName.value.trim(), creditCode: creditCode.value.trim(),
@@ -111,11 +118,27 @@
     let isRead = '';
     const listCard = UI.h('div', { class: 'card' });
     const pagerBox = UI.h('div', {});
+    /* 读取状态筛选：全部 / 未读 / 已读 */
+    const readFilter = UI.h('select', { onchange: (e) => { isRead = e.target.value; pageNo = 1; load(); } },
+      UI.h('option', { value: '' }, '全部'),
+      UI.h('option', { value: '0' }, '未读'),
+      UI.h('option', { value: '1' }, '已读'));
+    /* 一键全读：当前企业全部未读消息批量标记为已读 */
+    const readAllBtn = UI.h('button', { onclick: async () => {
+      try {
+        const r = await API.put('/messages/read-all');
+        const n = r && r.updated != null ? Number(r.updated) : 0;
+        UI.toast(n > 0 ? ('已将 ' + n + ' 条未读消息全部标记为已读') : '当前没有未读消息', 'ok');
+        App.refreshMsgBadge();
+        load();
+      } catch (e) { /* toast 已提示 */ }
+    } }, '一键全读');
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('div', { class: 'toolbar' },
         UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '消息中心'),
         UI.h('div', { class: 'spacer' }),
-        UI.statusFilter('MSG', (v) => { isRead = v; pageNo = 1; load(); }))));
+        UI.h('label', { class: 'field' }, '状态', readFilter),
+        readAllBtn)));
     page.appendChild(listCard);
     page.appendChild(pagerBox);
     await load();
@@ -131,7 +154,7 @@
         { key: 'createdAt', label: '时间', render: (r) => UI.fmtDateTime(r.createdAt) },
         { label: '操作', render: (r) => r.isRead ? '-' : UI.h('button', { class: 'sm', onclick: async () => {
           await API.put('/messages/' + r.id + '/read');
-          UI.toast('已标记已读', 'ok'); load();
+          UI.toast('已标记已读', 'ok'); App.refreshMsgBadge(); load();
         } }, '标已读') },
       ], d.list, '暂无消息'));
       pagerBox.innerHTML = '';

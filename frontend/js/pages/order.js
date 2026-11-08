@@ -54,7 +54,7 @@
   }
 
   function nodeModal(r, node, onChanged) {
-    const occur = UI.h('input', { type: 'datetime-local' });
+    const occur = UI.h('input', { type: 'datetime-local', placeholder: '发生时间' });
     const qty = UI.input('number', '', { placeholder: '实际数量（吨，选填）' });
     const m = UI.modal((node === 'DEPART' ? '回填发运' : '回填到达') + ' · ' + r.segment_no,
       UI.h('div', { class: 'form-grid' },
@@ -321,8 +321,8 @@
       const segmentNo = UI.input('text', '', { placeholder: '如 SEG-1' });
       const mode = UI.selectField(Object.entries(MODES), 'ROAD');
       const planQty = UI.input('number', '', { placeholder: '计划量（吨）' });
-      const depart = UI.input('date', '');
-      const arrive = UI.input('date', '');
+      const depart = UI.input('date', '', { placeholder: '计划发运日' });
+      const arrive = UI.input('date', '', { placeholder: '计划到达日' });
       const departPlace = UI.input('text', '', { placeholder: '发运地（选填）' });
       const arrivePlace = UI.input('text', '', { placeholder: '到达地（选填）' });
       const freight = UI.input('number', '', { placeholder: '运费（选填）' });
@@ -422,7 +422,7 @@
 
     function manualNodeForm(oid, onDone) {
       const code = UI.input('text', '', { placeholder: '节点代码（大写，如 LOAD_DONE）' });
-      const occur = UI.h('input', { type: 'datetime-local' });
+      const occur = UI.h('input', { type: 'datetime-local', placeholder: '发生时间' });
       const remark = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '备注' });
       const box = UI.h('div', {});
       box.appendChild(UI.h('h3', { style: 'margin:12px 0 8px' }, '手工节点登记'));

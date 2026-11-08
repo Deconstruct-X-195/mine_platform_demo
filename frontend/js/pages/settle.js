@@ -143,7 +143,7 @@
 
       function payModal(settle, onDone) {
         const amount = UI.input('number', settle.totalAmount, { placeholder: '付款金额' });
-        const payDate = UI.input('date', new Date().toISOString().slice(0, 10));
+        const payDate = UI.input('date', new Date().toISOString().slice(0, 10), { placeholder: '付款日期' });
         const desc = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '付款说明' });
         const file = UI.h('input', { type: 'file', accept: 'image/*,.pdf' });
         const m = UI.modal('付款登记 · ' + (settle.settleNo || ''), UI.h('form', { onsubmit: (e) => e.preventDefault() },

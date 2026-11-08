@@ -125,14 +125,14 @@
       const f = {
         demandName: UI.input('text', existing ? existing.demand_name : '', { placeholder: '如：3万吨PB粉港口自提' }),
         deliveryType: UI.selectField(Object.entries(DELIVERY), existing ? existing.delivery_type : 'PORT_FOB'),
-        deliveryPlace: UI.input('text', existing ? existing.delivery_place : '', { placeholder: '交货地点' }),
-        expectStart: UI.input('date', existing ? UI.fmtDate(existing.expect_arrive_start) : ''),
-        expectEnd: UI.input('date', existing ? UI.fmtDate(existing.expect_arrive_end) : ''),
+        deliveryPlace: UI.input('text', existing ? existing.delivery_place : '', { placeholder: '交货地点，如：日照港' }),
+        expectStart: UI.input('date', existing ? UI.fmtDate(existing.expect_arrive_start) : '', { placeholder: '期望到货起始日' }),
+        expectEnd: UI.input('date', existing ? UI.fmtDate(existing.expect_arrive_end) : '', { placeholder: '期望到货截止日' }),
         priceIntent: UI.input('text', existing ? existing.price_intent : '', { placeholder: '选填' }),
         settleType: UI.selectField(Object.entries(SETTLE), existing ? existing.settle_type : 'COD'),
-        settleDays: UI.input('number', existing ? existing.settle_days : '', { placeholder: '账期天数' }),
-        qualityReq: UI.h('textarea', { rows: 2, style: 'width:100%' }),
-        remark: UI.h('textarea', { rows: 2, style: 'width:100%' }),
+        settleDays: UI.input('number', existing ? existing.settle_days : '', { placeholder: '账期天数（选填，如 30）' }),
+        qualityReq: UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '选填，如：Fe≥62%，水分≤8%' }),
+        remark: UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '选填，补充说明' }),
         files: UI.h('input', { type: 'file', multiple: true }),
       };
       if (existing) {

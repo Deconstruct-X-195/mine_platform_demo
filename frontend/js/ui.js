@@ -161,11 +161,15 @@
       n.remark ? h('div', { class: 't-remark' }, n.remark) : null)));
   }
 
+  /* 格式化工具：定义为 IIFE 内局部函数（函数声明会提升），
+     供 timeline() 等内部代码直接调用，同时通过 window.UI 导出供页面使用 */
+  function fmtDate(v) { return v == null || v === '' ? '-' : String(v).slice(0, 10); }
+  function fmtDateTime(v) { return v == null || v === '' ? '-' : String(v).replace('T', ' ').slice(0, 16); }
+  function fmtMoney(v) { return v == null || v === '' ? '-' : Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
   window.UI = {
     h, toast, modal, confirmBox, table, pager, statusTag, kv, formRow, selectField,
     trendChart, input, statusFilter, timeline, STATUS,
-    fmtDate(v) { return v == null || v === '' ? '-' : String(v).slice(0, 10); },
-    fmtDateTime(v) { return v == null || v === '' ? '-' : String(v).replace('T', ' ').slice(0, 16); },
-    fmtMoney(v) { return v == null || v === '' ? '-' : Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); },
+    fmtDate, fmtDateTime, fmtMoney,
   };
 })();

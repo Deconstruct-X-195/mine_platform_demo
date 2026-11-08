@@ -1,0 +1,22 @@
+[
+  {
+    "step": "T0 UI.timeline 单元回归（fmtDateTime 格式化）",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "T1 钢厂履约跟踪页渲染",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "T2 承运商履约跟踪页渲染",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "T3 console 无 fmtDateTime 错误",
+    "ok": true,
+    "detail": "OK"
+  }
+]

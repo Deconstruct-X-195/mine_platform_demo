@@ -57,9 +57,8 @@
     const badge = UI.h('a', { class: 'msg-badge', href: '#/messages', id: 'msg-badge', style: 'display:none' }, '0');
     const shell = UI.h('div', { class: 'layout' },
       UI.h('aside', { class: 'sidebar' },
-        UI.h('div', { class: 'logo' }, TITLE, UI.h('small', {}, '一期 · PC 端')),
-        nav,
-        UI.h('div', { class: 'side-foot' }, '演示环境 · 数据非真实')),
+        UI.h('div', { class: 'logo' }, TITLE),
+        nav),
       UI.h('div', { class: 'main' },
         UI.h('div', { class: 'topbar' },
           UI.h('div', { class: 'page-title', id: 'page-title' }, ''),
