@@ -273,17 +273,187 @@
   /* -------- 数据字典 -------- */
   Pages.dict = async function (page) {
     const d = await API.get('/admin/dicts');
-    const wrap = UI.h('div', { class: 'card' }, UI.h('h3', {}, '状态机字典（FR-10-05）'));
-    Object.entries(d.transitions || {}).forEach(([biz, trs]) => {
-      wrap.appendChild(UI.h('h4', { style: 'margin:14px 0 6px' }, biz));
+    /* 字典说明元数据：仅用于页面展示，不参与任何业务逻辑。
+       label=中文业务名；kind=UI.STATUS 标签种类；intro=业务流程简介；
+       desc=逐状态业务含义；notes=特殊取值/业务关联规则提示 */
+    const META = {
+      biz_demand: {
+        label: '需求单', kind: 'DEMAND',
+        intro: '钢厂发布采购需求，提交后可发起询价，达成交易后转入订单履约。',
+        desc: {
+          DRAFT: '需求单尚未提交，仅本企业可见，可继续编辑完善',
+          SUBMITTED: '需求已正式提交平台，可据此发起询价',
+          INQUIRING: '需求已发起询价，正在等待供应商报价',
+          DEALT: '需求已达成交易，后续转入订单履约',
+          CLOSED: '需求终止，不再参与询价与交易',
+          WITHDRAWN: '提交人主动撤回，可修改后重新提交',
+        },
+        notes: ['已撤回的需求单重新提交时将生成新版本，历史版本留痕可查'],
+      },
+      biz_inquiry: {
+        label: '询价单', kind: 'INQUIRY',
+        intro: '面向受邀供应商发出的采购询价，经报价、议价后定标成交。',
+        desc: {
+          DRAFT: '询价单尚未发出，仅创建方可见',
+          SENT: '询价已发送给受邀供应商，等待其在截止时间前报价',
+          QUOTING: '已有供应商提交报价，截止前持续接收',
+          CLOSED: '报价截止，进入比价、议价与定标环节',
+          BARGAINING: '正与供应商就价格与条款磋商',
+          AWARDED: '已确定中标供应商，随后生成订单',
+          FAILED: '本次询价未达成交易而终止',
+        },
+        notes: ['订单超时失效后，已定标的询价单会重新开放定标（回到"已截止"），可再次议价定标'],
+      },
+      biz_quote: {
+        label: '报价单', kind: 'QUOTE',
+        intro: '供应商针对询价提交的密封报价，揭示前对其他参与方保密。',
+        desc: {
+          SUBMITTED: '供应商已提交密封报价，揭示前对其他参与方保密',
+          REVEALED: '报价到期揭示，采供双方可见报价内容',
+          BARGAINING: '该报价已进入议价磋商',
+          WIN: '该报价被采纳，供应商赢得交易',
+          LOSE: '该报价未被采纳',
+          REJECTED: '报价被拒收，不进入后续环节',
+        },
+        notes: ['订单超时失效后，中标报价会回退重新参与定标；再次未中则标记为"未中标"'],
+      },
+      biz_bargain: {
+        label: '议价轮次', kind: 'BARGAIN',
+        intro: '比价后与供应商发起的一对一议价，按轮次记录双方响应结果。',
+        desc: {
+          PENDING: '议价条件已发出，等待对方响应',
+          ONGOING: '与"待响应"含义相同的兼容取值（历史数据）',
+          ACCEPTED: '对方接受议价条件，可继续推进定标',
+          REJECTED: '对方拒绝该议价条件',
+          EXPIRED: '议价超时未响应，自动失效',
+        },
+      },
+      biz_order: {
+        label: '订单', kind: 'ORDER',
+        intro: '定标成交后生成的采购订单，经确认、签署合同后进入履约。',
+        desc: {
+          PENDING_CONFIRM: '订单已生成，等待供应商确认接单，超时未确认将自动失效',
+          PENDING_CONTRACT: '供应商已确认，等待生成合同并完成签署',
+          PENDING_EFFECT: '双方已签署，等待合同生效',
+          PERFORMING: '合同已生效，进入发货、运输、签收与结算环节',
+          COMPLETED: '履约与结算全部完成，订单归档',
+          CANCELLED: '订单被取消或超时未确认而失效',
+        },
+        notes: ['合同作废后，订单会退回"待签合同"，重新走合同生成与签署流程'],
+      },
+      biz_contract: {
+        label: '合同', kind: 'CONTRACT',
+        intro: '订单确认后由系统生成合同文本，双方依次签署后生效。',
+        desc: {
+          PENDING_GENERATE: '订单确认后等待生成合同文本',
+          PENDING_BUYER: '合同已生成，等待需方（钢厂）签署',
+          PENDING_SUPPLIER: '需方已签署，等待供应商签署',
+          EFFECTIVE: '双方签署完成，合同正式生效，可据此履约',
+          VOID: '合同已作废，需重新生成并签署',
+        },
+        notes: ['合同须先由需方签署、再由供方签署；已生效的合同不可作废'],
+      },
+      biz_waybill: {
+        label: '运单', kind: 'WAYBILL',
+        intro: '合同生效后按物流方案生成的运输单据，跟踪货物从发运到签收。',
+        desc: {
+          PENDING_ASSIGN: '运单已生成，等待指派承运商',
+          PENDING_ACCEPT: '已指派承运商，等待其确认接单',
+          PENDING_DEPART: '承运商已接单，等待车辆发运',
+          IN_TRANSIT: '货物已发运，正在运输途中',
+          ARRIVED: '货物已到达收货地，等待质检与签收',
+          SIGNED: '收货方完成签收，运输环节结束',
+          CANCELLED: '运单被取消（如发运前取消），不再流转',
+        },
+      },
+      biz_settlement: {
+        label: '结算单', kind: 'SETTLEMENT',
+        intro: '到货质检后按实收数量生成的结算单据，供需双方先后确认。',
+        desc: {
+          PENDING_CONFIRM_SUPPLIER: '结算单已生成，等待供应商核对确认',
+          PENDING_CONFIRM_BUYER: '供应商已确认，等待需方（钢厂）确认',
+          CONFIRMED: '双方确认完成，可登记付款',
+          COMPLETED: '付款完成，结算闭环',
+        },
+        notes: ['结算金额由系统按"单价×实收数量−扣罚"计算，实收与订单数量的偏差计入结算'],
+      },
+      biz_alert: {
+        label: '预警', kind: 'ALERT',
+        intro: '业务过程中自动触发的风险提示，由平台统一跟进处理。',
+        desc: {
+          PENDING: '预警已触发，等待平台处理',
+          PROCESSING: '平台已登记受理，正在跟进处理',
+          CLOSED: '预警处理完毕，流程结束',
+        },
+        notes: ['关闭预警必须填写处理意见，处理过程留痕可查'],
+      },
+      ent_company: {
+        label: '企业准入', kind: 'AUDIT',
+        intro: '企业注册资料的准入审核状态（对应字段 audit_status）。',
+        desc: {
+          PENDING: '注册资料已提交，等待平台准入审核',
+          APPROVED: '审核通过，企业可正常使用业务功能',
+          REJECTED: '审核未通过，可补充资料后重新提交',
+        },
+        notes: [
+          '企业关键信息变更后会重新进入"待审核"',
+          '此处仅为企业准入审核状态；企业账号另有独立的"启用/禁用"开关，二者互不影响',
+        ],
+      },
+    };
+
+    const wrap = UI.h('div', { class: 'card' }, UI.h('h3', {}, '状态机字典（FR-10-05）'),
+      UI.h('div', { class: 'hint', style: 'margin-bottom:16px;line-height:1.9' },
+        UI.h('div', {}, '用途：集中说明平台各业务单据的状态含义与允许的流转路径，帮助运营人员快速对照单据当前所处环节。'),
+        UI.h('div', {}, '数据来源：内容由系统状态机直接输出，与各业务单据实际执行的流转校验完全一致，随系统版本自动更新。'),
+        UI.h('div', {}, '更新规则：状态定义与流转规则随业务流程版本统一调整；每次状态变化均写入操作日志，历史留痕可追溯。')));
+
+    // 展示顺序：按业务流程排列（需求→询价→报价→议价→订单→合同→运单→结算→预警→准入），未识别的实体追加在末尾
+    const ORDER = ['biz_demand', 'biz_inquiry', 'biz_quote', 'biz_bargain', 'biz_order',
+      'biz_contract', 'biz_waybill', 'biz_settlement', 'biz_alert', 'ent_company'];
+    const bizKeys = Object.keys(d.transitions || {});
+    bizKeys.sort((a, b) => {
+      const ia = ORDER.indexOf(a), ib = ORDER.indexOf(b);
+      return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+    });
+    let first = true;
+    bizKeys.forEach((biz) => {
+      const trs = d.transitions[biz];
+      const meta = META[biz] || {};
+      const kind = meta.kind || '';
+      // 分节标题：中文业务名 + 灰色编码（便于与操作日志中的 bizType 对照）；非首节加分隔线
+      wrap.appendChild(UI.h('h4', {
+        style: first ? 'margin:14px 0 6px' : 'margin:22px 0 6px;padding-top:18px;border-top:1px solid var(--separator)',
+      }, meta.label || biz, UI.h('span', { class: 'hint', style: 'margin-left:8px;font-weight:400' }, biz)));
+      first = false;
+      if (meta.intro) wrap.appendChild(UI.h('div', { class: 'hint', style: 'margin-bottom:10px' }, meta.intro));
+
+      // 状态含义表：状态取值以页面元数据为主，UI.STATUS 与流转表兜底补充，保证不遗漏
+      const codes = [];
+      const seen = {};
+      const addCode = (c) => { if (c && !seen[c]) { seen[c] = 1; codes.push(c); } };
+      Object.keys(meta.desc || {}).forEach(addCode);
+      Object.keys(UI.STATUS[kind] || {}).forEach(addCode);
+      Object.entries(trs || {}).forEach(([f, ts]) => { addCode(f); (ts || []).forEach(addCode); });
+      wrap.appendChild(UI.h('div', { class: 'hint', style: 'margin:12px 0 6px;font-weight:600' }, '状态含义'));
+      wrap.appendChild(UI.table([
+        { key: 'code', label: '状态', render: (r) => UI.h('span', { title: r.code }, UI.statusTag(kind, r.code)) },
+        { key: 'desc', label: '业务含义', render: (r) => r.desc || '-' },
+      ], codes.map((c) => ({ code: c, desc: (meta.desc || {})[c] })), '暂无状态'));
+
       // BUG-01 修复：后端 TRANSITIONS 为嵌套 dict {from: [to...]}，须展开为行数组
       // 再交给 UI.table 渲染；此前直接传 dict 导致判空显示"无流转"。
       const rows = [];
       Object.entries(trs || {}).forEach(([from, tos]) => (tos || []).forEach((to) => rows.push({ from, to })));
+      wrap.appendChild(UI.h('div', { class: 'hint', style: 'margin:12px 0 6px;font-weight:600' }, '流转路径'));
       wrap.appendChild(UI.table([
-        { key: 'from', label: '起始状态' },
-        { key: 'to', label: '目标状态' },
+        { key: 'from', label: '起始状态', render: (r) => UI.h('span', { title: r.from }, UI.statusTag(kind, r.from)) },
+        { key: 'to', label: '目标状态', render: (r) => UI.h('span', { title: r.to }, UI.statusTag(kind, r.to)) },
       ], rows, '无流转'));
+
+      // 特殊取值规则 / 业务关联提示
+      (meta.notes || []).forEach((n) => wrap.appendChild(
+        UI.h('div', { class: 'hint', style: 'margin-top:6px' }, '※ ' + n)));
     });
     page.appendChild(wrap);
   };
