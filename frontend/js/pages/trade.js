@@ -261,6 +261,9 @@
       suppliers.forEach((s) => supBox.appendChild(UI.h('label', { class: 'field' },
         UI.h('input', { type: 'checkbox', value: s.id, style: 'width:auto' }), s.companyName)));
 
+      // BUG-07 修复：弹窗内持久错误提示区。此前校验/保存失败仅提示约 3 秒即
+      // 消失的 toast，弹窗保持打开且不显示失败原因，表现为"静默失败"。
+      const errBox = UI.h('div', { class: 'hint', style: 'color:#c0392b;font-weight:600' });
       const m = UI.modal('新建询价', UI.h('form', { onsubmit: (e) => e.preventDefault() },
         UI.h('div', { class: 'form-grid' },
           UI.formRow('来源需求', demandSel, true),
@@ -274,11 +277,13 @@
           UI.formRow('结算方式', settle),
           UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '询价说明'), desc),
           UI.h('div', { class: 'form-row full' }, UI.h('label', { class: 'req' }, '邀请供应商'), supBox)),
-        UI.h('div', { class: 'hint' }, '保存后为草稿，可在详情中发出')), [
+        UI.h('div', { class: 'hint' }, '保存后为草稿，可在详情中发出'),
+        errBox)), [
         UI.h('button', { class: 'primary', onclick: async () => {
+          const fail = (msg) => { errBox.textContent = msg; if (errBox.scrollIntoView) errBox.scrollIntoView({ block: 'nearest' }); };
           const inviteIds = Array.from(supBox.querySelectorAll('input:checked')).map((i) => Number(i.value));
-          if (!itemSel.value) { UI.toast('请选择需求明细', 'err'); return; }
-          if (!inviteIds.length) { UI.toast('至少邀请一家供应商', 'err'); return; }
+          if (!itemSel.value) { fail('请选择需求明细'); return; }
+          if (!inviteIds.length) { fail('至少邀请一家供应商'); return; }
           const body = {
             demandId: Number(demandSel.value),
             demandItemId: Number(itemSel.value),
@@ -288,8 +293,15 @@
             inviteSupplierIds: inviteIds,
             minResponse: minResp.value ? Number(minResp.value) : 2,
           };
-          if (!body.quantity || body.quantity <= 0) { UI.toast('请填写询价数量', 'err'); return; }
-          if (!body.arriveDate || !body.deadline) { UI.toast('期望到货日与报价截止为必填', 'err'); return; }
+          if (!body.quantity || body.quantity <= 0) { fail('请填写询价数量'); return; }
+          if (!body.arriveDate || !body.deadline) { fail('期望到货日与报价截止为必填'); return; }
+          // 与服务端同规则的本地时间预校验（datetime-local 按浏览器本地时区解析）
+          const dl = new Date(body.deadline.replace(' ', 'T'));
+          if (dl.getTime() < Date.now() + 2 * 3600 * 1000) { fail('报价截止时间必须至少为当前时间 +2 小时'); return; }
+          const arrDay = new Date(arrive.value + 'T00:00:00').getTime();
+          if (new Date(dl.getFullYear(), dl.getMonth(), dl.getDate()).getTime() > arrDay - 7 * 86400000) {
+            fail('报价截止时间不能晚于到货日期前 7 天'); return;
+          }
           if (dType.value) body.deliveryType = dType.value;
           if (place.value.trim()) body.deliveryPlace = place.value.trim();
           if (settle.value) body.settleType = settle.value;
@@ -297,7 +309,7 @@
           try {
             await API.post('/inquiries', body);
             m.close(); UI.toast('询价草稿已创建', 'ok'); onDone();
-          } catch (e) { /* toast 已提示 */ }
+          } catch (e) { fail('保存失败：' + (e.message || '请检查填写内容')); }
         } }, '保存草稿'),
       ], { wide: true });
     }
