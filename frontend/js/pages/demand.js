@@ -59,10 +59,21 @@
       }
       if (r.status === 'SUBMITTED') {
         btns.push(UI.h('button', { class: 'sm', onclick: async () => {
-          if (!(await UI.confirmBox('确认撤回？撤回后回到草稿状态。'))) return;
+          // 文案修正（BUG-04 关联）：撤回后状态为"已撤回"（不可编辑，可重新提交生成新版本），
+          // 并非回到草稿；原文案误导用户以为可继续编辑。
+          if (!(await UI.confirmBox('确认撤回？撤回后需求单不可编辑，可重新提交生成新版本。'))) return;
           await API.post('/demands/' + r.id + '/withdraw');
           UI.toast('已撤回', 'ok'); load();
         } }, '撤回'));
+      }
+      if (r.status === 'WITHDRAWN') {
+        // BUG-04 修复：补充"重新提交"入口。后端状态机本就支持
+        // WITHDRAWN→SUBMITTED（生成新版本 version+1），此前 UI 无入口导致流程中断。
+        btns.push(UI.h('button', { class: 'sm success', onclick: async () => {
+          if (!(await UI.confirmBox('确认重新提交需求单 ' + r.demand_no + '？将生成新版本。'))) return;
+          await API.post('/demands/' + r.id + '/submit');
+          UI.toast('已重新提交', 'ok'); load();
+        } }, '重新提交'));
       }
       if (r.status === 'SUBMITTED' || r.status === 'INQUIRING') {
         btns.push(UI.h('button', { class: 'sm danger', onclick: () => closeForm(r, () => load()) }, '关闭'));
@@ -128,13 +139,24 @@
         f.qualityReq.value = existing.quality_req || '';
         f.remark.value = existing.remark || '';
       }
-      const items = [];
+      // BUG-03 修复：编辑时回显已有明细。此前 items=[] 恒为空，编辑弹窗
+      // 恒显示"暂无明细，请添加"，误操作会清空原明细。
+      const items = ((existing && existing.items) || []).map((it) => ({
+        varietyId: it.varietyId == null ? '' : String(it.varietyId),
+        grade: it.grade == null ? '' : String(it.grade),
+        quantity: it.quantity == null ? '' : String(it.quantity),
+        moreLessRate: it.moreLessRate == null ? '' : String(it.moreLessRate),
+      }));
       const itemsBox = UI.h('div', {});
       function renderItems() {
         itemsBox.innerHTML = '';
         if (!items.length) { itemsBox.appendChild(UI.h('div', { class: 'empty' }, '暂无明细，请添加')); return; }
         items.forEach((it, idx) => {
           it.varietySel = UI.selectField(vOpts, it.varietyId);
+          // BUG-02 修复：新建明细行时未选中任何 option，浏览器默认显示第一项
+          // （如 PB粉），但数据模型 it.varietyId 仍为空，仅靠 change 事件同步，
+          // 导致"下拉已显示品种、保存却被拦明细不完整"。此处将默认选中项回写模型。
+          if (it.varietyId == null || it.varietyId === '') it.varietyId = it.varietySel.value;
           it.varietySel.addEventListener('change', () => { it.varietyId = it.varietySel.value; });
           it.gradeIn = UI.input('text', it.grade, { placeholder: '牌号', onchange: (e) => { it.grade = e.target.value; } });
           it.qtyIn = UI.input('number', it.quantity, { placeholder: '数量', onchange: (e) => { it.quantity = e.target.value; } });
