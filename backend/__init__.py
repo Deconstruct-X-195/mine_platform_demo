@@ -12,7 +12,7 @@ from flask import Flask, g, jsonify, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 
 from .common import ApiError
-from .db import dsn
+from .db import BUSINESS_TZ, dsn
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = os.path.join(_ROOT, 'frontend')
@@ -27,11 +27,11 @@ def create_app():
     app.config['MAX_CONTENT_LENGTH'] = 21 * 1024 * 1024  # 单文件 ≤20MB（PRD 7）
     os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-    # ---- 数据库连接（请求级事务）----
+    # ---- 数据库连接（请求级事务，会话时区=业务时区，BUG-06 修复）----
     @app.before_request
     def _open_conn():
         if request.path.startswith('/api/'):
-            g.conn = psycopg.connect(dsn(), row_factory=dict_row)
+            g.conn = psycopg.connect(dsn(), row_factory=dict_row, options='-c timezone=' + BUSINESS_TZ)
 
     @app.teardown_request
     def _close_conn(exc):

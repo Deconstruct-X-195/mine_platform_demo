@@ -9,6 +9,10 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: Langchain2026
       POSTGRES_DB: mine_platform
+      # 业务时区（BUG-06 修复）：与后端会话时区（backend/db.py BUSINESS_TZ）保持一致，
+      # 保证容器内 now() 日志与数据库时间函数均为北京时间
+      TZ: Asia/Shanghai
+      PGTZ: Asia/Shanghai
     ports:
       - "5432:5432"
     volumes:
