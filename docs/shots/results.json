@@ -1,0 +1,117 @@
+[
+  {
+    "step": "S01 登录页渲染",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S02 普阳登录+首页",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S03 新建需求+提交",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S04 新建询价并发出",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S05 询价列表渲染",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S06 询价详情渲染",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S07 中矿登录+询价列表",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S08 密封报价提交",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S09 截止揭示+比价快照",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S10 发出还价",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S11 中矿接受还价",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S12 普阳定标",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S13 中矿确认订单",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S14 普阳生成合同",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S15 订单详情渲染",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S16 需方签署合同",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S17 供方签署合同",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S18 结算工作台渲染",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S19 质检录入",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S20 生成结算",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S21 供应商确认结算",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S22 需方确认+付款登记",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S23 console错误收集",
+    "ok": true,
+    "detail": "OK"
+  }
+]

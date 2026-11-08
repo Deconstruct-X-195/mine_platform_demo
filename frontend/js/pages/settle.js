@@ -235,5 +235,7 @@
         ], d.payments || []));
       UI.modal('结算详情', body);
     }
+
+    await load();
   };
 })();

@@ -7,12 +7,13 @@
 - 可询量 = 明细数量 - 已询量累计，发单时扣减。
 """
 from datetime import datetime, timedelta
+from decimal import Decimal
 import json
 
 from flask import g, request
 
-from ..common import (ApiError, doc_no, get_params, json_payload, ok, op_log,
-                      page_args, page_data, parse_date, parse_datetime,
+from ..common import (ApiError, decimal_field, doc_no, get_params, json_payload,
+                      ok, op_log, page_args, page_data, parse_date, parse_datetime,
                       require_fields, send_msg)
 from ..db import execute, qall, q1
 from ..security import ROLE_STEEL, ROLE_SUPPLIER, auth_required, roles_required
@@ -205,15 +206,16 @@ def inquiry_detail(iid):
 # ---------------- 报价（密封） ----------------
 
 def _quote_payload_check(conn, inq, p):
-    require_fields(p, 'price', 'quantity', 'deliveryDate')
-    qty = p['quantity']
-    if qty < float(inq['quantity']) * 0.8 and not (p.get('remark') or '').strip():
-        raise ApiError(40001, '可供数量低于询价量 80%% 时必须填写备注说明')
-    price = p['price']
+    require_fields(p, 'deliveryDate')
+    # 数值字段统一规范化：前端 <input> 的 value 为字符串，非法值返回 40001 而非 500
+    price = decimal_field(p, 'price', positive=False)
+    qty = decimal_field(p, 'quantity', positive=False)
     if price <= 0:
         raise ApiError(40001, '报价单价必须大于0')
     if qty <= 0:
         raise ApiError(40001, '可供数量必须大于0')
+    if qty < Decimal(str(inq['quantity'])) * Decimal('0.8') and not (p.get('remark') or '').strip():
+        raise ApiError(40001, '可供数量低于询价量 80% 时必须填写备注说明')
     delivery_date = parse_date(p, 'deliveryDate')
     if inq['expect_arrive_date'] and delivery_date > inq['expect_arrive_date']:
         raise ApiError(40001, '交货期承诺晚于期望到货日期')

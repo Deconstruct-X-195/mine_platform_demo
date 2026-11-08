@@ -95,7 +95,7 @@
         UI.h('h3', { style: 'margin-top:14px' }, '需求明细'),
         UI.table([
           { key: 'varietyName', label: '品种' },
-          { key: 'grade', label: '牌号' },
+          { key: 'grade', label: '品位(%)' },
           { key: 'quantity', label: '数量(吨)', num: true, render: (r) => UI.fmtMoney(r.quantity) },
           { key: 'moreLessRate', label: '溢短装(%)', num: true },
           { key: 'inquiredQty', label: '已询量', num: true },
@@ -158,7 +158,7 @@
           // 导致"下拉已显示品种、保存却被拦明细不完整"。此处将默认选中项回写模型。
           if (it.varietyId == null || it.varietyId === '') it.varietyId = it.varietySel.value;
           it.varietySel.addEventListener('change', () => { it.varietyId = it.varietySel.value; });
-          it.gradeIn = UI.input('text', it.grade, { placeholder: '牌号', onchange: (e) => { it.grade = e.target.value; } });
+          it.gradeIn = UI.input('number', it.grade, { placeholder: '品位(%)', onchange: (e) => { it.grade = e.target.value; } });
           it.qtyIn = UI.input('number', it.quantity, { placeholder: '数量', onchange: (e) => { it.quantity = e.target.value; } });
           it.mlIn = UI.input('number', it.moreLessRate, { placeholder: '如 5 表示 ±5%', onchange: (e) => { it.moreLessRate = e.target.value; } });
           itemsBox.appendChild(UI.h('div', { class: 'inline-flex', style: 'margin-bottom:6px' },
@@ -205,7 +205,7 @@
             if (!payload.expectArriveStart || !payload.expectArriveEnd) { UI.toast('期望到货日期为必填', 'err'); return; }
             const its = [];
             for (const it of items) {
-              if (!it.varietyId || !it.grade || !it.quantity) { UI.toast('明细需完整填写品种/牌号/数量', 'err'); return; }
+              if (!it.varietyId || !it.grade || !it.quantity) { UI.toast('明细需完整填写品种/品位/数量', 'err'); return; }
               its.push({ varietyId: Number(it.varietyId), grade: it.grade, quantity: Number(it.quantity), moreLessRate: it.moreLessRate ? Number(it.moreLessRate) : 0 });
             }
             if (!its.length) { UI.toast('至少一条需求明细', 'err'); return; }
@@ -246,7 +246,7 @@
       listCard.innerHTML = '';
       listCard.appendChild(UI.table([
         { key: 'demandNo', label: '需求编号' },
-        { label: '品种/牌号', render: (r) => UI.h('span', {}, ...(r.items || []).map((it, i) => [
+        { label: '品种/品位', render: (r) => UI.h('span', {}, ...(r.items || []).map((it, i) => [
           i > 0 ? '；' : null, (it.varietyName || '-') + ' ' + (it.grade || ''),
         ]).flat()) },
         { key: 'totalQty', label: '总量(吨)', num: true, render: (r) => UI.fmtMoney(r.totalQty) },
@@ -270,7 +270,7 @@
         UI.h('h3', { style: 'margin-top:14px' }, '品种明细（脱敏概要）'),
         UI.table([
           { key: 'varietyName', label: '品种' },
-          { key: 'grade', label: '牌号' },
+          { key: 'grade', label: '品位(%)' },
           { key: 'quantity', label: '数量(吨)', num: true },
           { key: 'moreLessRate', label: '溢短装(%)', num: true },
         ], r.items || [])));

@@ -133,7 +133,7 @@
       varCard.appendChild(UI.table([
         { key: 'varietyCode', label: '品种代码' },
         { key: 'varietyName', label: '品种名称' },
-        { key: 'defaultGrade', label: '默认牌号' },
+        { key: 'defaultGrade', label: '默认品位(%)' },
         { key: 'unit', label: '计量单位' },
         { key: 'status', label: '状态' },
       ], vars, '暂无品种'));
@@ -162,13 +162,13 @@
         UI.h('div', { class: 'form-grid' },
           UI.formRow('品种代码', code, true),
           UI.formRow('品种名称', name, true),
-          UI.formRow('默认牌号', grade),
+          UI.formRow('默认品位(%)', grade),
           UI.formRow('计量单位', unit))), [
         UI.h('button', { class: 'primary', onclick: async () => {
           if (!code.value.trim() || !name.value.trim()) { UI.toast('请填写品种代码与名称', 'err'); return; }
           const g = grade.value.trim();
           if (g !== '' && (isNaN(Number(g)) || Number(g) < 0 || Number(g) > 999.99)) {
-            UI.toast('默认牌号必须为 0～999.99 的数字（如 61.5）', 'err'); return;
+            UI.toast('默认品位必须为 0～999.99 的数字（如 61.5）', 'err'); return;
           }
           try {
             await API.post('/admin/varieties', { varietyCode: code.value.trim(), varietyName: name.value.trim(), defaultGrade: g || null, unit: unit.value.trim() });

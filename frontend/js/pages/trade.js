@@ -337,7 +337,7 @@
       listCard.appendChild(UI.table([
         { key: 'inquiryNo', label: '询价编号' },
         { key: 'varietyName', label: '品种' },
-        { key: 'grade', label: '牌号' },
+        { key: 'grade', label: '品位(%)' },
         { key: 'quantity', label: '数量(吨)', num: true, render: (r) => UI.fmtMoney(r.quantity) },
         { key: 'deliveryPlace', label: '交货地点' },
         { key: 'expectArriveDate', label: '期望到货', render: (r) => UI.fmtDate(r.expectArriveDate) },

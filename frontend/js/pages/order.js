@@ -99,7 +99,7 @@
       listCard.appendChild(UI.table([
         { key: 'order_no', label: '订单号' },
         { key: 'varietyName', label: '品种' },
-        { key: 'grade', label: '牌号' },
+        { key: 'grade', label: '品位(%)' },
         { key: 'quantity', label: '数量', num: true, render: (r) => UI.fmtMoney(r.quantity) },
         { key: 'unit_price', label: '单价', num: true, render: (r) => UI.fmtMoney(r.unit_price) },
         { key: 'amount', label: '金额', num: true, render: (r) => UI.fmtMoney(r.amount) },
@@ -141,7 +141,7 @@
       const body = UI.h('div', {},
         UI.kv([
           ['订单号', d.order_no], ['状态', UI.statusTag('ORDER', d.status)],
-          ['品种', d.varietyName], ['牌号', d.grade],
+          ['品种', d.varietyName], ['品位(%)', d.grade],
           ['数量', UI.fmtMoney(d.quantity) + ' 吨'], ['单价', UI.fmtMoney(d.unit_price)],
           ['金额', UI.fmtMoney(d.amount)], ['溢短装', d.more_less_rate != null ? d.more_less_rate + '%' : '-'],
           ['交货方式', DELIVERY[d.delivery_type] || d.delivery_type], ['交货地点', d.delivery_place],
@@ -268,6 +268,8 @@
             API.download('/files/' + String(c.file_url).split(',')[0], c.contract_no + '-v' + c.version + '.pdf') }, '下载合同文件')) : null);
       UI.modal('合同详情', body);
     }
+
+    await load();
   };
 
   /* -------- 物流方案（钢厂） -------- */

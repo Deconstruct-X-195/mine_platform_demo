@@ -5,8 +5,8 @@
 """
 from flask import g
 
-from ..common import (ApiError, get_params, json_payload, ok, op_log,
-                      parse_date, require_fields)
+from ..common import (ApiError, decimal_field, get_params, json_payload, ok,
+                      op_log, parse_date, require_fields)
 from ..db import execute, qall, q1
 from ..security import ROLE_STEEL, ROLE_SUPPLIER, auth_required, roles_required
 from ..state_machine import transition
@@ -51,13 +51,20 @@ def create_bargain():
     if round_no > 10:
         raise ApiError(40901, '议价轮次已达上限 10 轮')
     initiator = 'BUYER' if is_buyer else 'SUPPLIER'
+    # 数值字段规范化：还价 price/quantity 允许缺省（跟随报价），但传入非法值返回 40001
+    price = decimal_field(p, 'price', positive=False, required=False)
+    quantity = decimal_field(p, 'quantity', positive=False, required=False)
+    if price is not None and price <= 0:
+        raise ApiError(40001, '还价单价必须大于0')
+    if quantity is not None and quantity <= 0:
+        raise ApiError(40001, '还价数量必须大于0')
 
     bid = execute(g.conn, """
         INSERT INTO biz_bargain (quote_id, inquiry_id, round_no, initiator, price, quantity,
             delivery_date, settle_type, extra_terms, status, created_by)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s) RETURNING id
-        """, (p['quoteId'], quote['inquiry_id'], round_no, initiator, p.get('price'),
-              p.get('quantity'), parse_date(p, 'deliveryDate', required=False),
+        """, (p['quoteId'], quote['inquiry_id'], round_no, initiator, price,
+              quantity, parse_date(p, 'deliveryDate', required=False),
               p.get('settleType'), p.get('extraTerms'), g.ctx.user['id']), returning_id=True)
     if quote['status'] == 'REVEALED':
         execute(g.conn, "UPDATE biz_quote SET status='BARGAINING', updated_at=now() WHERE id=%s", (p['quoteId'],))

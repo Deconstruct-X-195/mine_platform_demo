@@ -139,6 +139,7 @@
 
   function input(type, value, props) {
     const el = h('input', Object.assign({}, props || {}));
+    if (type) el.type = type;  // 修复：此前 type 参数被忽略，date/number 字段渲染为纯文本框
     if (value != null && value !== '') el.value = value;
     return el;
   }
