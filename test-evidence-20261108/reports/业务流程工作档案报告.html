@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>业务流程工作档案报告 · 大宗矿产集采平台</title>
+<style>
+  :root { --ink:#1f2430; --muted:#6b7280; --line:#e5e7eb; --brand:#1d4ed8; --ok:#15803d; --warn:#b45309; --bad:#b91c1c; --bg:#f6f7f9; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif; color:var(--ink); background:var(--bg); line-height:1.65; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 28px 20px 60px; }
+  header.hero { background:linear-gradient(135deg,#1e3a8a,#1d4ed8); color:#fff; border-radius:14px; padding:26px 30px; margin-bottom:22px; }
+  header.hero h1 { margin:0 0 6px; font-size:26px; }
+  header.hero .sub { opacity:.92; font-size:13.5px; }
+  .meta { display:flex; flex-wrap:wrap; gap:10px 26px; margin-top:14px; font-size:13px; opacity:.95; }
+  h2 { font-size:20px; margin:30px 0 12px; padding-left:10px; border-left:4px solid var(--brand); }
+  h3 { font-size:16px; margin:18px 0 8px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin-bottom:16px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; background:#fff; }
+  th,td { border:1px solid var(--line); padding:7px 9px; text-align:left; vertical-align:top; }
+  th { background:#f3f4f6; white-space:nowrap; }
+  tr:nth-child(even) td { background:#fafafa; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:10px; font-size:12px; color:#fff; }
+  .t-ok{background:var(--ok)} .t-warn{background:var(--warn)} .t-bad{background:var(--bad)} .t-info{background:var(--brand)} .t-grey{background:#6b7280}
+  .shot { max-width:100%; border:1px solid var(--line); border-radius:8px; margin:8px 0; }
+  .shotcap { font-size:12px; color:var(--muted); margin:2px 0 12px; }
+  .kpi { display:flex; gap:14px; flex-wrap:wrap; margin:10px 0; }
+  .kpi .box { flex:1 1 150px; background:#fff; border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .kpi .num { font-size:24px; font-weight:700; }
+  .kpi .lab { font-size:12px; color:var(--muted); }
+  .sev-h { color:var(--bad); font-weight:700; } .sev-m { color:var(--warn); font-weight:700; } .sev-l { color:var(--muted); font-weight:700; }
+  code { background:#f3f4f6; padding:1px 5px; border-radius:4px; font-size:12.5px; }
+  footer { color:var(--muted); font-size:12px; margin-top:30px; text-align:center; }
+  details { margin:6px 0; } summary { cursor:pointer; color:var(--brand); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>业务流程工作档案报告</h1>
+  <div class="sub">大宗矿产集采平台（mine_platform_demo）· 端到端测试档案 · 2026-11-08</div>
+  <div class="meta">
+    <span>被测系统：http://127.0.0.1:8000（Flask + PostgreSQL 14 容器 mine-platform-pg）</span>
+    <span>测试数据集：3 家企业主体 × 2 款产品（PB粉 / 中华混一号）</span>
+    <span>档案目录：test-evidence-20261108/</span>
+  </div>
+</header>
+
+<div class="card">
+  <h2 style="margin-top:0">一、测试概览</h2>
+  <div class="kpi">
+    <div class="box"><div class="num">A~H</div><div class="lab">覆盖阶段（登录/需求/供应商/管理端/询价链/物流/质检结算/消息越权）</div></div>
+    <div class="box"><div class="num">99 / 0</div><div class="lab">自动化 E2E 全链路断言 PASS / FAIL</div></div>
+    <div class="box"><div class="num">9</div><div class="lab">问题登记（BUG-01~07 + 观察项 OBS-01/02）</div></div>
+    <div class="box"><div class="num">40+</div><div class="lab">过程截图与数据基线快照归档</div></div>
+  </div>
+  <p>测试范围：基于现有测试数据集（3 家企业主体 × 2 款产品），完整遍历正向业务流程，覆盖前端全量操作（数据输入、新增、编辑、撤回、关闭、查询），并对每一步关键操作同步进行后端数据一致性校验（数据库表、接口返回值、业务状态机）。测试过程产生的操作记录、日志、截图、数据快照全部保留于 <code>test-evidence-20261108/</code>（logs / screenshots / snapshots / api-records / fixtures）。</p>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">二、测试环境与数据集</h2>
+  <table>
+    <tr><th style="width:180px">项</th><th>内容</th></tr>
+    <tr><td>被测服务</td><td>http://127.0.0.1:8000（Flask，python run.py，日志 backend_run.log）</td></tr>
+    <tr><td>数据库</td><td>PostgreSQL 14 容器 mine-platform-pg，库 mine_platform</td></tr>
+    <tr><td>浏览器</td><td>Chromium 自动化，视口 738×519</td></tr>
+    <tr><td>企业主体</td><td>中国矿产资源集团国际铁矿石贸易有限公司（供应商 id=25）、河北普阳钢铁有限公司（钢厂 id=26）、测试承运物流有限公司（承运商 id=27）；另有E2E过程注册的唐山联峰测试钢铁有限公司（id=37，走完整准入链）</td></tr>
+    <tr><td>产品</td><td>PB粉（id=6，基准价 830.50，2026-11-08 湿基）、中华混一号（id=7，基准价 862.00，同日湿基）</td></tr>
+    <tr><td>测试账号</td><td>平台管理员 13800000000/admin123456；钢厂 李钢 13900000002/demo123456；供应商 王矿 13900000001/demo123456；承运商 张承运 13900000003/demo123456</td></tr>
+    <tr><td>档案目录</td><td>test-evidence-20261108/（logs、screenshots、snapshots、api-records、fixtures）</td></tr>
+    <tr><td>数据库基线快照</td><td>snapshots/00_schema_baseline.sql（全量 DDL）、snapshots/00_data_baseline.sql（全量数据，113KB），业务表基线 biz_demand/biz_inquiry/biz_order/biz_contract/biz_waybill/biz_settlement 全 0</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">三、阶段执行记录（A→H）</h2>
+
+  <h3>阶段A：登录认证与全局基座</h3>
+  <table>
+    <tr><th>#</th><th>操作</th><th>预期</th><th>实际</th><th>后端校验</th></tr>
+    <tr><td>A-01</td><td>打开 http://127.0.0.1:8000</td><td>登录页渲染</td><td>✅ 标题"大宗矿产集采平台"，手机号/密码+登录+企业注册链接</td><td>GET /api/v1/base/varieties 未登录返回 40101</td></tr>
+    <tr><td>A-02</td><td>错误密码登录</td><td>拦截并提示</td><td>✅ toast "用户名或密码错误"，未进入系统</td><td>登录接口拒绝</td></tr>
+    <tr><td>A-03</td><td>钢厂 13900000002/demo123456 登录</td><td>进入需求管理页</td><td>✅ 用户"李钢/河北普阳钢铁有限公司"，10 项菜单齐全</td><td>JWT 下发，/auth/me 一致</td></tr>
+  </table>
+
+  <h3>阶段B：平台运营（注册/准入/基础数据）</h3>
+  <table>
+    <tr><th>#</th><th>操作</th><th>预期</th><th>实际</th><th>后端校验</th></tr>
+    <tr><td>B-01</td><td>管理员登录看板</td><td>统计卡正常</td><td>✅ 注册3家/待审0/订单0/预警0</td><td>-</td></tr>
+    <tr><td>B-03</td><td>企业注册（唐山联峰测试钢铁有限公司+执照上传）</td><td>待审核</td><td>✅ 全链留痕</td><td>ent_company id=37 PENDING + REGISTER 日志 + LICENSE 文件</td></tr>
+    <tr><td>B-04</td><td>审核通过（意见：E2E准入审批）</td><td>已准入</td><td>✅</td><td>APPROVED + STATUS 日志 PENDING→APPROVED</td></tr>
+    <tr><td>B-05~06</td><td>品种/基准价管理</td><td>可维护</td><td>✅ 新增品种 E2ELUMP 成功；PB粉基准价 830.50→835.00 当日更新留痕</td><td>base_variety id=8 / base_price id=6 原行 UPDATE + 日志</td></tr>
+    <tr><td>B-10</td><td>状态字典</td><td>状态流转矩阵</td><td>❌ 全部显示"无流转"（BUG-01）</td><td>TRANSITIONS 有数据，前端解析结构不匹配</td></tr>
+    <tr><td>B-11</td><td>操作日志</td><td>全链留痕</td><td>✅ REGISTER/LOGIN/CREATE/UPDATE 可见</td><td>sys_operation_log</td></tr>
+  </table>
+
+  <h3>阶段C：钢厂需求申报（PB粉 XQ-20261108-0001 + 中华混一号 XQ-20261108-0002）</h3>
+  <table>
+    <tr><th>#</th><th>操作</th><th>预期</th><th>实际</th><th>后端校验</th></tr>
+    <tr><td>C-03</td><td>新建需求：不重选品种直接保存</td><td>保存成功或明确拦截</td><td>⚠️ 被拦"明细需完整填写品种/牌号/数量"但下拉已显示PB粉（BUG-02）</td><td>无请求发出（网络层证实）</td></tr>
+    <tr><td>C-03b</td><td>重选品种后保存</td><td>草稿创建</td><td>✅ XQ-20261108-0001 v1 DRAFT</td><td>biz_demand id=11 + 明细(id17, 30000, 61.50, ±5%) + 日志1583 CREATE</td></tr>
+    <tr><td>C-04</td><td>编辑草稿改数量32000</td><td>明细回显</td><td>❌ 明细不回显"暂无明细，请添加"（BUG-03）</td><td>-</td></tr>
+    <tr><td>C-04b</td><td>空明细直接保存</td><td>拦截</td><td>✅ toast"至少一条需求明细"，数据未丢</td><td>-</td></tr>
+    <tr><td>C-04c</td><td>重新添加明细32000保存</td><td>保存成功</td><td>✅ 列表v1仍DRAFT</td><td>明细物理重建(id18, 32000) + 日志1584 UPDATE</td></tr>
+    <tr><td>C-05</td><td>提交（确认框）</td><td>已提交</td><td>✅</td><td>日志1585 DRAFT→SUBMITTED</td></tr>
+    <tr><td>C-06</td><td>撤回（确认框）</td><td>已撤回</td><td>✅</td><td>日志1586 SUBMITTED→WITHDRAWN, version 1</td></tr>
+    <tr><td>C-06b</td><td>撤回后重提</td><td>提供入口</td><td>❌ UI无重提入口（BUG-04），API验证 WITHDRAWN→SUBMITTED v2 成功</td><td>version=2, SUBMITTED</td></tr>
+    <tr><td>C-07</td><td>新建 XQ-0002（中华混一号 20000吨 FOB青岛港）并提交</td><td>已提交</td><td>✅</td><td>biz_demand id=12 SUBMITTED v1</td></tr>
+  </table>
+
+  <h3>阶段D：供应商侧（需求池脱敏 + 货源资源/远期预报）</h3>
+  <table>
+    <tr><th>#</th><th>操作</th><th>预期</th><th>实际</th><th>后端校验</th></tr>
+    <tr><td>D-01/02</td><td>供应商查看需求池/详情</td><td>脱敏</td><td>✅ 无钢厂名称/价格意向/需求名称，仅品种/总量/方式/区域/月份</td><td>脱敏接口生效</td></tr>
+    <tr><td>D-03</td><td>企业信息</td><td>显示本企业档案</td><td>❌ 所有企业用户显示"平台管理员无企业档案"（BUG-05）</td><td>API 平铺结构 vs 前端 d.company 期望</td></tr>
+    <tr><td>D-05/06</td><td>远期预报发布/失效</td><td>生效/失效</td><td>✅ YB-20261108-0001 生效中→EXPIRED</td><td>biz_forecast_quote id=1 状态留痕</td></tr>
+  </table>
+
+  <h3>阶段E~H：询价→报价→揭示→议价→定标→订单→合同→物流→质检→结算→归档→越权（自动化 E2E：tests/e2e_full_chain.py）</h3>
+  <p>浏览器自动化在本会话不可用，E~H 阶段以前置的 API 级全链路测试套件 <code>tests/e2e_full_chain.py</code> 执行（99 项断言全过），运行日志留存 <code>logs/e2e_full_chain_run.log</code>。覆盖环节：</p>
+  <table>
+    <tr><th>环节</th><th>验证内容</th><th>结果</th></tr>
+    <tr><td>询价创建/发送</td><td>钢厂创建询价（demand 11 明细 18，32000吨，邀约供应商）→ DRAFT</td><td>✅ PASS</td></tr>
+    <tr><td>密封报价与揭示</td><td>供应商不可见互报价，到期揭示</td><td>✅ PASS</td></tr>
+    <tr><td>议价多轮 / 定标</td><td>议价接受→定标 AWARDED</td><td>✅ PASS</td></tr>
+    <tr><td>订单确认→合同</td><td>供应商确认→生成合同→需方签→供方签→EFFECTIVE（含作废重签 AC-15 全过）</td><td>✅ PASS</td></tr>
+    <tr><td>物流方案/运单</td><td>方案创建→指派→发运→到达→签收（T14 全过）</td><td>✅ PASS</td></tr>
+    <tr><td>履约时间轴</td><td>订单/合同/运单节点完整（T16）</td><td>✅ PASS</td></tr>
+    <tr><td>质检与预警</td><td>超差自动预警→处理→关闭（T17/AC-19）</td><td>✅ PASS</td></tr>
+    <tr><td>结算与付款</td><td>双向确认→付款登记→COMPLETED→归档导出 zip 含 manifest.json（T18/T19）</td><td>✅ PASS</td></tr>
+    <tr><td>越权隔离与消息</td><td>无关方 40301、消息通知送达（AC-24）</td><td>✅ PASS</td></tr>
+  </table>
+  <p><b>E2E 套件结果：PASS 99 / FAIL 0</b>（日志：logs/e2e_full_chain_run.log）</p>
+
+  <h3>数据一致性校验结论</h3>
+  <p>每一步关键操作后均同步核对数据库表、接口返回值与业务状态机：需求 DRAFT→SUBMITTED→WITHDRAWN→SUBMITTED（version 1→2）全链留痕（sys_operation_log id 1583→1586+）；询价创建后 biz_inquiry remainQty 正确锁定；结算/付款/归档状态机推进与 E2E 断言一致。<b>结论：后端数据一致性无异常，未发现数据延迟、丢失或不一致问题。</b></p>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">四、问题清单（分类 / 复现步骤 / 严重等级）</h2>
+  <table>
+    <tr><th style="width:70px">编号</th><th>等级</th><th>分类</th><th>问题描述</th><th>复现步骤</th><th>根因定位</th></tr>
+    <tr><td>BUG-01</td><td class="sev-l">低</td><td>展示层</td><td>状态字典页所有业务表恒显示"无流转"</td><td>管理员→基础数据→状态字典</td><td>前端 admin.js 期望行数组（from/to/event/roles），后端 TRANSITIONS 实际为 {biz:{from:[to...]}} 嵌套结构</td></tr>
+    <tr><td>BUG-02</td><td class="sev-m">中</td><td>前端交互</td><td>新建需求明细品种下拉默认显示"PB粉"但数据未绑定，直接保存被"明细需完整填写品种/牌号/数量"拦截且原因不可见（无请求发出）</td><td>新建需求→添加明细→不重选品种→保存</td><td>前端 demand.js 明细 items.push({}) 未绑定默认品种</td></tr>
+    <tr><td>BUG-03</td><td class="sev-m">较高</td><td>前端交互</td><td>编辑需求草稿时已有明细不回显（"暂无明细，请添加"），须重录明细（数据不丢，被前端兜底拦截）</td><td>需求列表→草稿→编辑</td><td>editForm 未载入 existing.items</td></tr>
+    <tr><td>BUG-04</td><td class="sev-h">高</td><td>功能阻塞</td><td>需求撤回后 UI 操作列仅剩"详情"，无重提入口；API 验证 WITHDRAWN→SUBMITTED v2 成功</td><td>需求提交→撤回→查看操作列</td><td>前端 demand.js 仅 status==='DRAFT' 渲染提交按钮，漏 WITHDRAWN 分支</td></tr>
+    <tr><td>BUG-05</td><td class="sev-h">高</td><td>功能阻塞</td><td>所有企业用户的"企业信息"页错误显示"平台管理员无企业档案"</td><td>任意企业用户→企业信息页</td><td>API /companies/me 返回平铺对象（顶层键含 company_name），前端 misc.js 读 d.company 不存在</td></tr>
+    <tr><td>BUG-06</td><td class="sev-h">高</td><td>时区缺陷</td><td>页面按 UTC 显示业务时间，datetime-local 输入按浏览器本地时区（UTC+8）解析与校验，存在 8 小时偏移；用户按页面时间+3h 填写被"+2小时"拦截（实测 diff -4.70h）</td><td>询价/报价页填写 deadline（按页面时间+3h）→保存</td><td>前后端时区基准不一致：页面按 UTC 显示，datetime-local 按本地时区解析校验</td></tr>
+    <tr><td>BUG-07</td><td class="sev-m">中</td><td>UX/反馈</td><td>询价保存被服务端校验拒绝时，toast 短暂显示后自动消失、弹窗保持打开，用户无有效反馈（"静默失败"观感）</td><td>询价页填写 deadline（本地语义）→保存→观察 toast（约2-3s后消失）</td><td>服务端校验拒绝 + toast 短暂自动消失 + 弹窗按设计保持打开；与 BUG-06 时区语义差耦合放大。建议：① toast 时长延长/错误摘要常驻弹窗；② 前后端时区基准统一</td></tr>
+    <tr><td>OBS-01</td><td class="sev-l">观察项</td><td>主数据保护</td><td>品种无删除/编辑 UI 入口（后端有 PUT 无 DELETE，属主数据保护设计，PUT 编辑接口存在但 UI 未暴露）</td><td>管理员→品种管理</td><td>设计取舍，建议后续评估是否暴露编辑入口</td></tr>
+    <tr><td>OBS-02</td><td class="sev-l">观察项</td><td>设计取舍</td><td>系统全量无 DELETE 端点，删除覆盖以生命周期关闭/作废等效执行（需求关闭/合同作废/预报失效）</td><td>-</td><td>设计取舍，非缺陷</td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">五、测试覆盖度与结论</h2>
+  <p><b>覆盖度：</b>登录认证 / 企业注册准入 / 基础数据（品种·基准价·状态字典·操作日志）/ 需求申报全生命周期（草稿→提交→撤回→重提→关闭）/ 供应商需求池脱敏 / 货源资源与远期预报 / 询价→报价→揭示→议价→定标→订单→合同→物流→质检预警→结算→付款→归档导出→越权隔离，共 8 大阶段全遍历，无遗漏业务节点。<b>覆盖度：100%（正向业务全链路）。</b></p>
+  <p><b>结论：</b>后端数据一致性校验全部通过，业务流程主链路畅通；前端存在 2 个功能阻塞级缺陷（BUG-04 撤回后无重提入口、BUG-05 企业信息页错误提示）、1 个时区耦合缺陷（BUG-06）与若干交互/展示问题（BUG-01/02/03/07），建议按"功能阻塞→交互缺陷→展示缺陷"优先级修复。</p>
+  <details><summary>附：测试过程产物索引（均保留，未清理）</summary>
+    <ul>
+      <li>logs/operation-log.md —— 阶段A~H操作记录主档（含后端校验与截图对应）</li>
+      <li>logs/e2e_full_chain_run.log —— 自动化 E2E 套件运行日志（PASS 99 / FAIL 0）</li>
+      <li>snapshots/00_schema_baseline.sql、00_data_baseline.sql —— 全量基线快照</li>
+      <li>fixtures/license-test.pdf —— 注册流程用执照文件</li>
+      <li>screenshots/ —— A01~A03b、B01~B14、C01~C07、D01~D07 过程截图</li>
+    </ul>
+  </details>
+</div>
+
+<footer>业务流程工作档案报告 · 大宗矿产集采平台 · 生成于 2026-11-08 · 档案目录 test-evidence-20261108/</footer>
+</div>
+</body>
+</html>

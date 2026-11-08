@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>系统使用说明 · 大宗矿产集采平台</title>
+<style>
+  :root { --ink:#1f2430; --muted:#6b7280; --line:#e5e7eb; --brand:#1d4ed8; --bg:#f6f7f9; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif; color:var(--ink); background:var(--bg); line-height:1.7; }
+  .wrap { max-width: 1000px; margin:0 auto; padding:28px 20px 60px; }
+  header.hero { background:linear-gradient(135deg,#0f766e,#1d4ed8); color:#fff; border-radius:14px; padding:26px 30px; margin-bottom:22px; }
+  header.hero h1 { margin:0 0 6px; font-size:26px; }
+  header.hero .sub { opacity:.92; font-size:13.5px; }
+  nav.toc { background:#fff; border:1px solid var(--line); border-radius:12px; padding:16px 22px; margin-bottom:18px; font-size:14px; }
+  nav.toc a { color:var(--brand); text-decoration:none; }
+  h2 { font-size:20px; margin:30px 0 12px; padding-left:10px; border-left:4px solid var(--brand); }
+  h3 { font-size:16px; margin:18px 0 8px; color:#0f766e; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; padding:18px 22px; margin-bottom:16px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; background:#fff; }
+  th,td { border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:#f3f4f6; white-space:nowrap; }
+  .shot { max-width:100%; border:1px solid var(--line); border-radius:8px; margin:8px 0; }
+  .shotcap { font-size:12px; color:var(--muted); margin:2px 0 14px; }
+  .step { display:flex; gap:10px; margin:8px 0; }
+  .step .no { flex:0 0 26px; height:26px; border-radius:50%; background:var(--brand); color:#fff; text-align:center; line-height:26px; font-size:13px; font-weight:700; }
+  .step .tx { flex:1; }
+  .role { display:inline-block; padding:2px 10px; border-radius:10px; font-size:12px; color:#fff; margin-right:6px; }
+  .r-steel{background:#1d4ed8} .r-sup{background:#0f766e} .r-carrier{background:#b45309} .r-admin{background:#6b7280}
+  .note { background:#fffbeb; border:1px solid #fde68a; border-radius:8px; padding:10px 14px; font-size:13px; margin:10px 0; }
+  code { background:#f3f4f6; padding:1px 5px; border-radius:4px; font-size:12.5px; }
+  footer { color:var(--muted); font-size:12px; margin-top:30px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <h1>系统使用说明</h1>
+  <div class="sub">大宗矿产集采平台（mine_platform_demo）· 图文操作手册 · 2026-11-08</div>
+</header>
+
+<nav class="toc">
+  <b>目录</b>　
+  <a href="#s1">1. 系统概述与角色</a> ·
+  <a href="#s2">2. 登录与企业注册</a> ·
+  <a href="#s3">3. 平台管理员操作</a> ·
+  <a href="#s4">4. 钢厂操作（需求→询价→定标→合同→物流→结算）</a> ·
+  <a href="#s5">5. 供应商操作（需求池→报价→议价→订单→结算）</a> ·
+  <a href="#s6">6. 承运商操作（物流方案→运单）</a> ·
+  <a href="#s7">7. 全局功能（消息/时间轴/日志）</a> ·
+  <a href="#s8">8. 常见问题</a>
+</nav>
+
+<div class="card" id="s1">
+  <h2 style="margin-top:0">1. 系统概述与角色</h2>
+  <p>本平台面向大宗矿产（铁矿粉等）的集中采购场景，串联 <b>钢厂（需方）→ 供应商（供方）→ 承运商</b> 三方，覆盖需求申报、询价报价（密封报价+揭示比价）、议价定标、订单确认、合同签署（电子留痕）、物流调度、到货质检、结算付款、归档导出的全生命周期。</p>
+  <table>
+    <tr><th>角色</th><th>演示账号</th><th>核心职责</th></tr>
+    <tr><td><span class="role r-admin">平台管理员</span></td><td>13800000000 / demo123456</td><td>企业准入审核、品种与基准价维护、状态字典、操作日志、单据总览</td></tr>
+    <tr><td><span class="role r-steel">钢厂（需方）</span></td><td>13900000002 / demo123456</td><td>需求申报、发起询价、揭示比价、议价、定标、合同签署（需方）、物流方案、质检、结算确认、付款登记</td></tr>
+    <tr><td><span class="role r-sup">供应商</span></td><td>13900000001 / demo123456</td><td>查看脱敏需求池、密封报价、议价应答、订单确认、合同签署（供方）、结算确认</td></tr>
+    <tr><td><span class="role r-carrier">承运商</span></td><td>13900000003 / demo123456</td><td>接单、发运/到达回填、运单签收配合</td></tr>
+  </table>
+  <div class="note">💡 所有账号均为演示基线账号，密码统一 <code>demo123456</code>。服务地址：<code>http://127.0.0.1:8000</code>。</div>
+</div>
+
+<div class="card" id="s2">
+  <h2 style="margin-top:0">2. 登录与企业注册</h2>
+  <h3>2.1 登录</h3>
+  <div class="step"><div class="no">1</div><div class="tx">打开 <code>http://127.0.0.1:8000</code>，输入手机号与密码。</div></div>
+  <div class="step"><div class="no">2</div><div class="tx">点击「登录」，按角色自动进入对应首页（钢厂→需求管理；管理员→运营看板）。</div></div>
+  <img class="shot" src="../screenshots/A01_login_page.png" alt="登录页">
+  <div class="shotcap">图 2-1 登录页（含企业注册入口）</div>
+  <div class="note">⚠️ 密码错误会 toast「用户名或密码错误」并被拦截，不会进入系统。</div>
+  <h3>2.2 企业注册（新企业入驻）</h3>
+  <div class="step"><div class="no">1</div><div class="tx">登录页点击「企业注册」，填写企业名称、统一社会信用代码、角色（钢厂/供应商/承运商）、联系人信息。</div></div>
+  <div class="step"><div class="no">2</div><div class="tx">上传营业执照（支持 pdf/图片），提交后进入「待审核」。</div></div>
+  <div class="step"><div class="no">3</div><div class="tx">平台管理员审核通过后，即可用注册手机号登录。</div></div>
+  <img class="shot" src="../screenshots/B03_register_form.png" alt="注册表单">
+  <div class="shotcap">图 2-2 企业注册表单（含执照上传）</div>
+  <img class="shot" src="../screenshots/B05_register_submitted.png" alt="注册提交">
+  <div class="shotcap">图 2-3 注册提交成功（待审核）</div>
+</div>
+
+<div class="card" id="s3">
+  <h2 style="margin-top:0">3. 平台管理员操作</h2>
+  <h3>3.1 企业准入审核</h3>
+  <div class="step"><div class="no">1</div><div class="tx">「企业准入」列表查看待审核企业，点击「审核」。</div></div>
+  <div class="step"><div class="no">2</div><div class="tx">填写审核意见，选择「通过」/「驳回」。通过后企业状态变为「已准入」。</div></div>
+  <img class="shot" src="../screenshots/B07_audit_modal.png" alt="审核弹窗">
+  <div class="shotcap">图 3-1 企业审核弹窗</div>
+  <img class="shot" src="../screenshots/B08_audit_approved.png" alt="审核通过">
+  <div class="shotcap">图 3-2 审核通过后企业列表</div>
+  <h3>3.2 品种与基准价维护</h3>
+  <div class="step"><div class="no">1</div><div class="tx">「基础数据→品种管理」新增品种（如 E2ELUMP 块矿）。</div></div>
+  <div class="step"><div class="no">2</div><div class="tx">「基准价管理」录入当日基准价（同日重复录入为更新留痕，不新增行）。</div></div>
+  <img class="shot" src="../screenshots/B10_variety_added.png" alt="新增品种">
+  <div class="shotcap">图 3-3 新增品种成功</div>
+  <img class="shot" src="../screenshots/B11_baseprice_updated.png" alt="基准价更新">
+  <div class="shotcap">图 3-4 PB粉基准价当日更新（830.50→835.00）</div>
+  <h3>3.3 状态字典与操作日志</h3>
+  <p>「状态字典」展示各业务单据的状态流转矩阵；「操作日志」记录全链 REGISTER/LOGIN/CREATE/UPDATE/STATUS 留痕，支持按表/时间检索。</p>
+  <img class="shot" src="../screenshots/B13_dict.png" alt="状态字典">
+  <div class="shotcap">图 3-5 状态字典页</div>
+  <img class="shot" src="../screenshots/B14_logs.png" alt="操作日志">
+  <div class="shotcap">图 3-6 操作日志页</div>
+</div>
+
+<div class="card" id="s4">
+  <h2 style="margin-top:0">4. 钢厂操作（需求→询价→定标→合同→物流→结算）</h2>
+  <h3>4.1 需求申报（全生命周期）</h3>
+  <div class="step"><div class="no">1</div><div class="tx">「需求管理→新建需求」：填写需求名称、交货方式（港口FOB/港口汽运/厂内自提）、交货地点、期望到货起止、结算方式，添加品种明细（品种/牌号/数量/单价/溢短装）。</div></div>
+  <div class="note">⚠️ 添加明细后须重新选择品种确认绑定，再保存（否则会被"明细需完整填写品种/牌号/数量"拦截）。</div>
+  <div class="step"><div class="no">2</div><div class="tx">保存草稿（DRAFT）→ 提交（SUBMITTED）→ 需要时可撤回（WITHDRAWN，重提生成新版本 v2）→ 不再执行可关闭（CLOSED）。</div></div>
+  <img class="shot" src="../screenshots/C02_demand_form_modal.png" alt="需求表单">
+  <div class="shotcap">图 4-1 新建需求弹窗</div>
+  <img class="shot" src="../screenshots/C03_demand_draft_saved.png" alt="草稿保存">
+  <div class="shotcap">图 4-2 草稿保存成功（XQ-20261108-0001）</div>
+  <img class="shot" src="../screenshots/C05_demand_submitted.png" alt="需求提交">
+  <div class="shotcap">图 4-3 需求提交（已提交）</div>
+  <img class="shot" src="../screenshots/C06_demand_withdrawn.png" alt="需求撤回">
+  <div class="shotcap">图 4-4 需求撤回（version 2）</div>
+  <h3>4.2 发起询价与揭示比价</h3>
+  <div class="step"><div class="no">1</div><div class="tx">「询价报价→新建询价」：选择已提交需求单与明细，填询价数量、期望到货日、报价截止（至少当前+2小时且不晚于到货日-7天）、最少响应家数，勾选邀约供应商。</div></div>
+  <div class="note">⚠️ 报价截止按服务器时间校验，请预留充足余量（建议比页面显示时间再多留 2 小时以上）。</div>
+  <div class="step"><div class="no">2</div><div class="tx">发送询价（SENT）→ 供应商密封报价（QUOTING）→ 到达截止后「揭示比价」查看比价快照。</div></div>
+  <h3>4.3 议价、定标与订单</h3>
+  <div class="step"><div class="no">1</div><div class="tx">「议价定标」页对已揭示询价发起议价，供应商应答后「接受」→「定标」生成订单（PENDING_CONFIRM）。</div></div>
+  <div class="step"><div class="no">2</div><div class="tx">供应商确认订单 → 生成合同（PENDING_BUYER）。</div></div>
+  <h3>4.4 合同签署（电子留痕）</h3>
+  <div class="step"><div class="no">1</div><div class="tx">需方先签（上传盖章件，系统记录 SHA-256）→ 供方签 → 合同 EFFECTIVE，订单转 PERFORMING。</div></div>
+  <div class="note">⚠️ 未完整签署的合同可作废重签（生成新版本 v2）；已生效合同不可作废。</div>
+  <h3>4.5 物流方案与到货质检</h3>
+  <div class="step"><div class="no">1</div><div class="tx">「物流方案」创建运输方案（分段），指派承运商 → 运单 PENDING_ACCEPT。</div></div>
+  <div class="step"><div class="no">2</div><div class="tx">到货后在「质检」录入质检记录（实收数量/品位），超差自动触发预警。</div></div>
+  <h3>4.6 结算与付款</h3>
+  <div class="step"><div class="no">1</div><div class="tx">「结算管理→生成结算单」（默认取最近质检实收数量）→ 供应商确认 → 钢厂确认 → CONFIRMED。</div></div>
+  <div class="step"><div class="no">2</div><div class="tx">「付款登记」登记付款单 → 结算 COMPLETED → 订单可归档导出（zip 含 manifest.json）。</div></div>
+</div>
+
+<div class="card" id="s5">
+  <h2 style="margin-top:0">5. 供应商操作（需求池→报价→议价→订单→结算）</h2>
+  <h3>5.1 查看脱敏需求池</h3>
+  <div class="step"><div class="no">1</div><div class="tx">「需求池」仅展示脱敏概要：品种明细、总量、交货方式/区域、期望月份——不展示钢厂名称、价格意向与需求名称。</div></div>
+  <img class="shot" src="../screenshots/D01_supplier_pool.png" alt="需求池">
+  <div class="shotcap">图 5-1 供应商需求池（脱敏）</div>
+  <img class="shot" src="../screenshots/D02_pool_detail_masked.png" alt="需求详情脱敏">
+  <div class="shotcap">图 5-2 需求详情（脱敏）</div>
+  <h3>5.2 密封报价</h3>
+  <div class="step"><div class="no">1</div><div class="tx">对收到的询价「报价」：填单价、交货期等，提交后为密封状态（互相不可见）。</div></div>
+  <div class="step"><div class="no">2</div><div class="tx">到达揭示时间后由钢厂揭示比价。</div></div>
+  <h3>5.3 议价应答与订单确认</h3>
+  <div class="step"><div class="no">1</div><div class="tx">收到议价邀请后应答（接受/拒绝/还价）。</div></div>
+  <div class="step"><div class="no">2</div><div class="tx">定标后收到订单（PENDING_CONFIRM），核对无误「确认订单」→ 进入待生成合同。</div></div>
+  <div class="step"><div class="no">3</div><div class="tx">「合同」页供方签署（上传盖章件）→ 合同生效。</div></div>
+  <h3>5.4 结算确认</h3>
+  <div class="step"><div class="no">1</div><div class="tx">「结算管理」核对结算单（数量/金额）→「确认」→ 等待钢厂确认与付款。</div></div>
+</div>
+
+<div class="card" id="s6">
+  <h2 style="margin-top:0">6. 承运商操作（物流方案→运单）</h2>
+  <div class="step"><div class="no">1</div><div class="tx">被指派后运单进入「待接单」，确认接单 → 待发运。</div></div>
+  <div class="step"><div class="no">2</div><div class="tx">回填「发运」（车船号/发运时间）→ 在途 → 回填「到达」→ 待签收。</div></div>
+  <div class="step"><div class="no">3</div><div class="tx">需方签收后运单 SIGNED，履约时间轴自动记录 WB 节点。</div></div>
+  <div class="note">⚠️ 承运商仅可回填发运/到达信息，不可修改数量与金额（越权操作返回 40001）。</div>
+</div>
+
+<div class="card" id="s7">
+  <h2 style="margin-top:0">7. 全局功能</h2>
+  <h3>7.1 消息通知</h3>
+  <p>关键节点（询价送达、报价提交、定标、订单确认、合同签署、质检预警、结算确认、付款登记）均产生站内消息，登录后右上角铃铛可查看。</p>
+  <h3>7.2 履约时间轴</h3>
+  <p>订单详情页「履约时间轴」按时间序展示：定标完成→订单生成→供应商确认→合同生成→双方签署→合同生效→物流方案配置→到货质检→结算单生成→结算确认→付款登记→订单归档。</p>
+  <h3>7.3 归档导出</h3>
+  <p>订单完结后可「归档导出」，系统打包 manifest.json 与全套单据为 zip 下载。</p>
+</div>
+
+<div class="card" id="s8">
+  <h2 style="margin-top:0">8. 常见问题</h2>
+  <table>
+    <tr><th style="width:280px">现象</th><th>说明与处理</th></tr>
+    <tr><td>登录提示"用户名或密码错误"</td><td>核对演示账号与密码（见第1节角色表）。</td></tr>
+    <tr><td>新建需求保存提示"明细需完整填写品种/牌号/数量"</td><td>添加明细后须重新选择品种确认绑定再保存（已知交互问题，见测试档案 BUG-02）。</td></tr>
+    <tr><td>编辑需求草稿看不到已有明细</td><td>已知问题（BUG-03）：明细不回显，须重录；数据不会丢失，保存时被兜底拦截。</td></tr>
+    <tr><td>需求撤回后找不到"重提"按钮</td><td>已知问题（BUG-04）：UI 撤回态无重提入口，可联系管理员或等修复；API 支持 WITHDRAWN→SUBMITTED。</td></tr>
+    <tr><td>企业信息页显示"平台管理员无企业档案"</td><td>已知问题（BUG-05）：企业用户档案接口结构不匹配，功能修复中。</td></tr>
+    <tr><td>询价保存后弹窗未关闭、看不到明显提示</td><td>多为服务端校验拒绝（如报价截止不足+2小时、晚于到货日-7天），toast 短暂显示后自动消失；请核对报价截止与到货日（已知 UX 问题 BUG-07，与时间语义差耦合）。</td></tr>
+    <tr><td>报价截止被提示"至少为当前时间+2小时"</td><td>按服务器时间校验；页面显示时间与服务器存在时区差（BUG-06），建议填写时多预留 2 小时以上。</td></tr>
+    <tr><td>找不到品种删除/编辑入口</td><td>主数据保护设计，无删除端点；编辑接口存在但 UI 未暴露（观察项 OBS-01）。</td></tr>
+    <tr><td>状态字典页显示"无流转"</td><td>已知展示缺陷（BUG-01）：前端解析结构与后端不一致，修复中。</td></tr>
+  </table>
+</div>
+
+<footer>系统使用说明 · 大宗矿产集采平台 · 2026-11-08 · 配套档案：test-evidence-20261108/（screenshots/）</footer>
+</div>
+</body>
+</html>
