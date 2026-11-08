@@ -5,7 +5,10 @@
   /* -------- 企业信息维护 -------- */
   Pages.profile = async function (page, user) {
     const d = await API.get('/companies/me');
-    const c = d.company;
+    // BUG-05 修复：后端 /companies/me 对企业用户返回平铺企业字段（顶层，另附
+    // qualifications 列表），对平台管理员返回 {company: null, qualifications: []}。
+    // 此前只读 d.company 嵌套结构，导致所有企业用户误判为"平台管理员无企业档案"。
+    const c = d.company || (d.companyName || d.company_name ? d : null);
     if (!c) {
       page.appendChild(UI.h('div', { class: 'card' },
         UI.h('div', { class: 'empty' }, '平台管理员无企业档案，仅可使用运营后台功能')));
