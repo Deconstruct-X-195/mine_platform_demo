@@ -17,12 +17,12 @@ PREVIEW = os.path.join(BASE, 'frontend', 'icons', 'preview.html')
 SHOT = os.path.join(BASE, 'docs', 'shots', 'ui_icons_preview.png')
 
 EXPECTED = [
-    'ic-demand', 'ic-pool', 'ic-price', 'ic-forecast', 'ic-inquiry', 'ic-bargain',
-    'ic-order', 'ic-contract', 'ic-logistics', 'ic-waybill', 'ic-track', 'ic-settlement',
-    'ic-profile', 'ic-dashboard', 'ic-admin_companies', 'ic-base_data', 'ic-doc_overview',
-    'ic-alerts', 'ic-dict', 'ic-logs', 'ic-bell', 'ic-logo',
+    'ic-demand', 'ic-demand_pool', 'ic-quote_inquiry', 'ic-pool', 'ic-price', 'ic-forecast',
+    'ic-inquiry', 'ic-bargain', 'ic-order', 'ic-contract', 'ic-logistics', 'ic-waybill',
+    'ic-track', 'ic-settlement', 'ic-profile', 'ic-dashboard', 'ic-admin_companies',
+    'ic-base_data', 'ic-doc_overview', 'ic-alerts', 'ic-dict', 'ic-logs', 'ic-bell', 'ic-logo',
 ]
-STROKE_ICON_COUNT = 21  # 除 ic-logo 外均为描边图标
+STROKE_ICON_COUNT = 23  # 除 ic-logo 外均为描边图标
 
 NS = '{http://www.w3.org/2000/svg}'
 ERRORS = []

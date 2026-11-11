@@ -15,7 +15,14 @@
     settlement: ['结算管理', '#/settlement'],
     profile: ['企业信息', '#/profile'],
     dashboard: ['运营看板', '#/dashboard'],
+    port_price: ['价格趋势详情', '#/port-price'],
+    price_records: ['价格行情详情', '#/price-records'],
     admin_companies: ['企业准入', '#/admin-companies'],
+    demand_pool: ['需求归集', '#/demand-pool'],
+    quote_inquiry: ['报价询价', '#/quote-inquiry'],
+    contract_admin: ['合同管理', '#/contract-admin'],
+    logistics_dispatch: ['运输调度', '#/logistics-dispatch'],
+    settlement_stats: ['对账结算', '#/settlement-stats'],
     base_data: ['基础数据', '#/base-data'],
     doc_overview: ['单据总览', '#/doc-overview'],
     alerts: ['预警处理', '#/alerts'],
@@ -44,15 +51,18 @@
     return '#/login';
   }
 
+  function menuLinks(user) {
+    return ((user.menus && user.menus.length ? user.menus : [])).map((code) => {
+      const meta = MENU_META[code];
+      if (!meta) return null;
+      return UI.h('a', { 'data-menu': code, href: meta[1] }, meta[0]);
+    }).filter(Boolean);
+  }
+
   function buildShell(user) {
     const root = document.getElementById('app');
     root.innerHTML = '';
-    const nav = UI.h('nav', {},
-      ...((user.menus && user.menus.length ? user.menus : [])).map((code) => {
-        const meta = MENU_META[code];
-        if (!meta) return null;
-        return UI.h('a', { 'data-menu': code, href: meta[1] }, meta[0]);
-      }).filter(Boolean));
+    const nav = UI.h('nav', {}, ...menuLinks(user));
     const company = user.company;
     const badge = UI.h('a', { class: 'msg-badge', href: '#/messages', id: 'msg-badge', style: 'display:none' }, '0');
     const shell = UI.h('div', { class: 'layout' },
@@ -82,6 +92,30 @@
     if (title) title.textContent = meta ? meta[0] : '大宗矿产集采平台';
   }
 
+  /* 会话菜单静默刷新：每次页面加载调用一次 /auth/me，
+     若后端菜单有更新则原地重建侧边栏，无需重新登录。 */
+  let sessionRefreshed = false;
+  async function refreshSession() {
+    if (sessionRefreshed) return;
+    sessionRefreshed = true;
+    try {
+      const fresh = await API.get('/auth/me');
+      if (!fresh || !fresh.menus || !API.token()) return;
+      const old = API.currentUser();
+      const before = JSON.stringify((old && old.menus) || []);
+      const after = JSON.stringify(fresh.menus || []);
+      API.saveAuth(API.token(), fresh);
+      if (before !== after) {
+        const nav = document.querySelector('.sidebar nav');
+        if (nav) {
+          nav.innerHTML = '';
+          menuLinks(fresh).forEach((a) => nav.appendChild(a));
+          highlight(pageOf());
+        }
+      }
+    } catch (e) { /* 401 等由统一错误处理走登出 */ }
+  }
+
   function renderLoginRegister(pageKey) {
     const root = document.getElementById('app');
     root.innerHTML = '';
@@ -107,6 +141,7 @@
     const pageEl = document.getElementById('page');
     if (!pageEl) { buildShell(user); }
     highlight(pageKey);
+    refreshSession();
     const target = document.getElementById('page');
     target.innerHTML = '<div class="empty" data-loading="1">加载中…</div>';
     try {

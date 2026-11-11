@@ -109,7 +109,8 @@ def submit_demand(did):
     frm = row['status']
     to_version = row['version'] + 1 if frm == 'WITHDRAWN' else row['version']
     execute(g.conn, """
-        UPDATE biz_demand SET status='SUBMITTED', version=%s, updated_by=%s, updated_at=now() WHERE id=%s
+        UPDATE biz_demand SET status='SUBMITTED', version=%s, submitted_at=now(),
+               updated_by=%s, updated_at=now() WHERE id=%s
         """, (to_version, g.ctx.user['id'], did))
     op_log(g.conn, g.ctx, 'biz_demand', did, 'STATUS %s->SUBMITTED' % frm,
            {'status': frm, 'version': row['version']}, {'status': 'SUBMITTED', 'version': to_version})

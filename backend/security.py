@@ -97,7 +97,8 @@ MENUS = {
     ROLE_SUPPLIER: ['pool', 'forecast', 'inquiry', 'bargain', 'order', 'contract',
                     'track', 'settlement', 'profile'],
     ROLE_CARRIER: ['waybill', 'track', 'profile'],
-    'PLAT_ADMIN': ['dashboard', 'admin_companies', 'base_data', 'doc_overview',
+    'PLAT_ADMIN': ['dashboard', 'admin_companies', 'demand_pool', 'quote_inquiry',
+                   'contract_admin', 'logistics_dispatch', 'settlement_stats', 'base_data', 'doc_overview',
                    'alerts', 'dict', 'logs'],
 }
 

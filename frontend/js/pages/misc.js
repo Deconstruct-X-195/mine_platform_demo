@@ -143,20 +143,64 @@
     page.appendChild(pagerBox);
     await load();
 
+    /* 消息表样式：仅标题+内容两列，宽度自适应面板，长内容自动换行 */
+    if (!document.getElementById('msg-table-style')) {
+      document.head.appendChild(UI.h('style', { id: 'msg-table-style' }, `
+        table.msg-table { width: 100%; }
+        table.msg-table th, table.msg-table td { white-space: normal; overflow-wrap: anywhere; }
+        table.msg-table td.msg-title { width: 260px; }
+        table.msg-table tbody tr { cursor: pointer; }
+        table.msg-table tr.unread td.msg-title { font-weight: 700; }
+        table.msg-table tr.unread td.msg-title::before { content: '●'; color: #e6a23c; margin-right: 6px; font-size: 10px; vertical-align: 2px; }
+        table.msg-table td.msg-content { color: var(--label-2, #6e6e73); }
+      `));
+    }
+
+    /* 按业务类型 + 当前角色跳转对应页面 */
+    function jumpTarget(r) {
+      const user = API.currentUser() || {};
+      const roles = user.roles || [];
+      const isPlat = roles.indexOf('PLAT_ADMIN') >= 0;
+      const isCarrier = roles.indexOf('LOGISTICS_CARRIER') >= 0;
+      const isSupplier = roles.indexOf('SUPPLIER') >= 0;
+      const map = {
+        COMPANY: isPlat ? '#/admin-companies' : '#/profile',
+        DEMAND: isPlat ? '#/demand-pool' : (isSupplier ? '#/pool' : '#/demand'),
+        INQUIRY: '#/inquiry',
+        CONTRACT: isPlat ? '#/contract-admin' : '#/contract',
+        ORDER: isPlat ? '#/logistics-dispatch' : '#/order',
+        WAYBILL: isCarrier ? '#/waybill' : (isPlat ? '#/logistics-dispatch' : '#/track'),
+      };
+      return map[r.bizType] || '';
+    }
+
     async function load() {
       const d = await API.get('/messages' + API.qs({ isRead, page: pageNo, size: SIZE }));
       listCard.innerHTML = '';
-      listCard.appendChild(UI.table([
-        { key: 'title', label: '标题' },
-        { key: 'content', label: '内容', full: true },
-        { key: 'bizType', label: '业务对象' },
-        { key: 'isRead', label: '已读', render: (r) => r.isRead ? UI.h('span', { class: 'tag' }, '已读') : UI.h('span', { class: 'tag orange' }, '未读') },
-        { key: 'createdAt', label: '时间', render: (r) => UI.fmtDateTime(r.createdAt) },
-        { label: '操作', render: (r) => r.isRead ? '-' : UI.h('button', { class: 'sm', onclick: async () => {
-          await API.put('/messages/' + r.id + '/read');
-          UI.toast('已标记已读', 'ok'); App.refreshMsgBadge(); load();
-        } }, '标已读') },
-      ], d.list, '暂无消息'));
+      const tbl = UI.table([
+        { key: 'title', label: '标题', render: (r) => UI.h('span', { class: 'msg-title' }, r.title || '-') },
+        { key: 'content', label: '内容', render: (r) => UI.h('span', { class: 'msg-content' }, r.content || '-') },
+      ], d.list, '暂无消息');
+      tbl.classList.add('msg-table');
+      /* 点击消息：未读则标记已读（角标自动减少），并跳转对应页面 */
+      tbl.querySelectorAll('tbody tr').forEach((tr, i) => {
+        const r = d.list[i];
+        if (!r) return;
+        if (!r.isRead) tr.classList.add('unread');
+        tr.title = '点击查看';
+        tr.addEventListener('click', async () => {
+          try {
+            if (!r.isRead) {
+              await API.put('/messages/' + r.id + '/read');
+              r.isRead = 1;
+              App.refreshMsgBadge();
+            }
+            const t = jumpTarget(r);
+            if (t && t !== location.hash) location.hash = t;
+          } catch (e) { /* toast 已提示 */ }
+        });
+      });
+      listCard.appendChild(tbl);
       pagerBox.innerHTML = '';
       UI.pager(pagerBox, pageNo, SIZE, d.total, (p) => { pageNo = p; load(); });
     }

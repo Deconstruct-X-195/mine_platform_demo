@@ -61,10 +61,11 @@ def update_my_company():
     sets = ', '.join('%s=%%s' % c for c in updates)
     args = list(updates.values())
     new_status = None
-    if key_changed:
+    resubmit = str(p.get('resubmit') or '') == 'true'
+    if key_changed or resubmit:
         new_status = 'PENDING'
         sets += ', audit_status=%s, audit_remark=%s'
-        args += ['PENDING', '关键信息变更，重新审核']
+        args += ['PENDING', '关键信息变更，重新审核' if key_changed else '企业重新提交准入登记']
     sets += ', updated_by=%s, updated_at=now() WHERE id=%s'
     args += [ctx.user['id'], cur['id']]
     from ..db import execute
@@ -115,4 +116,31 @@ def company_detail(cid):
     data = json_payload(dict(row))
     data['qualifications'] = json_payload(quals)
     data['users'] = json_payload(users)
+    # 企业变更信息：企业档案操作留痕（含操作人姓名）
+    logs = qall(g.conn, """
+        SELECT l.action, l.after_value, l.created_at AS "createdAt",
+               u.real_name AS "operator"
+        FROM sys_operation_log l
+        LEFT JOIN sys_user u ON u.id = l.user_id
+        WHERE l.biz_type='ent_company' AND l.biz_id=%s
+        ORDER BY l.id DESC LIMIT 20
+        """, (cid,))
+    data['changeLogs'] = json_payload(logs)
+    # 合作信息：需求/订单/合同合作统计
+    coop = q1(g.conn, """
+        SELECT
+          (SELECT count(*) FROM biz_demand
+            WHERE company_id=%s AND is_deleted=0 AND status<>'DRAFT') AS "demandCount",
+          (SELECT count(*) FROM biz_order
+            WHERE (buyer_id=%s OR supplier_id=%s) AND is_deleted=0) AS "orderCount",
+          (SELECT coalesce(sum(quantity),0) FROM biz_order
+            WHERE (buyer_id=%s OR supplier_id=%s) AND is_deleted=0) AS "totalQty",
+          (SELECT coalesce(sum(amount),0) FROM biz_order
+            WHERE (buyer_id=%s OR supplier_id=%s) AND is_deleted=0) AS "totalAmount",
+          (SELECT count(*) FROM biz_contract c JOIN biz_order o ON o.id=c.order_id
+            WHERE (o.buyer_id=%s OR o.supplier_id=%s) AND c.is_deleted=0) AS "contractCount",
+          (SELECT max(created_at) FROM biz_order
+            WHERE (buyer_id=%s OR supplier_id=%s) AND is_deleted=0) AS "lastDealAt"
+        """, (cid,) * 11)
+    data['coop'] = json_payload(dict(coop)) if coop else None
     return ok(data)

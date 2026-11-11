@@ -73,8 +73,12 @@ def sign(cid):
         role_label = '需方'
     elif row['status'] == 'PENDING_SUPPLIER' and is_supplier:
         col, user_col = 'supplier_sign_at', 'supplier_sign_user'
-        to = 'EFFECTIVE'
+        to = None  # 双方签齐后不自动生效：进入"待运营确认"，由运营端核验生效
         role_label = '供方'
+    elif row['status'] == 'PENDING_SUPPLIER' and is_buyer and row['plat_status'] == 'RETURNED':
+        col, user_col = 'buyer_sign_at', 'buyer_sign_user'
+        to = None  # 扫描件被运营退回，需方重传（重新进入待核验）
+        role_label = '需方(重传)'
     else:
         raise ApiError(40901, '当前不可签署（合同 %s / 本方角色不符，需方先签、供方后签）' % row['status'])
 
@@ -90,23 +94,22 @@ def sign(cid):
         WHERE id=%s
         """.format(col=col, ucol=user_col),
         (f['file_id'], sha, g.ctx.user['id'], g.ctx.user['id'], cid))
-    transition(g.conn, g.ctx, 'biz_contract', '合同', 'biz_contract', cid, to,
-               node_biz_type='ORDER', node_code='CONTRACT_SIGNED' if to == 'EFFECTIVE' else 'CONTRACT_BUYER_SIGNED',
-               node_biz_id=order['id'])
-    if to == 'EFFECTIVE':
-        if order['status'] == 'PENDING_EFFECT':
-            transition(g.conn, g.ctx, 'biz_order', '订单', 'biz_order', order['id'], 'PERFORMING',
-                       node_biz_type='ORDER', node_code='CONTRACT_EFFECTIVE')
-        send_msg(g.conn, order['supplier_id'], '合同已生效',
-                 '订单 %s 合同 %s 已双方签署生效，可开始配置物流。' % (order['order_no'], row['contract_no']), 'CONTRACT', cid)
-        send_msg(g.conn, order['buyer_id'], '合同已生效',
-                 '订单 %s 合同 %s 已双方签署生效。' % (order['order_no'], row['contract_no']), 'CONTRACT', cid)
+    if to is None:
+        # 双方签齐（或退回重传）→ 待运营确认，合同状态保持 PENDING_SUPPLIER
+        execute(g.conn, "UPDATE biz_contract SET plat_status='PENDING', updated_by=%s WHERE id=%s",
+                (g.ctx.user['id'], cid))
+        text = '订单 %s 合同 %s 双方已签署，待平台核验后生效。' % (order['order_no'], row['contract_no'])
+        send_msg(g.conn, order['supplier_id'], '合同签署完成', text, 'CONTRACT', cid)
+        send_msg(g.conn, order['buyer_id'], '合同签署完成', text, 'CONTRACT', cid)
     else:
+        transition(g.conn, g.ctx, 'biz_contract', '合同', 'biz_contract', cid, to,
+                   node_biz_type='ORDER', node_code='CONTRACT_BUYER_SIGNED',
+                   node_biz_id=order['id'])
         send_msg(g.conn, order['supplier_id'], '合同待签署（供方）',
                  '订单 %s 合同 %s 需方已签署，请供方签署。' % (order['order_no'], row['contract_no']), 'CONTRACT', cid)
     op_log(g.conn, g.ctx, 'biz_contract', cid, 'SIGN(%s)' % role_label,
            None, {'signerName': p['signerName'], 'fileSha256': sha})
-    return ok({'id': cid, 'status': to, 'fileSha256': sha})
+    return ok({'id': cid, 'status': to or 'PENDING_SUPPLIER', 'platStatus': 'PENDING' if to is None else None, 'fileSha256': sha})
 
 
 def _file_sha256(path):

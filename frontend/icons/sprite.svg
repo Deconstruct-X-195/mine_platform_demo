@@ -21,6 +21,21 @@
     </g>
   </symbol>
 
+  <symbol id="ic-demand_pool" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4.6" y="2.2" width="9" height="11.6" rx="1.7"/>
+      <path d="M2.4 4.6v9.2a1.7 1.7 0 001.7 1.7h6.9"/>
+      <path d="M7.1 6.1h4.2M7.1 8.7h4.2"/>
+    </g>
+  </symbol>
+
+  <symbol id="ic-quote_inquiry" viewBox="0 0 16 16">
+    <g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8.9 2.6h4.5v4.5l-6.4 6.4a1.6 1.6 0 01-2.3 0L2.2 10.9a1.6 1.6 0 010-2.3z"/>
+      <circle cx="11" cy="5" r="1.1"/>
+    </g>
+  </symbol>
+
   <symbol id="ic-pool" viewBox="0 0 16 16">
     <g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
       <path d="M2.7 9.4V5.2a1.7 1.7 0 011.7-1.7h7.2a1.7 1.7 0 011.7 1.7v4.2"/>

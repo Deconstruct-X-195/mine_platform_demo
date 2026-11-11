@@ -264,6 +264,26 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 2.1l4.9 1.75v3.85c0 3.3-2.35 5.3-4.9 6.2-2.55-.9-4.9-2.9-4.9-6.2V3.85z'/%3E%3Cpath d='M5.9 7.85l1.5 1.5 2.9-3.1'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 2.1l4.9 1.75v3.85c0 3.3-2.35 5.3-4.9 6.2-2.55-.9-4.9-2.9-4.9-6.2V3.85z'/%3E%3Cpath d='M5.9 7.85l1.5 1.5 2.9-3.1'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
 }
+.sidebar nav a[data-menu="demand_pool"]::before {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4.6' y='2.2' width='9' height='11.6' rx='1.7'/%3E%3Cpath d='M2.4 4.6v9.2a1.7 1.7 0 001.7 1.7h6.9'/%3E%3Cpath d='M7.1 6.1h4.2M7.1 8.7h4.2'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='4.6' y='2.2' width='9' height='11.6' rx='1.7'/%3E%3Cpath d='M2.4 4.6v9.2a1.7 1.7 0 001.7 1.7h6.9'/%3E%3Cpath d='M7.1 6.1h4.2M7.1 8.7h4.2'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
+}
+.sidebar nav a[data-menu="quote_inquiry"]::before {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8.9 2.6h4.5v4.5l-6.4 6.4a1.6 1.6 0 01-2.3 0L2.2 10.9a1.6 1.6 0 010-2.3z'/%3E%3Ccircle cx='11' cy='5' r='1.1'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8.9 2.6h4.5v4.5l-6.4 6.4a1.6 1.6 0 01-2.3 0L2.2 10.9a1.6 1.6 0 010-2.3z'/%3E%3Ccircle cx='11' cy='5' r='1.1'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
+}
+.sidebar nav a[data-menu="contract_admin"]::before {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9.4 1.9H4.2a1.2 1.2 0 00-1.2 1.2v9.8a1.2 1.2 0 001.2 1.2h7.6a1.2 1.2 0 001.2-1.2V5.4z'/%3E%3Cpath d='M9.4 1.9v3.5H13'/%3E%3Ccircle cx='10.5' cy='10.4' r='2.1'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9.4 1.9H4.2a1.2 1.2 0 00-1.2 1.2v9.8a1.2 1.2 0 001.2 1.2h7.6a1.2 1.2 0 001.2-1.2V5.4z'/%3E%3Cpath d='M9.4 1.9v3.5H13'/%3E%3Ccircle cx='10.5' cy='10.4' r='2.1'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
+}
+.sidebar nav a[data-menu="logistics_dispatch"]::before {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1.9 3.6h8.2v7.1H1.9z'/%3E%3Cpath d='M10.1 6h2.6l1.9 2.4v2.3h-4.5'/%3E%3Ccircle cx='4.4' cy='12' r='1.5'/%3E%3Ccircle cx='11.6' cy='12' r='1.5'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1.9 3.6h8.2v7.1H1.9z'/%3E%3Cpath d='M10.1 6h2.6l1.9 2.4v2.3h-4.5'/%3E%3Ccircle cx='4.4' cy='12' r='1.5'/%3E%3Ccircle cx='11.6' cy='12' r='1.5'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
+}
+.sidebar nav a[data-menu="settlement_stats"]::before {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.6' y='2.2' width='10.8' height='11.6' rx='1.4'/%3E%3Cpath d='M5.4 5.6h5.2M5.4 8h5.2M5.4 10.4h3.2'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2.6' y='2.2' width='10.8' height='11.6' rx='1.4'/%3E%3Cpath d='M5.4 5.6h5.2M5.4 8h5.2M5.4 10.4h3.2'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
+}
 .sidebar nav a[data-menu="base_data"]::before {
   -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cellipse cx='8' cy='3.9' rx='5.4' ry='1.9'/%3E%3Cpath d='M2.6 3.9v8.2c0 1.05 2.42 1.9 5.4 1.9s5.4-.85 5.4-1.9V3.9'/%3E%3Cpath d='M2.6 8c0 1.05 2.42 1.9 5.4 1.9s5.4-.85 5.4-1.9'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
   mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cellipse cx='8' cy='3.9' rx='5.4' ry='1.9'/%3E%3Cpath d='M2.6 3.9v8.2c0 1.05 2.42 1.9 5.4 1.9s5.4-.85 5.4-1.9V3.9'/%3E%3Cpath d='M2.6 8c0 1.05 2.42 1.9 5.4 1.9s5.4-.85 5.4-1.9'/%3E%3C/g%3E%3C/svg%3E") no-repeat center / contain;
@@ -318,11 +338,15 @@ table.grid th {
   font-size: var(--fs-foot); font-weight: 600; color: var(--label-2);
   letter-spacing: .3px; white-space: nowrap; background: transparent;
   border-bottom: 1px solid var(--separator-strong);
+  text-align: center; /* 标题行居中 */
 }
 table.grid tbody tr { transition: background var(--dur) var(--ease); }
 table.grid tbody tr:hover { background: var(--gray-6); }
 table.grid tbody tr:last-child td { border-bottom: none; }
-table.grid td.num, table.grid th.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.grid th.num { text-align: center; font-variant-numeric: tabular-nums; }
+/* 表格操作列：按钮固定同一行不换行 */
+table.grid .inline-flex { flex-wrap: nowrap; }
 .empty {
   text-align: center; color: var(--label-2); padding: 44px 0;
   font-size: var(--fs-sub);
@@ -399,6 +423,21 @@ textarea { resize: vertical; line-height: 1.55; }
 .form-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px 24px; }
 .form-grid .full { grid-column: 1 / -1; }
 .hint { font-size: var(--fs-foot); color: var(--label-2); line-height: 1.55; }
+/* 表单输入框统一宽度：input/select 均占满所在列，长度一致 */
+form .form-row input, form .form-row select { width: 100%; box-sizing: border-box; }
+/* 表单：提示文字随 label 同行（不换行到输入框下方）+ 固定前后缀输入（如 TFe≥ [ ] %） */
+form .form-row .hint-inline { font-weight: 400; color: var(--label-3); letter-spacing: 0; }
+/* 前后缀输入框：整体作为一个输入框（与同列其它 input 等宽），前后缀固定显示 */
+.affix-input {
+  display: flex; align-items: center; gap: 6px; width: 100%; box-sizing: border-box;
+  padding: 0 11px; border: 1px solid var(--gray-4); border-radius: var(--r-input); background: #fff;
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.affix-input:hover { border-color: var(--gray-3); }
+.affix-input:focus-within { border-color: var(--sys-blue); box-shadow: 0 0 0 3.5px rgba(0, 122, 255, .22); }
+.affix-input .affix { font-size: var(--fs-sub); color: var(--label-2); white-space: nowrap; }
+.affix-input input { flex: 1; min-width: 0; border: none; padding-left: 0; padding-right: 0; background: transparent; }
+.affix-input input:focus { border: none; box-shadow: none; }
 
 /* ---------- 8. 状态标签（tinted capsule） ---------- */
 .tag {
@@ -510,9 +549,71 @@ textarea { resize: vertical; line-height: 1.55; }
   font-size: var(--fs-foot); color: var(--label-2); margin-top: 5px; font-weight: 500;
 }
 .stat-card .stat-unit { font-size: var(--fs-foot); font-weight: 500; color: var(--label-2); margin-left: 2px; }
+/* 运营看板两栏：左侧行业数据趋势图，右侧 日期/价格/涨跌 行情表 */
+.dash-two-col { display: flex; gap: 16px; align-items: stretch; flex-wrap: wrap; }
+.dash-two-col > .card { flex: 1 1 420px; margin-bottom: 0; }
+.dash-trend-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.dash-trend-name { font-size: var(--fs-foot); font-weight: 600; color: var(--label-2); margin-bottom: 4px; }
+.dash-quote-card table.grid td { text-align: center; }
+
+/* ---------- 17. 大卡内 Tab 页（企业准入等） ---------- */
+.tab-bar { display: flex; gap: 10px; flex-wrap: wrap; margin: 2px 0 16px; }
+.tab-btn {
+  padding: 8px 18px; border: 1px solid var(--gray-4); border-radius: 8px;
+  background: #fff; color: var(--label-1); font-size: var(--fs-body); cursor: pointer;
+}
+.tab-btn:hover { border-color: var(--primary); color: var(--primary); }
+.tab-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: 600; }
+
+/* ---------- 18. 运营看板：长条统计卡 + 图表组件 ---------- */
+.stat-strip { display: flex; align-items: stretch; padding: 10px 0; }
+.stat-strip-item { flex: 1; padding: 4px 24px; }
+.stat-strip-item + .stat-strip-item { border-left: 1px solid var(--gray-5); }
+.stat-strip-item .stat-label { font-size: var(--fs-foot); color: var(--label-2); font-weight: 500; }
+.stat-strip-item .stat-value { font-size: 26px; font-weight: 700; color: var(--label-1); margin-top: 4px; }
+.stat-strip-item .stat-unit { font-size: var(--fs-foot); font-weight: 500; color: var(--label-2); margin-left: 2px; }
+
+/* 环形占比图 / 横向条形图 */
+.donut-wrap { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+.donut-svg { width: 170px; height: 170px; flex-shrink: 0; }
+.donut-legend { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--label-2); min-width: 120px; }
+.donut-legend-item { display: flex; align-items: center; gap: 6px; }
+.donut-legend-name { color: var(--label-1); }
+.donut-legend-val { color: var(--label-2); margin-left: auto; }
+.legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.hbar-wrap { display: flex; flex-direction: column; gap: 12px; padding: 6px 2px; }
+.hbar-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.hbar-name { width: 76px; color: var(--label-1); text-align: right; flex-shrink: 0; }
+.hbar-track { flex: 1; height: 12px; background: #f0f1f5; border-radius: 6px; overflow: hidden; }
+.hbar-fill { height: 100%; border-radius: 6px; }
+.hbar-val { width: 84px; color: var(--label-2); }
+
+/* 运营看板图表布局：价格趋势垂直居中 + 三图一行 */
+.dash-chart-card { display: flex; flex-direction: column; }
+.dash-chart-card .trend-chart-wrap { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+.dash-chart-card .trend-chart-wrap > * { width: 100%; }
+.dash-charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: stretch; }
+.dash-charts > .card { margin-bottom: 0; }
+.dash-chart-wide { grid-column: span 1; }
+
+/* ---------- 19. 企业准入：整表框线 + 固定高度面板 + 超宽横向滚动 ---------- */
+.company-audit-card { height: 640px; display: flex; flex-direction: column; overflow: hidden; }
+/* 通用横向滚动容器：表格超宽时面板内右拉，不撑破卡片 */
+.table-scroll-wrap { overflow-x: auto; }
+.company-audit-card .table-scroll-wrap {
+  flex: 1; min-height: 0; overflow: auto; /* 宽度不够横向滑动，行数超出纵向滑动 */
+  border: 1px solid var(--gray-4); border-radius: 8px;
+}
+.company-audit-card table.grid { border-collapse: collapse; min-width: 920px; }
+.company-audit-card table.grid th,
+.company-audit-card table.grid td { border: 1px solid var(--gray-4); } /* 上下左右整表框线 */
+.company-audit-card .table-scroll-wrap .empty { padding: 30px; }
 
 /* ---------- 15. 折线图 ---------- */
-.trend-svg { width: 100%; height: 160px; }
+.trend-svg { width: 100%; height: auto; display: block; }
+.trend-legend { display: flex; gap: 16px; align-items: center; font-size: 12px; color: var(--label-2); margin-bottom: 6px; }
+.trend-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+.legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
 
 /* ---------- 16. 杂项 ---------- */
 .msg-badge {
