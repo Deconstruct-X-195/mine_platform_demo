@@ -48,11 +48,11 @@ def create_demand():
     did = execute(g.conn, """
         INSERT INTO biz_demand (demand_no, company_id, demand_name, delivery_type, delivery_place,
                                 expect_arrive_start, expect_arrive_end, price_intent, settle_type,
-                                quality_req, remark, status, created_by, updated_by)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'DRAFT',%s,%s) RETURNING id
+                                settle_days, quality_req, remark, status, created_by, updated_by)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'DRAFT',%s,%s) RETURNING id
         """, (doc_no(g.conn, 'XQ'), g.ctx.company['id'], p['demandName'], p['deliveryType'],
               p['deliveryPlace'], parse_date(p, 'expectArriveStart'), parse_date(p, 'expectArriveEnd'),
-              p.get('priceIntent'), p['settleType'], p.get('qualityReq'),
+              p.get('priceIntent'), p['settleType'], p.get('settleDays'), p.get('qualityReq'),
               p.get('remark'), g.ctx.user['id'], g.ctx.user['id']), returning_id=True)
     _save_items(g.conn, did, p.get('items') or [], g.ctx.user['id'])
     op_log(g.conn, g.ctx, 'biz_demand', did, 'CREATE', None, {'demandName': p['demandName']})
@@ -64,8 +64,8 @@ def _validate_demand(p):
                    'expectArriveStart', 'expectArriveEnd', 'settleType')
     if len(str(p['demandName'])) > 50:
         raise ApiError(40001, '需求名称不超过50字')
-    if p.get('deliveryType') not in ('PORT_FOB', 'PORT_TRUCK', 'PLANT'):
-        raise ApiError(40001, '交货方式不合法（PORT_FOB/PORT_TRUCK/PLANT）')
+    if p.get('deliveryType') not in ('PLANT', 'STATION_SELF', 'PORT_FOB', 'PORT_TRUCK'):
+        raise ApiError(40001, '交货方式不合法（PLANT/STATION_SELF）')
     start = parse_date(p, 'expectArriveStart')
     end = parse_date(p, 'expectArriveEnd')
     if end < start:
@@ -86,11 +86,11 @@ def update_demand(did):
     execute(g.conn, """
         UPDATE biz_demand SET demand_name=%s, delivery_type=%s, delivery_place=%s,
             expect_arrive_start=%s, expect_arrive_end=%s, price_intent=%s, settle_type=%s,
-            quality_req=%s, remark=%s, updated_by=%s, updated_at=now()
+            settle_days=%s, quality_req=%s, remark=%s, updated_by=%s, updated_at=now()
         WHERE id=%s
         """, (p['demandName'], p['deliveryType'], p['deliveryPlace'],
               parse_date(p, 'expectArriveStart'), parse_date(p, 'expectArriveEnd'),
-              p.get('priceIntent'), p['settleType'], p.get('qualityReq'),
+              p.get('priceIntent'), p['settleType'], p.get('settleDays'), p.get('qualityReq'),
               p.get('remark'), g.ctx.user['id'], did))
     _save_items(g.conn, did, p.get('items') or [], g.ctx.user['id'])
     op_log(g.conn, g.ctx, 'biz_demand', did, 'UPDATE', None, {'demandName': p['demandName']})
@@ -138,7 +138,7 @@ def close_demand(did):
     if frm not in ('SUBMITTED', 'INQUIRING', 'DEALT'):
         raise ApiError(40901, '需求单当前状态为 %s，禁止关闭' % frm)
     execute(g.conn, """
-        UPDATE biz_demand SET status='CLOSED', remark=concat_ws(' | ', remark, %s),
+        UPDATE biz_demand SET status='CLOSED', remark=concat_ws(' | ', remark, %s::VARCHAR),
                updated_by=%s, updated_at=now() WHERE id=%s
         """, ('关闭原因：' + p['reason'], g.ctx.user['id'], did))
     op_log(g.conn, g.ctx, 'biz_demand', did, 'STATUS %s->CLOSED' % frm,

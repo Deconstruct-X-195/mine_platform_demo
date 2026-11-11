@@ -1,16 +1,8 @@
 /* 需求管理（PRD 4.2/FR-02/T06-T07）：钢厂需求单 CRUD/提交/撤回/关闭 + 供应商脱敏需求池 */
 (function () {
   window.Pages = window.Pages || {};
-  const DELIVERY = { PORT_FOB: '港口FOB', PORT_TRUCK: '港口汽运', PLANT: '厂内自提' };
+  const DELIVERY = { PLANT: '到厂', STATION_SELF: '到站自提', PORT_FOB: '港口FOB', PORT_TRUCK: '港口汽运' };
   const SETTLE = { PREPAY: '预付款', COD: '货到付款', CREDIT: '账期' };
-
-  function attachLinks(str) {
-    if (!str) return '-';
-    return UI.h('span', {}, ...String(str).split(',').filter(Boolean).map((fid, i) => [
-      i > 0 ? ' ' : null,
-      UI.h('a', { href: 'javascript:;', onclick: () => API.downloadFile(fid, '附件-' + fid) }, '附件' + (i + 1)),
-    ]).flat());
-  }
 
   /* -------- 钢厂：需求单列表 -------- */
   Pages.demand = async function (page, user) {
@@ -35,7 +27,6 @@
         { key: 'demand_no', label: '需求编号' },
         { key: 'demand_name', label: '需求名称' },
         { key: 'delivery_type', label: '交货方式', render: (r) => DELIVERY[r.delivery_type] || r.delivery_type || '-' },
-        { key: 'delivery_place', label: '交货地点' },
         { label: '期望到货', render: (r) => UI.fmtDate(r.expect_arrive_start) + ' ~ ' + UI.fmtDate(r.expect_arrive_end) },
         { label: '结算', render: (r) => (SETTLE[r.settle_type] || r.settle_type || '-') + (r.settle_days ? ' ' + r.settle_days + '天' : '') },
         { key: 'status', label: '状态', render: (r) => UI.statusTag('DEMAND', r.status) },
@@ -86,11 +77,11 @@
       const body = UI.h('div', {},
         UI.kv([
           ['需求编号', d.demand_no], ['状态', UI.statusTag('DEMAND', d.status)],
-          ['交货方式', DELIVERY[d.delivery_type] || d.delivery_type], ['交货地点', d.delivery_place],
+          ['交货方式', DELIVERY[d.delivery_type] || d.delivery_type],
+          ['交货地点', d.delivery_place || '-'],
           ['期望到货', UI.fmtDate(d.expect_arrive_start) + ' ~ ' + UI.fmtDate(d.expect_arrive_end)],
           ['结算方式', (SETTLE[d.settle_type] || d.settle_type || '-') + (d.settle_days ? ' ' + d.settle_days + '天' : '')],
-          ['价格意向', d.price_intent], ['质量要求', d.quality_req],
-          ['备注', d.remark, true], ['附件', attachLinks(d.attachments), true],
+          ['质量要求', d.quality_req, true],
         ]),
         UI.h('h3', { style: 'margin-top:14px' }, '需求明细'),
         UI.table([
@@ -116,116 +107,77 @@
       ]);
     }
 
-    /* -------- 新建/编辑（含明细动态编辑器） -------- */
+    /* -------- 新建/编辑（精简表单：产品名称/交货方式/到货日期/结算账期/质量要求） -------- */
     async function editForm(row, onDone) {
       let existing = null;
       if (row) existing = await API.get('/demands/' + row.id);
       const varieties = (await API.get('/base/varieties')).list;
       const vOpts = varieties.map((v) => [v.id, v.varietyName + '(' + v.varietyCode + ')']);
+      const firstItem = (existing && existing.items && existing.items[0]) || {};
       const f = {
-        demandName: UI.input('text', existing ? existing.demand_name : '', { placeholder: '如：3万吨PB粉港口自提' }),
-        deliveryType: UI.selectField(Object.entries(DELIVERY), existing ? existing.delivery_type : 'PORT_FOB'),
-        deliveryPlace: UI.input('text', existing ? existing.delivery_place : '', { placeholder: '交货地点，如：日照港' }),
-        expectStart: UI.input('date', existing ? UI.fmtDate(existing.expect_arrive_start) : '', { placeholder: '期望到货起始日' }),
-        expectEnd: UI.input('date', existing ? UI.fmtDate(existing.expect_arrive_end) : '', { placeholder: '期望到货截止日' }),
-        priceIntent: UI.input('text', existing ? existing.price_intent : '', { placeholder: '选填' }),
+        variety: UI.selectField(vOpts, firstItem.varietyId == null ? '' : String(firstItem.varietyId)),
+        grade: UI.input('number', firstItem.grade == null ? '' : String(firstItem.grade), { placeholder: '品位%，如 62' }),
+        quantity: UI.input('number', firstItem.quantity == null ? '' : String(firstItem.quantity), { placeholder: '数量（吨）' }),
+        deliveryType: UI.selectField([['PLANT', DELIVERY.PLANT], ['STATION_SELF', DELIVERY.STATION_SELF]],
+          existing ? existing.delivery_type : 'PLANT'),
+        place: UI.input('text', existing ? (existing.delivery_place || '') : '', { placeholder: '交货地点，如：黄骅港港区' }),
+        expectStart: UI.input('date', existing ? UI.fmtDate(existing.expect_arrive_start) : ''),
+        expectEnd: UI.input('date', existing ? UI.fmtDate(existing.expect_arrive_end) : ''),
         settleType: UI.selectField(Object.entries(SETTLE), existing ? existing.settle_type : 'COD'),
-        settleDays: UI.input('number', existing ? existing.settle_days : '', { placeholder: '账期天数（选填，如 30）' }),
-        qualityReq: UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '选填，如：Fe≥62%，水分≤8%' }),
-        remark: UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '选填，补充说明' }),
-        files: UI.h('input', { type: 'file', multiple: true }),
+        settleDays: UI.input('number', existing && existing.settle_days ? String(existing.settle_days) : '',
+          { placeholder: '账期天数，如 30' }),
+        qualityReq: UI.h('textarea', { rows: 4, style: 'width:100%',
+          placeholder: '如：Fe≥62%，水分≤8%；其他补充说明（备注）' }),
       };
-      if (existing) {
-        f.qualityReq.value = existing.quality_req || '';
-        f.remark.value = existing.remark || '';
-      }
-      // BUG-03 修复：编辑时回显已有明细。此前 items=[] 恒为空，编辑弹窗
-      // 恒显示"暂无明细，请添加"，误操作会清空原明细。
-      const items = ((existing && existing.items) || []).map((it) => ({
-        varietyId: it.varietyId == null ? '' : String(it.varietyId),
-        grade: it.grade == null ? '' : String(it.grade),
-        quantity: it.quantity == null ? '' : String(it.quantity),
-        moreLessRate: it.moreLessRate == null ? '' : String(it.moreLessRate),
-      }));
-      const itemsBox = UI.h('div', {});
-      function renderItems() {
-        itemsBox.innerHTML = '';
-        if (!items.length) { itemsBox.appendChild(UI.h('div', { class: 'empty' }, '暂无明细，请添加')); return; }
-        items.forEach((it, idx) => {
-          it.varietySel = UI.selectField(vOpts, it.varietyId);
-          // BUG-02 修复：新建明细行时未选中任何 option，浏览器默认显示第一项
-          // （如 PB粉），但数据模型 it.varietyId 仍为空，仅靠 change 事件同步，
-          // 导致"下拉已显示品种、保存却被拦明细不完整"。此处将默认选中项回写模型。
-          if (it.varietyId == null || it.varietyId === '') it.varietyId = it.varietySel.value;
-          it.varietySel.addEventListener('change', () => { it.varietyId = it.varietySel.value; });
-          it.gradeIn = UI.input('number', it.grade, { placeholder: '品位(%)', onchange: (e) => { it.grade = e.target.value; } });
-          it.qtyIn = UI.input('number', it.quantity, { placeholder: '数量', onchange: (e) => { it.quantity = e.target.value; } });
-          it.mlIn = UI.input('number', it.moreLessRate, { placeholder: '如 5 表示 ±5%', onchange: (e) => { it.moreLessRate = e.target.value; } });
-          itemsBox.appendChild(UI.h('div', { class: 'inline-flex', style: 'margin-bottom:6px' },
-            UI.h('span', {}, '明细' + (idx + 1)), it.varietySel, it.gradeIn, it.qtyIn, it.mlIn,
-            UI.h('button', { class: 'sm danger', onclick: () => { items.splice(idx, 1); renderItems(); } }, '删除')));
-        });
-      }
-      renderItems();
+      if (existing) f.qualityReq.value = existing.quality_req || '';
 
       const body = UI.h('form', { onsubmit: (e) => e.preventDefault() },
         UI.h('div', { class: 'form-grid' },
-          UI.formRow('需求名称', f.demandName, true),
+          UI.formRow('产品名称', f.variety, true),
+          UI.formRow('品位(%)', f.grade, true),
+          UI.formRow('数量(吨)', f.quantity, true),
           UI.formRow('交货方式', f.deliveryType, true),
-          UI.formRow('交货地点', f.deliveryPlace, true),
-          UI.formRow('价格意向', f.priceIntent),
+          UI.formRow('交货地点', f.place, true),
           UI.formRow('期望到货起', f.expectStart, true),
           UI.formRow('期望到货止', f.expectEnd, true),
           UI.formRow('结算方式', f.settleType, true),
           UI.formRow('账期天数', f.settleDays),
-          UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '质量要求'), f.qualityReq),
-          UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '备注'), f.remark),
-          UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '附件'), f.files)),
-        UI.h('h3', {}, '需求明细'),
-        UI.h('button', { class: 'sm', onclick: () => { items.push({}); renderItems(); } }, '+ 添加明细'),
-        itemsBox);
+          UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '质量要求（含备注）'), f.qualityReq)));
 
       const m = UI.modal(row ? '编辑需求单' : '新建需求单', body, [
         UI.h('button', {
           class: 'primary',
           onclick: async () => {
+            if (!f.variety.value) { UI.toast('请选择产品名称', 'err'); return; }
+            if (!f.grade.value || !f.quantity.value) { UI.toast('品位、数量为必填', 'err'); return; }
+            if (!f.place.value.trim()) { UI.toast('请填写交货地点', 'err'); return; }
+            if (!f.expectStart.value || !f.expectEnd.value) { UI.toast('期望到货日期为必填', 'err'); return; }
+            if (f.expectEnd.value < f.expectStart.value) { UI.toast('期望到货截止日不能早于起始日', 'err'); return; }
+            const vName = (varieties.find((v) => String(v.id) === f.variety.value) || {}).varietyName || '矿产品';
             const payload = {
-              demandName: f.demandName.value.trim(),
+              demandName: vName + '采购需求',
               deliveryType: f.deliveryType.value,
-              deliveryPlace: f.deliveryPlace.value.trim(),
+              deliveryPlace: f.place.value.trim(),
               expectArriveStart: f.expectStart.value,
               expectArriveEnd: f.expectEnd.value,
-              priceIntent: f.priceIntent.value.trim(),
               settleType: f.settleType.value,
               settleDays: f.settleDays.value ? Number(f.settleDays.value) : null,
               qualityReq: f.qualityReq.value,
-              remark: f.remark.value,
+              items: [{
+                varietyId: Number(f.variety.value),
+                grade: f.grade.value,
+                quantity: Number(f.quantity.value),
+                moreLessRate: firstItem.moreLessRate == null ? 5 : Number(firstItem.moreLessRate),
+              }],
             };
-            if (!payload.demandName || !payload.deliveryPlace) { UI.toast('需求名称、交货地点为必填', 'err'); return; }
-            if (!payload.expectArriveStart || !payload.expectArriveEnd) { UI.toast('期望到货日期为必填', 'err'); return; }
-            const its = [];
-            for (const it of items) {
-              if (!it.varietyId || !it.grade || !it.quantity) { UI.toast('明细需完整填写品种/品位/数量', 'err'); return; }
-              its.push({ varietyId: Number(it.varietyId), grade: it.grade, quantity: Number(it.quantity), moreLessRate: it.moreLessRate ? Number(it.moreLessRate) : 0 });
-            }
-            if (!its.length) { UI.toast('至少一条需求明细', 'err'); return; }
-            payload.items = its;
             try {
-              if (f.files.files && f.files.files.length) {
-                const ids = [];
-                for (const file of f.files.files) {
-                  const up = await API.upload(file);
-                  ids.push(up.fileId != null ? up.fileId : up.id);
-                }
-                payload.attachments = ids.join(',');
-              }
               if (row) { await API.put('/demands/' + row.id, payload); UI.toast('已保存', 'ok'); }
               else { await API.post('/demands', payload); UI.toast('已创建草稿', 'ok'); }
               m.close(); onDone();
             } catch (e) { /* toast 已提示 */ }
           },
         }, '保 存'),
-      ], { wide: true });
+      ]);
     }
 
     await load();

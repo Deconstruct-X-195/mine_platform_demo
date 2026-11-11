@@ -10,10 +10,8 @@ from .db import execute, q1
 from .security import hash_password
 
 VARIETIES = [
-    ('IRON_ORE_POWDER', '铁矿石粉矿', '61.50', 760.00),
-    ('IRON_ORE_LUMP', '铁矿石块矿', '62.50', 820.00),
-    ('IRON_ORE_CONCENTRATE', '铁精粉', '65.00', 905.00),
-    ('IRON_ORE_PELLET', '球团矿', '64.00', 960.00),
+    ('PB_FINES', 'PB粉', '61.50', 760.00),
+    ('CHINA_BLEND_FINES', '中华混一号', '61.50', 745.00),
 ]
 
 COMPANIES = [
@@ -60,4 +58,13 @@ def seed(conn):
             INSERT INTO base_price (variety_id, price_date, price, price_basis, source_desc)
             VALUES (%s, current_date, %s, 'WET', '运营手工维护（演示数据）')
         """, (vid, price))
+        # 港口+品位维度：PB粉维护 61.5%/60.8% 两档基准价
+        # （锚点：兰格钢铁网 2026-11-09 天津港 60.8% 657 元；61.5% 按品位价差 +10 推算 667）
+        pb_id = q1(conn, "SELECT id FROM base_variety WHERE variety_code='PB_FINES'")['id']
+        for grade, tj in (('61.50', 667.00), ('60.80', 657.00)):
+            for port, p in (('天津港', tj), ('黄骅港', round(tj - 2, 2))):
+                execute(conn, """
+                    INSERT INTO base_price (variety_id, price_date, price, price_basis, port, grade, source_desc)
+                    VALUES (%s, current_date, %s, 'WET', %s, %s, '兰格钢铁网公开报价锚点·锚点间线性内插（演示）')
+                """, (pb_id, p, port, grade))
     return True
