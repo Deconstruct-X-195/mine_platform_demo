@@ -29,7 +29,7 @@ def current_prices():
     sql = """
         SELECT p.variety_id AS "varietyId", v.variety_name AS "varietyName",
                p.price, p.price_basis AS "priceBasis", p.price_date AS "priceDate",
-               p.source_desc AS "sourceDesc"
+               p.port, p.grade, p.source_desc AS "sourceDesc"
         FROM base_price p JOIN base_variety v ON v.id=p.variety_id
         WHERE p.is_deleted=0 AND p.price_date=%s
     """
@@ -38,13 +38,21 @@ def current_prices():
         sql += ' AND p.variety_id=%s'
         args.append(vid)
     rows = qall(g.conn, sql + ' ORDER BY v.sort_no, v.id', args)
+    if not rows:
+        # 今日未维护基准价时，兜底展示最近一个有价日的数据（日期如实显示）
+        latest = q1(g.conn, 'SELECT MAX(price_date) AS d FROM base_price WHERE is_deleted=0')
+        if latest and latest['d']:
+            sql = sql.replace('p.price_date=%s', 'p.price_date=%s')
+            rows = qall(g.conn, sql + ' ORDER BY v.sort_no, v.id', [latest['d']])
     trend_sql = """
-        SELECT variety_id AS "varietyId", price_date AS "priceDate", price
-        FROM base_price WHERE is_deleted=0 AND price_date >= %s
+        SELECT p.variety_id AS "varietyId", v.variety_name AS "varietyName",
+               p.price_date AS "priceDate", p.price, p.port, p.grade
+        FROM base_price p JOIN base_variety v ON v.id=p.variety_id
+        WHERE p.is_deleted=0 AND p.price_date >= %s
     """
     trend_args = [today - timedelta(days=30)]
     if vid:
-        trend_sql += ' AND variety_id=%s'
+        trend_sql += ' AND p.variety_id=%s'
         trend_args.append(vid)
     trend = qall(g.conn, trend_sql + ' ORDER BY variety_id, price_date', trend_args)
     return ok({'today': json_payload(rows), 'trend': json_payload(trend)})

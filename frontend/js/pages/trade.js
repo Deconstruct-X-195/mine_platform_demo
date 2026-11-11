@@ -105,7 +105,6 @@
     const body = UI.h('div', {},
       UI.kv([
         ['询价编号', snap.inquiryNo],
-        ['最少响应', snap.minResponse != null ? snap.minResponse + ' 家' : '-'],
         ['响应情况', snap.responseShortage ? UI.h('span', { class: 'tag red' }, '响应不足') : UI.h('span', { class: 'tag green' }, '满足')],
         ['揭示时间', UI.fmtDateTime(snap.revealedAt)],
       ]),
@@ -159,7 +158,7 @@
         UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '询价单'),
         UI.h('div', { class: 'spacer' }),
         UI.statusFilter('INQUIRY', (v) => { status = v; pageNo = 1; load(); }),
-        UI.h('button', { class: 'primary', onclick: () => newInquiry(() => load()) }, '新建询价'))));
+        UI.h('button', { class: 'primary', onclick: () => newInquiry(() => load()) }, '引入需求管理'))));
     page.appendChild(listCard);
     page.appendChild(pagerBox);
 
@@ -188,7 +187,6 @@
           ['品种', d.varietyName], ['数量', UI.fmtMoney(d.quantity) + ' 吨'],
           ['报价截止', UI.fmtDateTime(d.deadline)],
           ['期望到货', UI.fmtDate(d.expect_arrive_date)],
-          ['最少响应', d.min_response != null ? d.min_response + ' 家' : '-'],
           ['交货方式', d.delivery_type || '-'],
           ['交货地点', d.delivery_place || '-'],
           ['结算方式', SETTLE[d.settle_type] || d.settle_type || '-'],
@@ -238,28 +236,34 @@
       const qty = UI.input('number', '', { placeholder: '询价数量' });
       const arrive = UI.input('date', '', { placeholder: '期望到货日' });
       const deadline = UI.h('input', { type: 'datetime-local', placeholder: '报价截止时间' });
-      const minResp = UI.input('number', '2', { placeholder: '最少响应家数（默认 2）' });
-      const dType = UI.selectField([['', '跟随需求'], ['PORT_FOB', '港口FOB'], ['PORT_TRUCK', '港口汽运'], ['PLANT', '厂内自提']], '');
-      const place = UI.input('text', '', { placeholder: '交货地点（选填）' });
+      const dType = UI.selectField([['', '跟随需求'], ['PLANT', '到厂'], ['STATION_SELF', '到站自提']], '');
+      const place = UI.input('text', '', { placeholder: '交货地点（必填）' });
       const settle = UI.selectField([['', '跟随需求']].concat(Object.entries(SETTLE)), '');
       const desc = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '选填，询价补充说明' });
-      const supBox = UI.h('div', { class: 'inline-flex', style: 'flex-wrap:wrap' });
 
       async function loadItems() {
         const d = await API.get('/demands/' + demandSel.value);
         const its = (d.items || []).filter((it) => Number(it.remainQty) > 0);
         itemSel.innerHTML = '';
-        if (!its.length) { itemSel.appendChild(UI.h('option', { value: '' }, '该需求无剩余可询明细')); return; }
+        if (!its.length) { itemSel.appendChild(UI.h('option', { value: '' }, '该需求无剩余可询明细')); qty.value = ''; return; }
         its.forEach((it) => itemSel.appendChild(UI.h('option', {
           value: it.id, 'data-remain': it.remainQty,
-        }, (it.varietyName || '-') + ' ' + (it.grade || '') + '（剩余可询 ' + it.remainQty + '）')));
+        }, (it.varietyName || '-') + ' ' + (it.grade || '') + '（数量 ' + it.quantity + ' 吨）')));
+        // 数量、期望到货日、交货地点直接引入需求单数据，不可修改
+        const first = its[itemSel.selectedIndex] || its[0];
+        qty.value = first.remainQty;
+        qty.readOnly = true;
+        arrive.value = (d.expect_arrive_end || '').slice(0, 10) || '';
+        arrive.readOnly = true;
+        place.value = d.delivery_place && d.delivery_place !== '到厂' && d.delivery_place !== '到站自提' ? d.delivery_place : '';
+        place.readOnly = !!place.value;
       }
+      itemSel.addEventListener('change', () => {
+        const opt = itemSel.selectedOptions[0];
+        qty.value = opt ? (opt.getAttribute('data-remain') || '') : '';
+      });
       demandSel.addEventListener('change', loadItems);
       await loadItems();
-
-      const suppliers = (await API.get('/companies?type=SUPPLIER&size=100')).list || [];
-      suppliers.forEach((s) => supBox.appendChild(UI.h('label', { class: 'field' },
-        UI.h('input', { type: 'checkbox', value: s.id, style: 'width:auto' }), s.companyName)));
 
       // BUG-07 修复：弹窗内持久错误提示区。此前校验/保存失败仅提示约 3 秒即
       // 消失的 toast，弹窗保持打开且不显示失败原因，表现为"静默失败"。
@@ -268,32 +272,27 @@
         UI.h('div', { class: 'form-grid' },
           UI.formRow('来源需求', demandSel, true),
           UI.formRow('需求明细', itemSel, true),
-          UI.formRow('询价数量', qty, true, '不超过明细剩余可询量'),
-          UI.formRow('期望到货日', arrive, true),
+          UI.formRow('询价数量(吨)', qty, true, '自动引入所选明细的剩余可询量，不可修改'),
+          UI.formRow('期望到货日', arrive, true, '自动引入需求的期望到货截止日，不可修改'),
           UI.formRow('报价截止', deadline, true, '至少为当前时间 +2 小时，且不晚于到货日前 7 天'),
-          UI.formRow('最少响应家数', minResp),
           UI.formRow('交货方式', dType),
-          UI.formRow('交货地点', place),
+          UI.formRow('交货地点', place, true, '自动引入需求的具体交货地点；需求未填写时可手动输入'),
           UI.formRow('结算方式', settle),
-          UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '询价说明'), desc),
-          UI.h('div', { class: 'form-row full' }, UI.h('label', { class: 'req' }, '邀请供应商'), supBox)),
+          UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '询价说明'), desc)),
         UI.h('div', { class: 'hint' }, '保存后为草稿，可在详情中发出'),
         errBox), [
         UI.h('button', { class: 'primary', onclick: async () => {
           const fail = (msg) => { errBox.textContent = msg; if (errBox.scrollIntoView) errBox.scrollIntoView({ block: 'nearest' }); };
-          const inviteIds = Array.from(supBox.querySelectorAll('input:checked')).map((i) => Number(i.value));
           if (!itemSel.value) { fail('请选择需求明细'); return; }
-          if (!inviteIds.length) { fail('至少邀请一家供应商'); return; }
           const body = {
             demandId: Number(demandSel.value),
             demandItemId: Number(itemSel.value),
             quantity: Number(qty.value),
             arriveDate: arrive.value,
             deadline: deadline.value ? deadline.value.replace('T', ' ') + ':00' : '',
-            inviteSupplierIds: inviteIds,
-            minResponse: minResp.value ? Number(minResp.value) : 2,
           };
           if (!body.quantity || body.quantity <= 0) { fail('请填写询价数量'); return; }
+          if (!place.value.trim()) { fail('请填写交货地点'); return; }
           if (!body.arriveDate || !body.deadline) { fail('期望到货日与报价截止为必填'); return; }
           // 与服务端同规则的本地时间预校验（datetime-local 按浏览器本地时区解析）
           const dl = new Date(body.deadline.replace(' ', 'T'));
@@ -303,7 +302,7 @@
             fail('报价截止时间不能晚于到货日期前 7 天'); return;
           }
           if (dType.value) body.deliveryType = dType.value;
-          if (place.value.trim()) body.deliveryPlace = place.value.trim();
+          body.deliveryPlace = place.value.trim();
           if (settle.value) body.settleType = settle.value;
           if (desc.value.trim()) body.remark = desc.value.trim();
           try {

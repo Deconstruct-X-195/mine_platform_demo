@@ -49,11 +49,13 @@
   /* columns: [{key,label,num,render(row)}] */
   function table(columns, rows, emptyText) {
     if (!rows || !rows.length) return h('div', { class: 'empty' }, emptyText || '暂无数据');
-    return h('table', { class: 'grid' },
-      h('thead', {}, h('tr', {}, ...columns.map(c => h('th', { class: c.num ? 'num' : '' }, c.label)))),
-      h('tbody', {}, ...rows.map(r => h('tr', {},
-        ...columns.map(c => h('td', { class: c.num ? 'num' : '' },
-          c.render ? c.render(r) : (r[c.key] == null ? '-' : String(r[c.key]))))))));
+    // 布局修复：外层 table-wrap 提供横向滚动，列多时表格在卡片内滚动而非溢出
+    return h('div', { class: 'table-wrap' },
+      h('table', { class: 'grid' },
+        h('thead', {}, h('tr', {}, ...columns.map(c => h('th', { class: c.num ? 'num' : '' }, c.label)))),
+        h('tbody', {}, ...rows.map(r => h('tr', {},
+          ...columns.map(c => h('td', { class: c.num ? 'num' : '' },
+            c.render ? c.render(r) : (r[c.key] == null ? '-' : String(r[c.key])))))))));
   }
 
   function pager(container, page, size, total, onChange) {
@@ -118,6 +120,13 @@
     svg.setAttribute('class', 'trend-svg');
     svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
     svg.setAttribute('preserveAspectRatio', 'none');
+    // 底部时间轴基线
+    const baseline = document.createElementNS(svgNS, 'line');
+    baseline.setAttribute('x1', P); baseline.setAttribute('y1', H - P);
+    baseline.setAttribute('x2', W - P); baseline.setAttribute('y2', H - P);
+    baseline.setAttribute('stroke', '#d8dde5');
+    baseline.setAttribute('stroke-width', '1');
+    svg.appendChild(baseline);
     const poly = document.createElementNS(svgNS, 'polyline');
     poly.setAttribute('points', line);
     poly.setAttribute('fill', 'none');
@@ -134,7 +143,15 @@
       c.appendChild(title);
       svg.appendChild(c);
     }
-    return svg;
+    // 时间轴：图表下方首尾两个日期刻度（HTML 渲染，避免 SVG 拉伸变形）
+    // 首个保留完整日期（含年份），末个省略年份（MM-DD）
+    const axis = h('div', { class: 'trend-axis' });
+    [0, pts.length - 1].forEach((idx, t) => {
+      const raw = String(pts[idx].priceDate || '');
+      const m = raw.match(/^\d{4}-(\d{2}-\d{2})/);
+      axis.appendChild(h('span', {}, t === 0 ? raw : (m ? m[1] : raw)));
+    });
+    return h('div', { class: 'trend-wrap' }, svg, axis);
   }
 
   function input(type, value, props) {
