@@ -68,10 +68,11 @@ CREATE TABLE base_price (
   id BIGSERIAL PRIMARY KEY,
   variety_id BIGINT NOT NULL, price_date DATE NOT NULL,
   price NUMERIC(18,2) NOT NULL, price_basis VARCHAR(16) DEFAULT 'WET',
+  port VARCHAR(32), grade VARCHAR(16),
   source_desc VARCHAR(200), remark VARCHAR(200),
   created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP NOT NULL DEFAULT now(),
   created_by BIGINT, updated_by BIGINT, is_deleted SMALLINT DEFAULT 0,
-  CONSTRAINT uk_variety_date UNIQUE (variety_id, price_date)
+  CONSTRAINT uk_variety_date_port_grade UNIQUE (variety_id, price_date, port, grade)
 );
 
 -- 港口现货价（品种×港口×日期唯一；运营看板"行业数据趋势"数据源，增量表）
@@ -94,7 +95,7 @@ CREATE TABLE biz_demand (
   delivery_place VARCHAR(100) NOT NULL,
   expect_arrive_start DATE NOT NULL, expect_arrive_end DATE NOT NULL,
   price_intent VARCHAR(500),
-  settle_type VARCHAR(32) NOT NULL, quality_req VARCHAR(500),
+  settle_type VARCHAR(32) NOT NULL, settle_days INT, quality_req VARCHAR(500),
   attachments TEXT, remark VARCHAR(500), version INT DEFAULT 1,
   submitted_at TIMESTAMP,
   status VARCHAR(20) NOT NULL DEFAULT 'DRAFT', -- DRAFT/SUBMITTED/WITHDRAWN

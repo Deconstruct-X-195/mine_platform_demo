@@ -7,10 +7,14 @@
   /* -------- 钢厂：基准价行情 -------- */
   Pages.price = async function (page) {
     const d = await API.get('/base-prices/current');
+    const SRC_NOTE = '数据来源：兰格钢铁网公开报价锚点（2026-10-21 天津港 61.5% PB粉 667 元/湿吨、2026-11-09 天津港 657 元）；黄骅港无公开逐日报价，按天津港-2元推算；历史逐日为锚点间线性内插，仅供演示';
     const card = UI.h('div', { class: 'card' },
       UI.h('h3', {}, '今日基准价'),
+      UI.h('div', { class: 'hint', style: 'color:#b26a00;margin:-6px 0 10px' }, SRC_NOTE),
       UI.table([
-        { key: 'varietyName', label: '品种' },
+        { key: 'varietyName', label: '产品名称' },
+        { label: '品位', render: (r) => (r.grade ? String(r.grade).replace(/\.?0+$/, '') + '%' : '-') },
+        { label: '港口', render: (r) => r.port || '平台综合' },
         { key: 'price', label: '基准价(元/吨)', num: true, render: (r) => UI.fmtMoney(r.price) },
         { key: 'priceBasis', label: '计价口径', render: (r) => PB[r.priceBasis] || r.priceBasis || '-' },
         { key: 'priceDate', label: '价格日期', render: (r) => UI.fmtDate(r.priceDate) },
@@ -18,19 +22,26 @@
       ], d.today, '今日暂无基准价'));
     page.appendChild(card);
 
-    const byVariety = {};
+    const bySeries = {};
     (d.trend || []).forEach((r) => {
-      (byVariety[r.varietyId] = byVariety[r.varietyId] || []).push(r);
+      const key = r.varietyId + '|' + (r.grade || '') + '|' + (r.port || '');
+      (bySeries[key] = bySeries[key] || []).push(r);
     });
     const nameOf = {};
+    (d.trend || []).forEach((r) => { if (r.varietyName) nameOf[r.varietyId] = r.varietyName; });
     (d.today || []).forEach((r) => { nameOf[r.varietyId] = r.varietyName; });
-    const trendCard = UI.h('div', { class: 'card' }, UI.h('h3', {}, '近 30 日走势'));
-    const ids = Object.keys(byVariety);
+    const titleOf = (vid) => nameOf[vid] || '产品 ' + vid;
+    const trendCard = UI.h('div', { class: 'card' }, UI.h('h3', {}, '近 30 日走势'),
+      UI.h('div', { class: 'hint', style: 'color:#b26a00;margin:-6px 0 10px' }, SRC_NOTE));
+    const ids = Object.keys(bySeries);
     if (!ids.length) trendCard.appendChild(UI.h('div', { class: 'empty' }, '暂无走势数据'));
-    ids.forEach((vid) => {
-      const rows = byVariety[vid].slice().sort((a, b) => String(a.priceDate).localeCompare(String(b.priceDate)));
+    ids.forEach((key) => {
+      const [vid, grade, port] = key.split('|');
+      const g = grade ? ' ' + String(grade).replace(/\.?0+$/, '') + '%' : '';
+      const title = titleOf(vid) + g + (port ? ' · ' + port : ' · 平台综合');
+      const rows = bySeries[key].slice().sort((a, b) => String(a.priceDate).localeCompare(String(b.priceDate)));
       trendCard.appendChild(UI.h('div', { style: 'margin-bottom:16px' },
-        UI.h('div', { style: 'font-weight:bold;margin-bottom:6px' }, nameOf[vid] || ('品种 ' + vid)),
+        UI.h('div', { style: 'font-weight:bold;margin-bottom:6px' }, title),
         UI.trendChart(rows, 'price')));
     });
     page.appendChild(trendCard);

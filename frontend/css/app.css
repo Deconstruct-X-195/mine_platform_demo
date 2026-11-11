@@ -325,8 +325,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .toolbar h3 { margin: 0; }
 
 /* ---------- 5. 表格（hairline 分隔，无竖线） ---------- */
+.table-wrap { overflow-x: auto; }
 table.grid {
-  width: 100%; border-collapse: collapse; background: transparent;
+  width: 100%; min-width: max-content; border-collapse: collapse; background: transparent;
   font-size: var(--fs-sub);
 }
 table.grid th, table.grid td {
@@ -614,6 +615,13 @@ form .form-row .hint-inline { font-weight: 400; color: var(--label-3); letter-sp
 .trend-legend { display: flex; gap: 16px; align-items: center; font-size: 12px; color: var(--label-2); margin-bottom: 6px; }
 .trend-legend-item { display: inline-flex; align-items: center; gap: 5px; }
 .legend-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
+.trend-svg { width: 100%; height: 160px; display: block; }
+.trend-wrap { width: 100%; }
+.trend-axis {
+  display: flex; justify-content: space-between;
+  font-size: 11px; color: var(--label-2);
+  padding: 4px 2px 0; font-variant-numeric: tabular-nums;
+}
 
 /* ---------- 16. 杂项 ---------- */
 .msg-badge {
@@ -623,6 +631,8 @@ form .form-row .hint-inline { font-weight: 400; color: var(--label-3); letter-sp
   text-align: center; margin-left: 4px; display: inline-block;
 }
 .inline-flex { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+/* 表格操作列：按钮保持单行，随表格整体横向滚动 */
+table.grid .inline-flex { flex-wrap: nowrap; }
 
 /* ---------- 17. 登录 / 注册（定制背景图 + 品牌标识 + 精致表单） ---------- */
 .auth-wrap {

@@ -22,6 +22,8 @@ VARIETIES = [
     ('IRON_ORE_PELLET', '球团矿', '球团', '64.00', 960.00),
     ('IRON_ORE_PB_POWDER', 'PB粉', '粉矿', '62.00', 780.00),
     ('IRON_ORE_ZH_MIX_1', '中华混一号', '混矿', '61.50', 770.00),
+    ('PB_FINES', 'PB粉', '61.50', 760.00),
+    ('CHINA_BLEND_FINES', '中华混一号', '61.50', 745.00),
 ]
 
 COMPANIES = [
@@ -222,4 +224,24 @@ def seed(conn):
         """, (cid, phone, hash_password('demo123456'), real_name,
               {'STEEL': 'STEEL_BUYER', 'SUPPLIER': 'SUPPLIER', 'LOGISTICS': 'LOGISTICS_CARRIER'}[types]))
     # 品种档案已由 _ensure_varieties 幂等补齐（新增品种无需重建库）
+    # 品种档案 + 当日基准价
+    for code, vname, grade, price in VARIETIES:
+        vid = execute(conn, """
+            INSERT INTO base_variety (variety_code, variety_name, default_grade, unit, sort_no)
+            VALUES (%s, %s, %s, '吨', %s)
+            RETURNING id
+        """, (code, vname, grade, len(code)), returning_id=True)
+        execute(conn, """
+            INSERT INTO base_price (variety_id, price_date, price, price_basis, source_desc)
+            VALUES (%s, current_date, %s, 'WET', '运营手工维护（演示数据）')
+        """, (vid, price))
+        # 港口+品位维度：PB粉维护 61.5%/60.8% 两档基准价
+        # （锚点：兰格钢铁网 2026-11-09 天津港 60.8% 657 元；61.5% 按品位价差 +10 推算 667）
+        pb_id = q1(conn, "SELECT id FROM base_variety WHERE variety_code='PB_FINES'")['id']
+        for grade, tj in (('61.50', 667.00), ('60.80', 657.00)):
+            for port, p in (('天津港', tj), ('黄骅港', round(tj - 2, 2))):
+                execute(conn, """
+                    INSERT INTO base_price (variety_id, price_date, price, price_basis, port, grade, source_desc)
+                    VALUES (%s, current_date, %s, 'WET', %s, %s, '兰格钢铁网公开报价锚点·锚点间线性内插（演示）')
+                """, (pb_id, p, port, grade))
     return True

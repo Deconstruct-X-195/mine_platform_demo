@@ -52,9 +52,15 @@ def create_inquiry():
         raise ApiError(40001, '报价截止时间不能晚于到货日期前 7 天')
 
     invites = p.get('inviteSupplierIds') or []
-    if not invites:
-        raise ApiError(40001, '至少邀请一家供应商')
-    _check_invites(invites)
+    if invites:
+        _check_invites(invites)
+    else:
+        # 邀请供应商改为自动邀请：未指定时邀请全部已准入且启用的供应商
+        invites = [r['id'] for r in qall(g.conn, """
+            SELECT id FROM ent_company
+            WHERE position('SUPPLIER' in company_types) > 0
+              AND audit_status='APPROVED' AND status='ENABLED' AND is_deleted=0
+        """)]
     min_response = p.get('minResponse') or 2
     if not (1 <= int(min_response) <= 10):
         raise ApiError(40001, '最少响应家数取值 1~10')
@@ -603,7 +609,7 @@ def fail_inquiry(iid):
     require_fields(p, 'reason')
     frm = row['status']
     transition(g.conn, g.ctx, 'biz_inquiry', '询价单', 'biz_inquiry', iid, 'FAILED')
-    execute(g.conn, "UPDATE biz_inquiry SET inquiry_desc=concat_ws(' | ', inquiry_desc, %s), updated_by=%s WHERE id=%s",
+    execute(g.conn, "UPDATE biz_inquiry SET inquiry_desc=concat_ws(' | ', inquiry_desc, %s::VARCHAR), updated_by=%s WHERE id=%s",
             ('流标原因：' + p['reason'], g.ctx.user['id'], iid))
     # 归还可询量
     execute(g.conn, """
