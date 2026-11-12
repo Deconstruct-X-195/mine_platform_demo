@@ -88,7 +88,10 @@ def init_schema(conn):
         """)
         cur.execute("""
             ALTER TABLE base_variety ADD COLUMN IF NOT EXISTS category VARCHAR(50);
+            ALTER TABLE base_price ADD COLUMN IF NOT EXISTS port VARCHAR(32);
+            ALTER TABLE base_price ADD COLUMN IF NOT EXISTS grade VARCHAR(16);
             ALTER TABLE biz_demand ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMP;
+            ALTER TABLE biz_demand ADD COLUMN IF NOT EXISTS settle_days INT;
             ALTER TABLE biz_inquiry ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'STEEL';
             ALTER TABLE biz_inquiry ADD COLUMN IF NOT EXISTS batch_no VARCHAR(32);
             ALTER TABLE biz_contract ADD COLUMN IF NOT EXISTS plat_status VARCHAR(20);
@@ -152,5 +155,17 @@ def init_schema(conn):
               is_deleted SMALLINT DEFAULT 0,
               CONSTRAINT uk_agg_feedback UNIQUE (inquiry_id, company_id)
             );
+        """)
+        cur.execute("""
+            -- 基准价唯一约束升级（PR #8）：品种+日期 → 品种+日期+港口+品位 四列。
+            -- 新库已含新约束则跳过；存量库从旧约束 uk_variety_date 平滑升级。
+            DO $$
+            BEGIN
+              IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='uk_variety_date_port_grade') THEN
+                ALTER TABLE base_price DROP CONSTRAINT IF EXISTS uk_variety_date;
+                ALTER TABLE base_price ADD CONSTRAINT uk_variety_date_port_grade
+                  UNIQUE (variety_id, price_date, port, grade);
+              END IF;
+            END $$;
         """)
     return created
