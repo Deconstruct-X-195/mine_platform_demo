@@ -341,10 +341,10 @@ def close_aggregated_order(aid):
         active = q1(g.conn, """
             SELECT count(*) AS c FROM biz_inquiry
             WHERE is_deleted=0 AND status IN ('DRAFT','SENT','QUOTING')
-              AND (demand_id=%s OR (agg_id IS NOT NULL AND agg_id <> %s AND id IN (
+              AND (demand_id=%s OR (agg_id IS NOT NULL AND agg_id IN (
                     SELECT DISTINCT agg_id FROM biz_aggregated_order_item
-                    WHERE demand_id=%s AND is_deleted=0)))
-            """, (m['demand_id'], aid, m['demand_id']))['c']
+                    WHERE demand_id=%s AND agg_id <> %s AND is_deleted=0)))
+            """, (m['demand_id'], m['demand_id'], aid))['c']
         drow = q1(g.conn, "SELECT id, status FROM biz_demand WHERE id=%s", (m['demand_id'],))
         if not active and drow and drow['status'] == 'INQUIRING':
             transition(g.conn, g.ctx, 'biz_demand', '需求单', 'biz_demand', m['demand_id'], 'SUBMITTED')

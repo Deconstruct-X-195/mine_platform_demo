@@ -133,11 +133,53 @@ CREATE TABLE biz_demand_change (
 CREATE INDEX idx_change_demand ON biz_demand_change (demand_id);
 CREATE INDEX idx_change_status ON biz_demand_change (status);
 
+-- 归集订单（运营平台将多钢厂同品种同品位需求合并发起询价；状态流转见 backend/state_machine.py）
+CREATE TABLE biz_aggregated_order (
+  id BIGSERIAL PRIMARY KEY,
+  agg_no VARCHAR(32) NOT NULL,
+  variety_id BIGINT NOT NULL,
+  grade NUMERIC(5,2),
+  total_qty NUMERIC(18,3) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+  remark VARCHAR(200),
+  created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP NOT NULL DEFAULT now(),
+  created_by BIGINT, updated_by BIGINT, is_deleted SMALLINT DEFAULT 0,
+  CONSTRAINT uk_agg_no UNIQUE (agg_no)
+);
+
+-- 归集订单成员明细（一行 = 归集订单 × 钢厂需求明细）
+CREATE TABLE biz_aggregated_order_item (
+  id BIGSERIAL PRIMARY KEY,
+  agg_id BIGINT NOT NULL,
+  demand_id BIGINT NOT NULL,
+  demand_item_id BIGINT NOT NULL,
+  company_id BIGINT NOT NULL,
+  quantity NUMERIC(18,3) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  is_deleted SMALLINT DEFAULT 0
+);
+CREATE INDEX idx_agg_item_agg ON biz_aggregated_order_item (agg_id);
+CREATE INDEX idx_agg_item_demand ON biz_aggregated_order_item (demand_id);
+
+-- 归集询价反馈（成员钢厂对归集询价的认可/不认可表态；同询价同企业唯一）
+CREATE TABLE biz_agg_inquiry_feedback (
+  id BIGSERIAL PRIMARY KEY,
+  inquiry_id BIGINT NOT NULL,
+  agg_id BIGINT NOT NULL,
+  company_id BIGINT NOT NULL,
+  decision VARCHAR(10) NOT NULL, -- ACCEPT/REJECT
+  reason VARCHAR(200),
+  created_at TIMESTAMP NOT NULL DEFAULT now(),
+  created_by BIGINT,
+  is_deleted SMALLINT DEFAULT 0,
+  CONSTRAINT uk_agg_feedback UNIQUE (inquiry_id, company_id)
+);
+
 -- 询价单
 CREATE TABLE biz_inquiry (
   id BIGSERIAL PRIMARY KEY,
   inquiry_no VARCHAR(32) NOT NULL, demand_id BIGINT, demand_item_id BIGINT,
-  buyer_id BIGINT NOT NULL, variety_id BIGINT NOT NULL,
+  buyer_id BIGINT, variety_id BIGINT NOT NULL, -- buyer_id 可空：运营平台归集代发询价无买方
   grade NUMERIC(5,2), quantity NUMERIC(18,3) NOT NULL,
   delivery_type VARCHAR(20), delivery_place VARCHAR(100),
   expect_arrive_date DATE, settle_type VARCHAR(32),
@@ -145,6 +187,7 @@ CREATE TABLE biz_inquiry (
   inquiry_desc VARCHAR(1000), status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
   source VARCHAR(16) NOT NULL DEFAULT 'STEEL', -- STEEL=钢厂自发 / PLATFORM=运营平台代发
   batch_no VARCHAR(32), -- 平台批量询价批次号（同批多单同号，可空）
+  agg_id BIGINT, -- 归集订单 id（PLATFORM 代发询价关联 biz_aggregated_order）
   reveal_snapshot TEXT, -- 揭示时固化全部报价快照
   created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP NOT NULL DEFAULT now(),
   created_by BIGINT, updated_by BIGINT, is_deleted SMALLINT DEFAULT 0,
@@ -167,6 +210,9 @@ CREATE TABLE biz_quote (
   id BIGSERIAL PRIMARY KEY,
   quote_no VARCHAR(32) NOT NULL, inquiry_id BIGINT NOT NULL,
   supplier_id BIGINT NOT NULL, price NUMERIC(18,2) NOT NULL,
+  tax_type VARCHAR(10), -- 含税标识：INC_TAX/EX_TAX（新报价应用层必填，存量行可空）
+  freight_price NUMERIC(18,2), -- 运费单价（元/吨）
+  delivery_type VARCHAR(20), -- 交付方式：PORT_FOB/PORT_TRUCK/PLANT
   quantity NUMERIC(18,3) NOT NULL, delivery_date DATE NOT NULL,
   delivery_place VARCHAR(100), pay_terms VARCHAR(200), quality_commit VARCHAR(300),
   valid_until DATE, remark VARCHAR(300), version INT DEFAULT 1,
@@ -355,7 +401,8 @@ CREATE INDEX idx_log_time ON sys_operation_log (created_at);
 -- 站内消息（一期简化项：只写消息表 + 页面提示）
 CREATE TABLE sys_message (
   id BIGSERIAL PRIMARY KEY,
-  receiver_company_id BIGINT NOT NULL, title VARCHAR(100) NOT NULL,
+  receiver_company_id BIGINT, -- 可空：平台公告/系统级消息无接收企业
+  title VARCHAR(100) NOT NULL,
   content VARCHAR(500), biz_type VARCHAR(20), biz_id BIGINT,
   is_read SMALLINT DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT now()

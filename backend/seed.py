@@ -22,8 +22,6 @@ VARIETIES = [
     ('IRON_ORE_PELLET', '球团矿', '球团', '64.00', 960.00),
     ('IRON_ORE_PB_POWDER', 'PB粉', '粉矿', '62.00', 780.00),
     ('IRON_ORE_ZH_MIX_1', '中华混一号', '混矿', '61.50', 770.00),
-    ('PB_FINES', 'PB粉', '61.50', 760.00),
-    ('CHINA_BLEND_FINES', '中华混一号', '61.50', 745.00),
 ]
 
 COMPANIES = [
@@ -83,6 +81,26 @@ def _ensure_port_prices(conn):
             VALUES (%s, '日照港', current_date - %s, %s)
             ON CONFLICT (variety_id, port_name, price_date) DO NOTHING
         """, (vid, offset, 775 + step2 * 2))
+
+
+def _ensure_pb_grade_prices(conn):
+    """PB 粉多档基准价演示数据（幂等）：61.5%/60.8% 两档品位 × 天津港/黄骅港。
+    锚点：兰格钢铁网 2026-11-09 天津港 60.8% 657 元；61.5% 按品位价差 +10 推算 667。
+    依赖 db.py 已将 base_price 唯一约束升级为 (品种, 日期, 港口, 品位) 四列。"""
+    v = q1(conn, "SELECT id FROM base_variety WHERE variety_code='IRON_ORE_PB_POWDER'")
+    if not v:
+        return
+    for grade, tj in (('61.50', 667.00), ('60.80', 657.00)):
+        for port, p in (('天津港', tj), ('黄骅港', round(tj - 2, 2))):
+            if q1(conn, """
+                    SELECT id FROM base_price
+                    WHERE variety_id=%s AND price_date=current_date AND port=%s AND grade=%s
+                """, (v['id'], port, grade)):
+                continue
+            execute(conn, """
+                INSERT INTO base_price (variety_id, price_date, price, price_basis, port, grade, source_desc)
+                VALUES (%s, current_date, %s, 'WET', %s, %s, '兰格钢铁网公开报价锚点·锚点间线性内插（演示）')
+            """, (v['id'], p, port, grade))
 
 
 def _demo_pdf():
@@ -201,8 +219,11 @@ def seed(conn):
     _ensure_varieties(conn)
     _ensure_categories(conn)
     _ensure_port_prices(conn)
-    _ensure_demo_contracts(conn)
-    if q1(conn, "SELECT id FROM sys_user WHERE username=%s AND is_deleted=0", ('13800000000',)):
+    _ensure_pb_grade_prices(conn)
+    created = not q1(conn, "SELECT id FROM sys_user WHERE username=%s AND is_deleted=0", ('13800000000',))
+    if not created:
+        # 管理员已存在（存量库）：跳过账号/企业创建，仅幂等补齐演示单据
+        _ensure_demo_contracts(conn)
         return False
     # 平台管理员（无企业归属）
     execute(conn, """
@@ -223,25 +244,7 @@ def seed(conn):
             RETURNING id
         """, (cid, phone, hash_password('demo123456'), real_name,
               {'STEEL': 'STEEL_BUYER', 'SUPPLIER': 'SUPPLIER', 'LOGISTICS': 'LOGISTICS_CARRIER'}[types]))
-    # 品种档案已由 _ensure_varieties 幂等补齐（新增品种无需重建库）
-    # 品种档案 + 当日基准价
-    for code, vname, grade, price in VARIETIES:
-        vid = execute(conn, """
-            INSERT INTO base_variety (variety_code, variety_name, default_grade, unit, sort_no)
-            VALUES (%s, %s, %s, '吨', %s)
-            RETURNING id
-        """, (code, vname, grade, len(code)), returning_id=True)
-        execute(conn, """
-            INSERT INTO base_price (variety_id, price_date, price, price_basis, source_desc)
-            VALUES (%s, current_date, %s, 'WET', '运营手工维护（演示数据）')
-        """, (vid, price))
-        # 港口+品位维度：PB粉维护 61.5%/60.8% 两档基准价
-        # （锚点：兰格钢铁网 2026-11-09 天津港 60.8% 657 元；61.5% 按品位价差 +10 推算 667）
-        pb_id = q1(conn, "SELECT id FROM base_variety WHERE variety_code='PB_FINES'")['id']
-        for grade, tj in (('61.50', 667.00), ('60.80', 657.00)):
-            for port, p in (('天津港', tj), ('黄骅港', round(tj - 2, 2))):
-                execute(conn, """
-                    INSERT INTO base_price (variety_id, price_date, price, price_basis, port, grade, source_desc)
-                    VALUES (%s, current_date, %s, 'WET', %s, %s, '兰格钢铁网公开报价锚点·锚点间线性内插（演示）')
-                """, (pb_id, p, port, grade))
-    return True
+    # 演示合同/物流单据（依赖企业档案就绪：全新库本轮已建；表空才建，幂等）
+    _ensure_demo_contracts(conn)
+    # 品种档案已由 _ensure_varieties/_ensure_pb_grade_prices 幂等补齐（新增品种无需重建库）
+    return created
