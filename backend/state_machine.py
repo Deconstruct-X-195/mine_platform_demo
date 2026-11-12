@@ -11,14 +11,23 @@ TRANSITIONS = {
         'DRAFT': ['SUBMITTED', 'WITHDRAWN'],
         'SUBMITTED': ['WITHDRAWN', 'INQUIRING', 'CLOSED'],
         'WITHDRAWN': ['SUBMITTED'],  # 撤回重提生成新版本
-        'INQUIRING': ['DEALT', 'CLOSED'],
+        'INQUIRING': ['DEALT', 'CLOSED', 'SUBMITTED'],  # SUBMITTED: 归集订单关闭后扣量释放回退
         'DEALT': ['CLOSED'],
+    },
+    'biz_aggregated_order': {
+        'OPEN': ['INQUIRING', 'CLOSED'],   # OPEN: 已归集待询价
+        'INQUIRING': ['AWARDED', 'CLOSED'],
+        'AWARDED': ['CLOSED'],
+    },
+    'biz_demand_change': {
+        'PENDING': ['APPROVED', 'REJECTED'],
     },
     'biz_inquiry': {
         'DRAFT': ['SENT'],
         'SENT': ['QUOTING', 'CLOSED', 'FAILED'],
         'QUOTING': ['CLOSED', 'FAILED'],
-        'CLOSED': ['BARGAINING', 'AWARDED', 'FAILED'],
+        'CLOSED': ['BARGAINING', 'AWARDED', 'FAILED', 'FEEDBACK'],  # FEEDBACK：钢厂不认可比价结果，待运营处理
+        'FEEDBACK': ['CLOSED'],  # 运营重新发起询价后标记旧单已处理
         'BARGAINING': ['AWARDED', 'FAILED'],
         'AWARDED': ['CLOSED'],  # 订单超时失效后重新开放定标（PRD 4.5）
     },
@@ -123,9 +132,10 @@ def transition(conn, ctx, table, entity_label, biz_type, biz_id, to_status, extr
     跨表节点（如合同签署挂订单时间轴）须显式传 node_biz_id，避免节点错挂到
     合同/询价等实体 id 上。
     """
-    id_col = {'biz_demand': 'id', 'biz_inquiry': 'id', 'biz_quote': 'id', 'biz_bargain': 'id',
-              'biz_order': 'id', 'biz_contract': 'id', 'biz_waybill': 'id',
-              'biz_settlement': 'id', 'biz_alert': 'id', 'ent_company': 'id'}[table]
+    id_col = {'biz_demand': 'id', 'biz_demand_change': 'id', 'biz_inquiry': 'id', 'biz_quote': 'id',
+              'biz_bargain': 'id', 'biz_order': 'id', 'biz_contract': 'id', 'biz_waybill': 'id',
+              'biz_settlement': 'id', 'biz_alert': 'id', 'biz_aggregated_order': 'id',
+              'ent_company': 'id'}[table]
     col = STATUS_COL.get(table, 'status')
     row = q1(conn, "SELECT %s AS status FROM %s WHERE %s=%%s AND is_deleted=0" % (col, table, id_col), (biz_id,))
     if row is None:

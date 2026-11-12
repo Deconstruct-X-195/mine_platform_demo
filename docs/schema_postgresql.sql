@@ -51,10 +51,11 @@ CREATE TABLE ent_qualification (
   created_at TIMESTAMP NOT NULL DEFAULT now(), created_by BIGINT, is_deleted SMALLINT DEFAULT 0
 );
 
--- 品种档案
+-- 品种档案（category：品类，如 粉矿/块矿/精粉/球团/混矿）
 CREATE TABLE base_variety (
   id BIGSERIAL PRIMARY KEY,
   variety_code VARCHAR(32) NOT NULL, variety_name VARCHAR(64) NOT NULL,
+  category VARCHAR(50),
   default_grade NUMERIC(5,2), unit VARCHAR(16) DEFAULT '吨',
   sort_no INT DEFAULT 0, status VARCHAR(20) DEFAULT 'ENABLED',
   created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP NOT NULL DEFAULT now(),
@@ -74,6 +75,17 @@ CREATE TABLE base_price (
   CONSTRAINT uk_variety_date_port_grade UNIQUE (variety_id, price_date, port, grade)
 );
 
+-- 港口现货价（品种×港口×日期唯一；运营看板"行业数据趋势"数据源，增量表）
+CREATE TABLE IF NOT EXISTS base_port_price (
+  id BIGSERIAL PRIMARY KEY,
+  variety_id BIGINT NOT NULL, port_name VARCHAR(50) NOT NULL, price_date DATE NOT NULL,
+  price NUMERIC(18,2) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT now(), created_by BIGINT,
+  is_deleted SMALLINT DEFAULT 0,
+  CONSTRAINT uk_port_variety_date UNIQUE (variety_id, port_name, price_date)
+);
+CREATE INDEX IF NOT EXISTS idx_port_price_query ON base_port_price (variety_id, port_name, price_date);
+
 -- 需求单
 CREATE TABLE biz_demand (
   id BIGSERIAL PRIMARY KEY,
@@ -85,6 +97,7 @@ CREATE TABLE biz_demand (
   price_intent VARCHAR(500),
   settle_type VARCHAR(32) NOT NULL, settle_days INT, quality_req VARCHAR(500),
   attachments TEXT, remark VARCHAR(500), version INT DEFAULT 1,
+  submitted_at TIMESTAMP,
   status VARCHAR(20) NOT NULL DEFAULT 'DRAFT', -- DRAFT/SUBMITTED/WITHDRAWN
   created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP NOT NULL DEFAULT now(),
   created_by BIGINT, updated_by BIGINT, is_deleted SMALLINT DEFAULT 0,
@@ -105,6 +118,21 @@ CREATE TABLE biz_demand_item (
 );
 CREATE INDEX idx_demand ON biz_demand_item (demand_id);
 
+-- 需求变更申请（运营端"需求归集-变更申请审核"数据源；PENDING/APPROVED/REJECTED）
+CREATE TABLE biz_demand_change (
+  id BIGSERIAL PRIMARY KEY,
+  change_no VARCHAR(32) NOT NULL, demand_id BIGINT NOT NULL, company_id BIGINT NOT NULL,
+  before_data TEXT, after_data TEXT, reason VARCHAR(500),
+  status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+  audit_remark VARCHAR(500),
+  audit_by BIGINT, audit_at TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP NOT NULL DEFAULT now(),
+  created_by BIGINT, updated_by BIGINT, is_deleted SMALLINT DEFAULT 0,
+  CONSTRAINT uk_change_no UNIQUE (change_no)
+);
+CREATE INDEX idx_change_demand ON biz_demand_change (demand_id);
+CREATE INDEX idx_change_status ON biz_demand_change (status);
+
 -- 询价单
 CREATE TABLE biz_inquiry (
   id BIGSERIAL PRIMARY KEY,
@@ -115,6 +143,8 @@ CREATE TABLE biz_inquiry (
   expect_arrive_date DATE, settle_type VARCHAR(32),
   deadline TIMESTAMP NOT NULL, sent_at TIMESTAMP, min_response INT DEFAULT 2,
   inquiry_desc VARCHAR(1000), status VARCHAR(20) NOT NULL DEFAULT 'DRAFT',
+  source VARCHAR(16) NOT NULL DEFAULT 'STEEL', -- STEEL=钢厂自发 / PLATFORM=运营平台代发
+  batch_no VARCHAR(32), -- 平台批量询价批次号（同批多单同号，可空）
   reveal_snapshot TEXT, -- 揭示时固化全部报价快照
   created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP NOT NULL DEFAULT now(),
   created_by BIGINT, updated_by BIGINT, is_deleted SMALLINT DEFAULT 0,
@@ -192,6 +222,9 @@ CREATE TABLE biz_contract (
   supplier_sign_at TIMESTAMP, supplier_sign_user BIGINT, supplier_sign_ip VARCHAR(64),
   void_reason VARCHAR(500),
   status VARCHAR(20) NOT NULL DEFAULT 'PENDING_GENERATE',
+  plat_status VARCHAR(20), -- 平台核验：NULL=无扫描件 / PENDING=待运营确认 / CONFIRMED=已核验入台账 / RETURNED=已退回
+  plat_remark VARCHAR(500), -- 平台核验意见（退回原因）
+  plat_confirm_by BIGINT, plat_confirm_at TIMESTAMP, -- 运营核验人/时间
   created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP NOT NULL DEFAULT now(),
   created_by BIGINT, updated_by BIGINT, is_deleted SMALLINT DEFAULT 0,
   CONSTRAINT uk_contract_no UNIQUE (contract_no)

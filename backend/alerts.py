@@ -28,10 +28,12 @@ def create_alert(conn, alert_type, biz_type, biz_id, company_ids, content=None):
         RETURNING id
         """,
         (doc_no(conn, 'YJ'), alert_type, biz_type, biz_id,
-         ','.join(str(c) for c in company_ids or []), content or ALERT_CONTENT.get(alert_type, '')),
+         ','.join(str(c) for c in company_ids or [] if c), content or ALERT_CONTENT.get(alert_type, '')),
     )
     if row:
         for cid in company_ids or []:
+            if not cid:
+                continue
             send_msg(conn, cid, '预警提醒：%s' % alert_type, ALERT_CONTENT.get(alert_type, ''),
                      'ALERT', row['id'])
     return row['id'] if row else None

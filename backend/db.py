@@ -67,9 +67,90 @@ def schema_ready(conn) -> bool:
 
 def init_schema(conn):
     """执行建表脚本（幂等：仅当核心表不存在时执行）。"""
-    if schema_ready(conn):
-        return False
-    sql = open(_SCHEMA_FILE, encoding='utf-8').read()
+    created = False
+    if not schema_ready(conn):
+        sql = open(_SCHEMA_FILE, encoding='utf-8').read()
+        with conn.cursor() as cur:
+            cur.execute(sql)
+        created = True
+    # 增量表补建（老库启动时自动补齐，IF NOT EXISTS 幂等）
     with conn.cursor() as cur:
-        cur.execute(sql)
-    return True
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS base_port_price (
+              id BIGSERIAL PRIMARY KEY,
+              variety_id BIGINT NOT NULL, port_name VARCHAR(50) NOT NULL, price_date DATE NOT NULL,
+              price NUMERIC(18,2) NOT NULL,
+              created_at TIMESTAMP NOT NULL DEFAULT now(), created_by BIGINT,
+              is_deleted SMALLINT DEFAULT 0,
+              CONSTRAINT uk_port_variety_date UNIQUE (variety_id, port_name, price_date)
+            );
+            CREATE INDEX IF NOT EXISTS idx_port_price_query ON base_port_price (variety_id, port_name, price_date);
+        """)
+        cur.execute("""
+            ALTER TABLE base_variety ADD COLUMN IF NOT EXISTS category VARCHAR(50);
+            ALTER TABLE biz_demand ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMP;
+            ALTER TABLE biz_inquiry ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'STEEL';
+            ALTER TABLE biz_inquiry ADD COLUMN IF NOT EXISTS batch_no VARCHAR(32);
+            ALTER TABLE biz_contract ADD COLUMN IF NOT EXISTS plat_status VARCHAR(20);
+            ALTER TABLE biz_contract ADD COLUMN IF NOT EXISTS plat_remark VARCHAR(500);
+            ALTER TABLE biz_contract ADD COLUMN IF NOT EXISTS plat_confirm_by BIGINT;
+            ALTER TABLE biz_contract ADD COLUMN IF NOT EXISTS plat_confirm_at TIMESTAMP;
+            CREATE TABLE IF NOT EXISTS biz_demand_change (
+              id BIGSERIAL PRIMARY KEY,
+              change_no VARCHAR(32) NOT NULL, demand_id BIGINT NOT NULL, company_id BIGINT NOT NULL,
+              before_data TEXT, after_data TEXT, reason VARCHAR(500),
+              status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+              audit_remark VARCHAR(500),
+              audit_by BIGINT, audit_at TIMESTAMP,
+              created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP NOT NULL DEFAULT now(),
+              created_by BIGINT, updated_by BIGINT, is_deleted SMALLINT DEFAULT 0,
+              CONSTRAINT uk_change_no UNIQUE (change_no)
+            );
+            CREATE INDEX IF NOT EXISTS idx_change_demand ON biz_demand_change (demand_id);
+            CREATE INDEX IF NOT EXISTS idx_change_status ON biz_demand_change (status);
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS biz_aggregated_order (
+              id BIGSERIAL PRIMARY KEY,
+              agg_no VARCHAR(32) NOT NULL,
+              variety_id BIGINT NOT NULL,
+              grade NUMERIC(5,2),
+              total_qty NUMERIC(18,3) NOT NULL,
+              status VARCHAR(20) NOT NULL DEFAULT 'OPEN',
+              remark VARCHAR(200),
+              created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP NOT NULL DEFAULT now(),
+              created_by BIGINT, updated_by BIGINT, is_deleted SMALLINT DEFAULT 0,
+              CONSTRAINT uk_agg_no UNIQUE (agg_no)
+            );
+            CREATE TABLE IF NOT EXISTS biz_aggregated_order_item (
+              id BIGSERIAL PRIMARY KEY,
+              agg_id BIGINT NOT NULL,
+              demand_id BIGINT NOT NULL,
+              demand_item_id BIGINT NOT NULL,
+              company_id BIGINT NOT NULL,
+              quantity NUMERIC(18,3) NOT NULL,
+              created_at TIMESTAMP NOT NULL DEFAULT now(),
+              is_deleted SMALLINT DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_agg_item_agg ON biz_aggregated_order_item (agg_id);
+            CREATE INDEX IF NOT EXISTS idx_agg_item_demand ON biz_aggregated_order_item (demand_id);
+            ALTER TABLE biz_inquiry ADD COLUMN IF NOT EXISTS agg_id BIGINT;
+            ALTER TABLE biz_inquiry ALTER COLUMN buyer_id DROP NOT NULL;
+            ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS tax_type VARCHAR(10);
+            ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS freight_price NUMERIC(18,2);
+            ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS delivery_type VARCHAR(20);
+            ALTER TABLE sys_message ALTER COLUMN receiver_company_id DROP NOT NULL;
+            CREATE TABLE IF NOT EXISTS biz_agg_inquiry_feedback (
+              id BIGSERIAL PRIMARY KEY,
+              inquiry_id BIGINT NOT NULL,
+              agg_id BIGINT NOT NULL,
+              company_id BIGINT NOT NULL,
+              decision VARCHAR(10) NOT NULL,
+              reason VARCHAR(200),
+              created_at TIMESTAMP NOT NULL DEFAULT now(),
+              created_by BIGINT,
+              is_deleted SMALLINT DEFAULT 0,
+              CONSTRAINT uk_agg_feedback UNIQUE (inquiry_id, company_id)
+            );
+        """)
+    return created

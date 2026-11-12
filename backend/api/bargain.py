@@ -24,12 +24,14 @@ def create_bargain():
     p = get_params()
     require_fields(p, 'quoteId')
     quote = q1(g.conn, """
-        SELECT q.*, i.buyer_id, i.status AS inquiry_status
+        SELECT q.*, i.buyer_id, i.agg_id, i.status AS inquiry_status
         FROM biz_quote q JOIN biz_inquiry i ON i.id=q.inquiry_id
         WHERE q.id=%s AND q.is_deleted=0
         """, (p['quoteId'],))
     if not quote:
         raise ApiError(40401, '报价不存在')
+    if quote['agg_id']:
+        raise ApiError(40901, '归集订单询价的报价暂不支持议价（待定标拆单功能上线）')
     if quote['status'] not in ('REVEALED', 'BARGAINING'):
         raise ApiError(40901, '报价状态为 %s，不可发起议价' % quote['status'])
     is_buyer = g.ctx.company and quote['buyer_id'] == g.ctx.company['id']
