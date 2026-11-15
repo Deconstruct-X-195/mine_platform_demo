@@ -92,13 +92,12 @@ class Ctx:
 
 
 MENUS = {
-    ROLE_STEEL: ['demand', 'price', 'inquiry', 'bargain', 'order', 'contract',
-                 'logistics', 'track', 'settlement', 'profile'],
-    ROLE_SUPPLIER: ['pool', 'forecast', 'inquiry', 'bargain', 'order', 'contract',
-                    'track', 'settlement', 'profile'],
-    ROLE_CARRIER: ['waybill', 'track', 'profile'],
-    'PLAT_ADMIN': ['dashboard', 'admin_companies', 'demand_pool', 'quote_inquiry',
-                   'contract_admin', 'logistics_dispatch', 'settlement_stats', 'base_data', 'doc_overview',
+    ROLE_STEEL: ['overview', 'demand', 'price', 'inquiry', 'bargain', 'order',
+                 'logistics', 'track', 'profile'],
+    ROLE_SUPPLIER: ['overview', 'inquiry', 'order', 'logistics',
+                    'track', 'profile'],
+    'PLAT_ADMIN': ['dashboard', 'admin_companies', 'demand_pool', 'quote_inquiry', 'quote_history',
+                   'order_admin', 'logistics_dispatch', 'base_data',
                    'alerts', 'dict', 'logs'],
 }
 

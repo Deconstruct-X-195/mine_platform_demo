@@ -55,19 +55,18 @@ def register():
     validate_phone(p['username'])
     validate_password(p['password'])
 
-    # 前端选项编码 → 库内规范编码（ent_company.company_types 统一存 STEEL/SUPPLIER/LOGISTICS）
-    type_alias = {'STEEL': 'STEEL', 'STEEL_BUYER': 'STEEL', 'SUPPLIER': 'SUPPLIER',
-                  'LOGISTICS': 'LOGISTICS', 'LOGISTICS_CARRIER': 'LOGISTICS'}
+    # 前端选项编码 → 库内规范编码（ent_company.company_types 统一存 STEEL/SUPPLIER）
+    type_alias = {'STEEL': 'STEEL', 'STEEL_BUYER': 'STEEL', 'SUPPLIER': 'SUPPLIER'}
     types = []
     for t in (s.strip() for s in str(p['companyTypes']).split(',')):
         if not t:
             continue
         t = type_alias.get(t, t)
-        if t not in ('STEEL', 'SUPPLIER', 'LOGISTICS') or t in types:
-            raise ApiError(40001, '企业类型不合法（STEEL/SUPPLIER/LOGISTICS 逗号分隔）')
+        if t not in ('STEEL', 'SUPPLIER') or t in types:
+            raise ApiError(40001, '企业类型不合法（STEEL/SUPPLIER 逗号分隔）')
         types.append(t)
     if not types:
-        raise ApiError(40001, '企业类型不合法（STEEL/SUPPLIER/LOGISTICS 逗号分隔）')
+        raise ApiError(40001, '企业类型不合法（STEEL/SUPPLIER 逗号分隔）')
 
     if q1(g.conn, "SELECT id FROM ent_company WHERE credit_code=%s AND is_deleted=0", (p['creditCode'],)):
         raise ApiError(40902, '统一社会信用代码已存在')
@@ -121,6 +120,9 @@ def login():
         if company and company['status'] != 'ENABLED':
             raise ApiError(40301, '企业已被停用')
     roles = [r for r in (user['roles'] or '').split(',') if r]
+    # 承运商端已下线：仅承运商角色的账号不可登录本平台
+    if roles and all(r == 'LOGISTICS_CARRIER' for r in roles):
+        raise ApiError(40301, '本平台暂不开放承运商端登录')
     token = issue_token(user, company, roles)
     op_log(g.conn, None, 'sys_user', user['id'], 'LOGIN', None, None)
     return ok({'token': token, 'user': _user_view(user, company, roles)})

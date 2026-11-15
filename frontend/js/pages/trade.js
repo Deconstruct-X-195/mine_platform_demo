@@ -2,6 +2,8 @@
 (function () {
   window.Pages = window.Pages || {};
   const SETTLE = { PREPAY: '预付款', COD: '货到付款', CREDIT: '账期' };
+  const DELIVERY = { PORT_FOB: '港口离岸', PORT_TRUCK: '港口汽运', PLANT: '厂内自提', STATION_SELF: '到站自提' };
+  const INVITE_STATUS = { INVITED: '已邀请', QUOTED: '已报价', DECLINED: '已婉拒', EXPIRED: '已失效' };
 
   /* 议价对标面板：基准价 + 他人匿名价 + 近期成交均价 */
   async function contextPanel(iid) {
@@ -100,10 +102,12 @@
     refresh();
   }
 
-  /* 比价快照渲染（定标/流标入口）。snap.shareQty 存在 = 归集拆分推送（钢厂视角，仅看报价不可议价/定标）
-     after：钢厂反馈（确认/不认可）提交成功后的回调（用于关闭弹窗回到列表） */
-  function renderSnapshot(snap, iid, onDone, after) {
+  /* 比价快照渲染（议价/定标入口）。snap.shareQty 存在 = 归集拆分推送（钢厂视角，仅看报价不可议价/定标）
+     after：钢厂反馈（确认/不认可）提交成功后的回调（用于关闭弹窗回到列表）
+     inqStatus：询价当前状态——AWARDED/FAILED 时隐藏议价与定标操作（后端同样拦截） */
+  function renderSnapshot(snap, iid, onDone, after, inqStatus) {
     const split = !!snap.shareQty;
+    const noBids = inqStatus === 'AWARDED' || inqStatus === 'FAILED';
     const body = UI.h('div', {},
       UI.kv([
         ['询价编号', snap.inquiryNo],
@@ -120,22 +124,24 @@
         { key: 'deliveryDate', label: '到货日', render: (r) => UI.fmtDate(r.deliveryDate) },
         { key: 'payTerms', label: '付款条款' },
         { key: 'validUntil', label: '有效期至', render: (r) => UI.fmtDate(r.validUntil) },
-      ].concat(split ? [] : [{ label: '操作', render: (r) => UI.h('span', { class: 'inline-flex' },
+      ].concat(split ? [] : noBids ? [] : [{ label: '操作', render: (r) => UI.h('span', { class: 'inline-flex' },
           UI.h('button', { class: 'sm', onclick: () => bargainModal(iid, r.quoteId, r.unitPrice, onDone) }, '议价'),
           UI.h('button', { class: 'sm success', onclick: async () => {
-            if (!(await UI.confirmBox('确认按该报价定标？其余报价将置为未中标。'))) return;
+            if (!(await UI.confirmBox('确认按该报价定标？定标即锁货锁价：生成正式订单（供应商 48 小时内确认），其余报价置为未中标，未决议价轮次自动失效。'))) return;
             const res = await API.post('/inquiries/' + iid + '/award', { quoteId: r.quoteId });
-            UI.toast('定标成功，订单号 ' + (res.orderId || ''), 'ok');
+            UI.toast('定标成功，订单已生成，供应商 48 小时内确认', 'ok');
             if (onDone) onDone();
           } }, '定标')) }]),
       snap.rows, '暂无报价行'));
-    // 拆分推送视角：钢厂对整体比价结果表态（结果推送运营端）
-    if (split) {
+    // 拆分推送视角：钢厂对整体比价结果表态（结果推送运营端）；已定标/已反馈后不再重复表态
+    if (split && !noBids && inqStatus !== 'FEEDBACK') {
       body.appendChild(UI.h('div', { style: 'margin-top:14px;display:flex;gap:8px;justify-content:flex-end' },
         UI.h('button', { class: 'primary', onclick: async () => {
-          if (!(await UI.confirmBox('确认认可该比价结果？反馈将推送运营平台。'))) return;
-          await API.post('/inquiries/' + iid + '/feedback', { decision: 'ACCEPTED' });
-          UI.toast('已反馈运营平台：认可比价结果', 'ok');
+          if (!(await UI.confirmBox('确认认可该比价结果？全部钢厂认可后将自动锁货锁价生成采购订单。'))) return;
+          const res = await API.post('/inquiries/' + iid + '/feedback', { decision: 'ACCEPTED' });
+          UI.toast(res && res.autoAward
+            ? '全员认可，已自动锁货锁价生成订单，请到「订单」页提交提货计划'
+            : '已反馈运营平台：认可比价结果（待全部钢厂认可后自动成单）', 'ok');
           if (after) after();
           if (onDone) onDone();
         } }, '确认报价'),
@@ -185,8 +191,8 @@
       UI.h('div', { class: 'toolbar' },
         UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '询价单'),
         UI.h('div', { class: 'spacer' }),
-        UI.statusFilter('INQUIRY', (v) => { status = v; pageNo = 1; load(); }),
-        UI.h('button', { class: 'primary', onclick: () => newInquiry(() => load()) }, '引入需求管理'))));
+        UI.h('span', { class: 'hint' }, '询价由运营平台归集需求后统一发起，供应商报价与反馈在此查看'),
+        UI.statusFilter('INQUIRY', (v) => { status = v; pageNo = 1; load(); }))));
     page.appendChild(listCard);
     page.appendChild(pagerBox);
 
@@ -200,7 +206,6 @@
         { key: 'quantity', label: '数量(吨)', num: true, render: (r) => UI.fmtMoney(r.quantity) },
         { key: 'deadline', label: '报价截止', render: (r) => UI.fmtDateTime(r.deadline) },
         { key: 'status', label: '状态', render: (r) => UI.statusTag('INQUIRY', r.status) },
-        { label: '邀请/响应', num: true, render: (r) => (r.inviteCount != null ? r.inviteCount : '-') + ' / ' + (r.quoteCount != null ? r.quoteCount : '-') },
         { key: 'created_at', label: '创建时间', render: (r) => UI.fmtDateTime(r.created_at) },
         { label: '操作', render: (r) => UI.h('button', { class: 'sm', onclick: () => detail(r.id, load) }, '详情') },
       ], d.list, '暂无询价单'));
@@ -221,7 +226,7 @@
           ['数量', UI.fmtMoney(showQty) + ' 吨' + (isAgg ? '（本钢厂份额）' : '')],
           ['报价截止', UI.fmtDateTime(d.deadline)],
           ['期望到货', UI.fmtDate(d.expect_arrive_date)],
-          ['交货方式', d.delivery_type || '-'],
+          ['交货方式', DELIVERY[d.delivery_type] || d.delivery_type || '-'],
           ['交货地点', d.delivery_place || '-'],
           ['结算方式', SETTLE[d.settle_type] || d.settle_type || '-'],
           ['说明', d.inquiry_desc, true],
@@ -236,7 +241,7 @@
           UI.h('h3', { style: 'margin-top:14px' }, '邀请供应商'),
           UI.table([
             { key: 'supplierName', label: '供应商' },
-            { key: 'status', label: '邀请状态' },
+            { key: 'status', label: '邀请状态', render: (r) => INVITE_STATUS[r.status] || r.status || '-' },
             { key: 'quoteStatus', label: '报价状态', render: (r) => r.quoteStatus ? UI.statusTag('QUOTE', r.quoteStatus) : '-' },
           ], d.invites || [])));
       const foot = [];
@@ -251,7 +256,7 @@
           const snap = await API.post('/inquiries/' + iid + '/reveal');
           m.close();
           let m2;
-          m2 = UI.modal('比价快照', renderSnapshot(snap, iid, onDone, () => { m2.close(); onDone(); }), [], { wide: true });
+          m2 = UI.modal('比价快照', renderSnapshot(snap, iid, onDone, () => { m2.close(); onDone(); }, d.status), [], { wide: true });
           m2.mask.addEventListener('click', onDone);
         } }, '截止揭示'));
       }
@@ -260,7 +265,7 @@
           const snap = await API.get('/inquiries/' + iid + '/quotes/reveal');
           m.close();
           let m2;
-          m2 = UI.modal('比价快照', renderSnapshot(snap, iid, onDone, () => { m2.close(); onDone(); }), [], { wide: true });
+          m2 = UI.modal('比价快照', renderSnapshot(snap, iid, onDone, () => { m2.close(); onDone(); }, d.status), [], { wide: true });
           m2.mask.addEventListener('click', onDone);
         } }, '查看比价'));
       }
@@ -270,111 +275,30 @@
       const m = UI.modal('询价详情', body, foot, { wide: true });
     }
 
-    async function newInquiry(onDone) {
-      const demands = (await API.get('/demands?size=100')).list
-        .filter((r) => r.status === 'SUBMITTED' || r.status === 'INQUIRING');
-      if (!demands.length) { UI.toast('没有可发起询价的需求单（需已提交且未关闭）', 'err'); return; }
-      const demandSel = UI.selectField(demands.map((r) => [r.id, r.demand_no + ' ' + r.demand_name]), demands[0].id);
-      const itemSel = UI.h('select', {});
-      const qty = UI.input('number', '', { placeholder: '询价数量' });
-      const arrive = UI.input('date', '', { placeholder: '期望到货日' });
-      const deadline = UI.h('input', { type: 'datetime-local', placeholder: '报价截止时间' });
-      const dType = UI.selectField([['', '跟随需求'], ['PLANT', '到厂'], ['STATION_SELF', '到站自提']], '');
-      const place = UI.input('text', '', { placeholder: '交货地点（必填）' });
-      const settle = UI.selectField([['', '跟随需求']].concat(Object.entries(SETTLE)), '');
-      const desc = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '选填，询价补充说明' });
-
-      async function loadItems() {
-        const d = await API.get('/demands/' + demandSel.value);
-        const its = (d.items || []).filter((it) => Number(it.remainQty) > 0);
-        itemSel.innerHTML = '';
-        if (!its.length) { itemSel.appendChild(UI.h('option', { value: '' }, '该需求无剩余可询明细')); qty.value = ''; return; }
-        its.forEach((it) => itemSel.appendChild(UI.h('option', {
-          value: it.id, 'data-remain': it.remainQty,
-        }, (it.varietyName || '-') + ' ' + (it.grade || '') + '（数量 ' + it.quantity + ' 吨）')));
-        // 数量、期望到货日、交货地点直接引入需求单数据，不可修改
-        const first = its[itemSel.selectedIndex] || its[0];
-        qty.value = first.remainQty;
-        qty.readOnly = true;
-        arrive.value = (d.expect_arrive_end || '').slice(0, 10) || '';
-        arrive.readOnly = true;
-        place.value = d.delivery_place && d.delivery_place !== '到厂' && d.delivery_place !== '到站自提' ? d.delivery_place : '';
-        place.readOnly = !!place.value;
-      }
-      itemSel.addEventListener('change', () => {
-        const opt = itemSel.selectedOptions[0];
-        qty.value = opt ? (opt.getAttribute('data-remain') || '') : '';
-      });
-      demandSel.addEventListener('change', loadItems);
-      await loadItems();
-
-      // BUG-07 修复：弹窗内持久错误提示区。此前校验/保存失败仅提示约 3 秒即
-      // 消失的 toast，弹窗保持打开且不显示失败原因，表现为"静默失败"。
-      const errBox = UI.h('div', { class: 'hint', style: 'color:#c0392b;font-weight:600' });
-      const m = UI.modal('新建询价', UI.h('form', { onsubmit: (e) => e.preventDefault() },
-        UI.h('div', { class: 'form-grid' },
-          UI.formRow('来源需求', demandSel, true),
-          UI.formRow('需求明细', itemSel, true),
-          UI.formRow('询价数量(吨)', qty, true, '自动引入所选明细的剩余可询量，不可修改'),
-          UI.formRow('期望到货日', arrive, true, '自动引入需求的期望到货截止日，不可修改'),
-          UI.formRow('报价截止', deadline, true, '至少为当前时间 +2 小时，且不晚于到货日前 7 天'),
-          UI.formRow('交货方式', dType),
-          UI.formRow('交货地点', place, true, '自动引入需求的具体交货地点；需求未填写时可手动输入'),
-          UI.formRow('结算方式', settle),
-          UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '询价说明'), desc)),
-        UI.h('div', { class: 'hint' }, '保存后为草稿，可在详情中发出'),
-        errBox), [
-        UI.h('button', { class: 'primary', onclick: async () => {
-          const fail = (msg) => { errBox.textContent = msg; if (errBox.scrollIntoView) errBox.scrollIntoView({ block: 'nearest' }); };
-          if (!itemSel.value) { fail('请选择需求明细'); return; }
-          const body = {
-            demandId: Number(demandSel.value),
-            demandItemId: Number(itemSel.value),
-            quantity: Number(qty.value),
-            arriveDate: arrive.value,
-            deadline: deadline.value ? deadline.value.replace('T', ' ') + ':00' : '',
-          };
-          if (!body.quantity || body.quantity <= 0) { fail('请填写询价数量'); return; }
-          if (!place.value.trim()) { fail('请填写交货地点'); return; }
-          if (!body.arriveDate || !body.deadline) { fail('期望到货日与报价截止为必填'); return; }
-          // 与服务端同规则的本地时间预校验（datetime-local 按浏览器本地时区解析）
-          const dl = new Date(body.deadline.replace(' ', 'T'));
-          if (dl.getTime() < Date.now() + 2 * 3600 * 1000) { fail('报价截止时间必须至少为当前时间 +2 小时'); return; }
-          const arrDay = new Date(arrive.value + 'T00:00:00').getTime();
-          if (new Date(dl.getFullYear(), dl.getMonth(), dl.getDate()).getTime() > arrDay - 7 * 86400000) {
-            fail('报价截止时间不能晚于到货日期前 7 天'); return;
-          }
-          if (dType.value) body.deliveryType = dType.value;
-          body.deliveryPlace = place.value.trim();
-          if (settle.value) body.settleType = settle.value;
-          if (desc.value.trim()) body.remark = desc.value.trim();
-          try {
-            await API.post('/inquiries', body);
-            m.close(); UI.toast('询价草稿已创建', 'ok'); onDone();
-          } catch (e) { fail('保存失败：' + (e.message || '请检查填写内容')); }
-        } }, '保存草稿'),
-      ], { wide: true });
-    }
-
     await load();
   }
 
   /* -------- 供应商：询价列表 + 报价/改价 -------- */
   async function supplierView(page, user) {
     let pageNo = 1;
+    let tab = '';
     const SIZE = 10;
+    /* 报价状态筛选：全部 / 待报价 / 已报价 / 已截止（后端 tab 参数过滤） */
+    const tabSel = UI.selectField([['', '全部'], ['pending', '待报价'], ['quoted', '已报价'], ['closed', '已截止']], '',
+      { onchange: (e) => { tab = e.target.value; pageNo = 1; load(); } });
     const listCard = UI.h('div', { class: 'card' });
     const pagerBox = UI.h('div', {});
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('div', { class: 'toolbar' },
         UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '收到的询价'),
         UI.h('div', { class: 'spacer' }),
+        tabSel,
         UI.h('span', { class: 'hint' }, '密封报价：截止前任何人（含平台）都看不到他人价格'))));
     page.appendChild(listCard);
     page.appendChild(pagerBox);
 
     async function load() {
-      const d = await API.get('/inquiries' + API.qs({ page: pageNo, size: SIZE }));
+      const d = await API.get('/inquiries' + API.qs({ page: pageNo, size: SIZE, tab }));
       listCard.innerHTML = '';
       listCard.appendChild(UI.table([
         { key: 'inquiryNo', label: '询价编号' },
@@ -405,43 +329,101 @@
 
     async function sDetail(iid) {
       const d = await API.get('/inquiries/' + iid);
+      const req = d.requirement || {};
+      const hist = d.historyRounds || [];
+      const histBlock = hist.length ? [
+        UI.h('div', { class: 'sec-title' }, '历史轮次参考（当前第 ' + (d.roundNo || '-') + ' 轮）'),
+        UI.table([
+          { label: '轮次', render: (r) => '第 ' + r.roundNo + ' 轮' },
+          { key: 'inquiry_no', label: '询价单号' },
+          { label: '我的上轮报价', num: true, render: (r) => r.quote_id
+            ? UI.fmtMoney(r.price) + ' 元/吨 × ' + UI.fmtMoney(r.quantity) + ' 吨'
+              + (r.freight_price != null ? '（运价 ' + UI.fmtMoney(r.freight_price) + '）' : '')
+            : UI.h('span', { class: 'tag' }, '未报价') },
+          { label: '钢厂反馈', render: (r) => r.fb_decision === 'REJECTED'
+            ? UI.h('span', { class: 'tag red' }, '不认可：' + (r.fb_reason || ''))
+            : r.fb_decision === 'ACCEPTED' ? UI.h('span', { class: 'tag green' }, '认可')
+            : UI.h('span', { class: 'tag' }, '未反馈') },
+        ], hist),
+      ] : [];
       const body = UI.h('div', {},
+        ...(histBlock.length ? histBlock : []),
+        UI.h('div', { class: 'sec-title' }, '采购需求'),
         UI.kv([
           ['询价编号', d.inquiry_no], ['状态', UI.statusTag('INQUIRY', d.status)],
           ['品种', d.varietyName], ['数量', UI.fmtMoney(d.quantity) + ' 吨'],
+          ['溢短装', req.moreLessRate != null ? '±' + String(req.moreLessRate).replace(/\.?0+$/, '') + '%' : '-'],
           ['报价截止', UI.fmtDateTime(d.deadline)],
           ['期望到货', UI.fmtDate(d.expect_arrive_date)],
+        ]),
+        UI.h('div', { class: 'sec-title' }, '技术参数与质量要求'),
+        UI.kv([
+          ['品位要求', d.grade == null ? '-' : String(d.grade) + '%'],
+          ['质量要求', req.qualityReq || '以询价说明为准'],
+          ['需求概要', req.demandName || '-'],
+        ]),
+        UI.h('div', { class: 'sec-title' }, '交货与结算要求'),
+        UI.kv([
+          ['交货方式', DELIVERY[d.delivery_type] || d.delivery_type || '-'],
           ['交货地点', d.delivery_place || '-'],
           ['结算方式', SETTLE[d.settle_type] || d.settle_type || '-'],
-          ['说明', d.inquiry_desc, true],
+          ['询价说明', d.inquiry_desc, true],
         ]),
-        UI.h('h3', { style: 'margin-top:14px' }, '我的报价'),
-        d.myQuote ? UI.table([
-          { key: 'price', label: '单价', num: true, render: (r) => UI.fmtMoney(r.price) },
-          { label: '含税', render: (r) => ({ INC_TAX: '含税', EX_TAX: '不含税' }[r.tax_type] || '-') },
-          { key: 'freight_price', label: '运价', num: true, render: (r) => r.freight_price != null ? UI.fmtMoney(r.freight_price) : '-' },
-          { key: 'quantity', label: '可供数量', num: true, render: (r) => UI.fmtMoney(r.quantity) },
-          { key: 'delivery_date', label: '交货时间', render: (r) => UI.fmtDate(r.delivery_date) },
-          { label: '交货方式', render: (r) => ({ PORT_FOB: '港口离岸', PORT_TRUCK: '港口自提', PLANT: '厂内自提' }[r.delivery_type] || '-') },
-          { key: 'delivery_place', label: '交货地' },
-          { key: 'pay_terms', label: '付款条款' },
-          { key: 'quality_commit', label: '质量承诺' },
-          { key: 'valid_until', label: '有效期至', render: (r) => UI.fmtDate(r.valid_until) },
-          { key: 'version', label: '版本', num: true },
-          { key: 'status', label: '状态', render: (r) => UI.statusTag('QUOTE', r.status) },
-        ], [d.myQuote]) : UI.h('div', { class: 'empty' }, '尚未报价'));
-      UI.modal('询价详情', body);
+        UI.h('div', { class: 'sec-title' }, '我的报价'),
+        d.myQuote ? UI.h('div', {},
+          UI.table([
+            { key: 'price', label: '单价', num: true, render: (r) => UI.fmtMoney(r.price) },
+            { label: '含税', render: (r) => ({ INC_TAX: '含税', EX_TAX: '不含税' }[r.tax_type] || '-') },
+            { key: 'freight_price', label: '运价', num: true, render: (r) => r.freight_price != null ? UI.fmtMoney(r.freight_price) : '-' },
+            { key: 'quantity', label: '可供数量', num: true, render: (r) => UI.fmtMoney(r.quantity) },
+            { key: 'delivery_date', label: '交货时间', render: (r) => UI.fmtDate(r.delivery_date) },
+            { label: '交货方式', render: (r) => ({ PORT_FOB: '港口离岸', PORT_TRUCK: '港口自提', PLANT: '厂内自提' }[r.delivery_type] || '-') },
+            { key: 'delivery_place', label: '交货地' },
+            { key: 'pay_terms', label: '付款条款' },
+            { key: 'quality_commit', label: '质量承诺' },
+            { key: 'valid_until', label: '有效期至', render: (r) => UI.fmtDate(r.valid_until) },
+            { key: 'version', label: '版本', num: true },
+            { key: 'status', label: '状态', render: (r) => UI.statusTag('QUOTE', r.status) },
+          ], [d.myQuote]),
+          UI.h('div', { class: 'sec-title' }, '报价附件'),
+          (d.myQuote.files || []).length ? UI.table([
+            { key: 'fileName', label: '文件名' },
+            { label: '操作', render: (f) => UI.h('span', { class: 'inline-flex' },
+                UI.h('button', { class: 'sm', onclick: () => window.previewFile(f.fileId, f.fileName || '报价附件') }, '预览'),
+                UI.h('button', { class: 'sm', onclick: () => API.downloadFile(f.fileId, f.fileName || '报价附件') }, '下载')) },
+          ], d.myQuote.files) : UI.h('div', { class: 'empty' }, '无附件'))
+        : UI.h('div', { class: 'empty' }, '尚未报价'));
+      UI.modal('询价详情 · 报价响应', body, [], { wide: true });
     }
 
     async function quoteForm(r, quoteId, onDone) {
       const q = quoteId ? (await API.get('/quotes/' + quoteId)) : null;
       const DT = { PORT_FOB: '港口离岸', PORT_TRUCK: '港口自提', PLANT: '厂内自提' };
+      /* 采购需求细节（技术参数/质量要求/溢短装），取询价详情补充 */
+      const det = await API.get('/inquiries/' + r.id).catch(() => null);
+      const reqInfo = (det && det.requirement) || {};
+      /* 附件资料：经通用 /files 上传（PDF/JPG/PNG ≤20MB，最多 5 个），修改报价时预填已传附件 */
+      let fileIds = ((q && q.files) || []).map((f) => f.fileId);
+      const fileInput = UI.h('input', { type: 'file', multiple: true, accept: '.pdf,.jpg,.jpeg,.png' });
+      const fileList = UI.h('div', { class: 'hint', style: 'margin-top:4px' });
+      function renderFiles() {
+        const names = ((q && q.files) || []).filter((f) => fileIds.indexOf(f.fileId) >= 0)
+          .map((f) => f.fileName || f.fileId)
+          .concat(Array.from(fileInput.files || []).map((f) => f.name));
+        fileList.textContent = names.length ? '已选附件：' + names.join('、') : '未选择附件';
+      }
+      fileInput.addEventListener('change', () => {
+        if ((fileInput.files || []).length + fileIds.length > 5) { UI.toast('附件最多 5 个', 'err'); fileInput.value = ''; }
+        renderFiles();
+      });
+      renderFiles();
       /* —— 上半：采购需求信息（只读，供应商不可修改） —— */
       const demandInfo = UI.kv([
         ['询价编号', r.inquiryNo],
         ['矿种', r.varietyName],
         ['品位(%)', r.grade == null ? '-' : String(r.grade)],
-        ['采购数量', UI.fmtMoney(r.quantity) + ' 吨'],
+        ['采购数量', UI.fmtMoney(r.quantity) + ' 吨' + (reqInfo.moreLessRate != null ? '（溢短装 ±' + String(reqInfo.moreLessRate).replace(/\.?0+$/, '') + '%）' : '')],
+        ['质量要求', reqInfo.qualityReq || '以询价说明为准'],
         ['交货地点', r.deliveryPlace || '-'],
         ['交货方式', DT[r.deliveryType] || r.deliveryType || '-'],
         ['期望到货', UI.fmtDate(r.expectArriveDate)],
@@ -465,9 +447,26 @@
       const remark = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '备注（可供数量低于询价量 80% 必填）' });
       if (q) remark.value = q.remark || '';
       const m = UI.modal(quoteId ? '修改报价（将留痕新版本）' : '密封报价', UI.h('form', { onsubmit: (e) => e.preventDefault() },
-        UI.h('h3', { style: 'margin:0 0 8px' }, '采购需求信息'),
+        UI.h('div', { class: 'sec-title' }, '采购需求信息'),
         demandInfo,
-        UI.h('h3', { style: 'margin:14px 0 8px' }, '报价信息'),
+        ...(((det && det.historyRounds) || []).length ? [UI.h('div',
+          { style: 'margin:8px 0;padding:8px 12px;background:#fff7ed;border-radius:6px' },
+          UI.h('div', { style: 'font-weight:600;color:#c2410c;margin-bottom:6px' },
+            '历史轮次参考：贵司曾参与本需求历史轮次询价'
+            + (det.roundNo ? '，当前为第 ' + det.roundNo + ' 轮' : '')),
+          UI.table([
+            { label: '轮次', render: (r) => '第 ' + r.roundNo + ' 轮' },
+            { key: 'inquiry_no', label: '询价单号' },
+            { label: '我的上轮报价', num: true, render: (r) => r.quote_id
+              ? UI.fmtMoney(r.price) + ' 元/吨 × ' + UI.fmtMoney(r.quantity) + ' 吨'
+                + (r.freight_price != null ? '（运价 ' + UI.fmtMoney(r.freight_price) + '）' : '')
+              : UI.h('span', { class: 'tag' }, '未报价') },
+            { label: '钢厂反馈', render: (r) => r.fb_decision === 'REJECTED'
+              ? UI.h('span', { class: 'tag red' }, '不认可：' + (r.fb_reason || ''))
+              : r.fb_decision === 'ACCEPTED' ? UI.h('span', { class: 'tag green' }, '认可')
+              : UI.h('span', { class: 'tag' }, '未反馈') },
+          ], det.historyRounds))] : []),
+        UI.h('div', { class: 'sec-title' }, '报价信息'),
         UI.h('div', { class: 'form-grid' },
           UI.formRow('单价', price, true),
           UI.formRow('含税/不含税', taxSel, true),
@@ -479,8 +478,20 @@
           UI.formRow('付款条款', pay),
           UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '质量承诺'), quality),
           UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '备注'), remark)),
+        UI.h('div', { class: 'sec-title' }, '附件资料（选填，PDF/JPG/PNG ≤20MB，最多 5 个）'),
+        UI.h('div', { class: 'form-row full' }, fileInput),
+        fileList,
         UI.h('div', { class: 'hint' }, '截止前可修改（新版本留痕）；截止后不可再报')), [
         UI.h('button', { class: 'primary', onclick: async () => {
+          /* 附件：先逐个经 /files 上传，再与已有附件合并关联到本次报价 */
+          const fids = fileIds.slice();
+          try {
+            for (const f of Array.from(fileInput.files || [])) {
+              const up = await API.upload(f, '/files');
+              fids.push(up.fileId);
+            }
+          } catch (e) { return; }
+          if (fids.length > 5) { UI.toast('附件最多 5 个', 'err'); return; }
           const body = {
             price: price.value, quantity: qty.value, deliveryDate: ddate.value,
             taxType: taxSel.value, deliveryType: dtSel.value,
@@ -494,6 +505,7 @@
           if (pay.value.trim()) body.paymentTerms = pay.value.trim();
           if (quality.value.trim()) body.qualityTerms = quality.value.trim();
           if (remark.value.trim()) body.remark = remark.value.trim();
+          if (fids.length) body.fileIds = fids;
           try {
             if (quoteId) { await API.put('/quotes/' + quoteId, body); UI.toast('报价已更新', 'ok'); }
             else { await API.post('/inquiries/' + r.id + '/quotes', body); UI.toast('报价已提交（密封）', 'ok'); }
@@ -506,50 +518,93 @@
     await load();
   }
 
-  /* -------- 议价工作台 -------- */
+  /* -------- 议价定标（钢厂）：揭示 → 议价 → 定标 → 订单 四阶段工作台 -------- */
+  const BARGAIN_STAGES = [
+    ['CLOSED', '已揭示待议价'],
+    ['BARGAINING', '议价中'],
+    ['AWARDED', '已定标'],
+    ['FEEDBACK', '反馈待处理'],
+  ];
+  const STAGE_TIPS = {
+    CLOSED: '比价已揭示：可发起议价，或对最优报价直接定标',
+    BARGAINING: '多轮密封还价中：一方接受后其余在途轮次自动失效',
+    AWARDED: '已锁货锁价生成订单：供应商 48 小时内确认',
+    FEEDBACK: '归集询价已反馈不认可：待运营平台重新处理',
+  };
+
   Pages.bargain = async function (page, user) {
     const isSteel = (user.roles || []).indexOf('STEEL_BUYER') >= 0;
-    if (isSteel) {
-      page.appendChild(UI.h('div', { class: 'card' },
-        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '议价中的询价'),
-        UI.h('div', { class: 'hint' }, '在比价快照中选择报价行发起/继续议价')));
-      const box = UI.h('div', { class: 'card' });
-      page.appendChild(box);
-      const d = await API.get('/inquiries?size=50&status=BARGAINING');
-      box.appendChild(UI.table([
-        { key: 'inquiry_no', label: '询价编号' },
-        { key: 'varietyName', label: '品种' },
-        { key: 'quantity', label: '数量', num: true, render: (r) => UI.fmtMoney(r.quantity) },
-        { key: 'status', label: '状态', render: (r) => UI.statusTag('INQUIRY', r.status) },
-        { label: '操作', render: (r) => UI.h('button', { class: 'sm primary', onclick: async () => {
-          const snap = await API.get('/inquiries/' + r.id + '/quotes/reveal');
-          let m;
-          m = UI.modal('比价快照（询价 ' + r.inquiry_no + '）', renderSnapshot(snap, r.id, () => { m.close(); App.route(); }, () => { m.close(); App.route(); }), [], { wide: true });
-        } }, '比价/议价') },
-      ], d.list, '暂无议价中询价'));
-      return;
-    }
-    /* 供应商：已被揭示且可议价的报价 */
-    page.appendChild(UI.h('div', { class: 'card' },
-      UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '我的议价'),
-      UI.h('div', { class: 'hint' }, '仅显示已揭示/议价中/中标的报价')));
-    const box = UI.h('div', {});
-    page.appendChild(box);
-    const d = await API.get('/inquiries?size=100');
-    const rows = (d.list || []).filter((r) => r.myQuoteId &&
-      ['REVEALED', 'BARGAINING', 'WIN'].indexOf(r.myQuoteStatus) >= 0);
-    if (!rows.length) { box.appendChild(UI.h('div', { class: 'empty' }, '暂无可议价的报价')); return; }
-    for (const r of rows) {
-      const card = UI.h('div', { class: 'card' });
-      card.appendChild(UI.h('h3', {}, r.inquiryNo + ' · ' + r.varietyName + ' ' + (r.grade || '') +
-        '（' + UI.fmtMoney(r.quantity) + ' 吨）'));
-      card.appendChild(UI.h('div', { class: 'inline-flex', style: 'margin-bottom:8px' },
-        UI.h('span', {}, '询价状态 '), UI.statusTag('INQUIRY', r.status),
-        UI.h('span', { style: 'margin-left:12px' }, '我的报价 '), UI.statusTag('QUOTE', r.myQuoteStatus)));
-      card.appendChild(await contextPanel(r.id));
-      card.appendChild(roundsPanel(r.myQuoteId, 'SUPPLIER', () => App.route()));
-      card.appendChild(newRoundForm(r.myQuoteId, '', () => App.route()));
-      box.appendChild(card);
-    }
+    if (isSteel) return steelBargainView(page);
+    /* 议价定标仅保留钢厂端，供应商端已下线，直达总览 */
+    location.hash = '#/overview';
   };
+
+  /* 钢厂议价定标工作台：流程步骤条（点击筛选）+ 全阶段询价列表 + 议价/定标弹窗 */
+  async function steelBargainView(page) {
+    let status = '';
+    const stepsBox = UI.h('div', { class: 'flow-steps' });
+    const listCard = UI.h('div', { class: 'card' });
+
+    page.appendChild(UI.h('div', { class: 'card' },
+      UI.h('h3', { class: 'bar-title' }, '议价定标流程'),
+      stepsBox,
+      UI.h('div', { class: 'hint' },
+        '自发询价：比价揭示后可发起议价（一方接受后其余轮次自动失效），仅已接受轮次可定标；定标即锁货锁价生成订单，供应商 48 小时内确认。'
+        + '归集询价：钢厂仅对比价结果认可 / 不认可，定标由运营平台执行。')));
+    page.appendChild(listCard);
+
+    async function load() {
+      const d = await API.get('/inquiries' + API.qs({ size: 100 }));
+      const all = (d.list || []).filter((r) => BARGAIN_STAGES.some(([c]) => c === r.status));
+
+      /* 流程步骤条：圆形内为各阶段数量，点击筛选 / 再点取消 */
+      const counts = {};
+      BARGAIN_STAGES.forEach(([c]) => { counts[c] = all.filter((r) => r.status === c).length; });
+      stepsBox.innerHTML = '';
+      BARGAIN_STAGES.forEach(([code, name], i) => {
+        if (i) stepsBox.appendChild(UI.h('span', { class: 'flow-arrow' }, '→'));
+        stepsBox.appendChild(UI.h('a', {
+          class: 'flow-step' + (status === code ? ' active' : ''),
+          href: 'javascript:;', title: STAGE_TIPS[code],
+          onclick: () => { status = status === code ? '' : code; load(); },
+        },
+          UI.h('span', { class: 'flow-circle flow-num' }, String(counts[code])),
+          UI.h('div', { class: 'flow-name' }, name)));
+      });
+
+      const rows = status ? all.filter((r) => r.status === status) : all;
+      listCard.innerHTML = '';
+      listCard.appendChild(UI.h('div', { class: 'toolbar' },
+        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '议价定标列表'),
+        UI.h('div', { class: 'spacer' }),
+        UI.h('span', { class: 'hint' }, status ? '再次点击上方阶段可取消筛选' : '点击上方阶段图标可按阶段筛选')));
+      listCard.appendChild(UI.table([
+        { label: '询价编号', render: (r) => UI.h('span', {}, r.inquiry_no,
+            r.agg_id ? UI.h('span', { class: 'tag', style: 'margin-left:6px' }, '归集') : null) },
+        { key: 'varietyName', label: '品种' },
+        { key: 'quantity', label: '数量(吨)', num: true, render: (r) => UI.fmtQty(r.quantity) },
+        { key: 'deadline', label: '报价截止', render: (r) => UI.fmtDateTime(r.deadline) },
+        { key: 'status', label: '状态', render: (r) => UI.statusTag('INQUIRY', r.status) },
+        { label: '操作', render: (r) => {
+          const isAgg = !!r.agg_id;
+          const btns = [UI.h('button', { class: 'sm', onclick: () => workspace(r) },
+            isAgg ? '查看比价' : '议价 / 定标')];
+          if (r.status === 'AWARDED') {
+            btns.push(UI.h('button', { class: 'sm primary', onclick: () => { location.hash = '#/order'; } }, '查看订单'));
+          }
+          return UI.h('span', { class: 'inline-flex' }, ...btns);
+        } },
+      ], rows, '暂无相关询价'));
+
+      async function workspace(r) {
+        const snap = await API.get('/inquiries/' + r.id + '/quotes/reveal');
+        let m;
+        m = UI.modal('议价定标工作台（' + r.inquiry_no + '）',
+          renderSnapshot(snap, r.id, () => { m.close(); load(); }, () => { m.close(); load(); }, r.status),
+          [], { wide: true });
+      }
+    }
+
+    await load();
+  }
 })();

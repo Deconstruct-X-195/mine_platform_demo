@@ -5,10 +5,12 @@
 """
 import os
 import threading
+from datetime import date, datetime
 
 import psycopg
 from psycopg.rows import dict_row
 from flask import Flask, g, jsonify, request, send_from_directory
+from flask.json.provider import DefaultJSONProvider
 from werkzeug.exceptions import HTTPException
 
 from .common import ApiError
@@ -22,8 +24,20 @@ UPLOAD_DIR = os.path.join(_ROOT, 'uploads')
 _HTTP_CODE_MAP = {400: 40001, 401: 40101, 403: 40301, 404: 40401, 405: 40001, 409: 40901, 413: 40001}
 
 
+class _JSONProvider(DefaultJSONProvider):
+    """日期时间序列化为阿拉伯数字格式（2026-11-12 09:30:00），不用英文 RFC 格式。"""
+
+    def default(self, o):
+        if isinstance(o, datetime):
+            return o.strftime('%Y-%m-%d %H:%M:%S')
+        if isinstance(o, date):
+            return o.strftime('%Y-%m-%d')
+        return super().default(o)
+
+
 def create_app():
     app = Flask('mine-platform', static_folder=None)
+    app.json = _JSONProvider(app)  # 日期时间统一序列化为阿拉伯数字格式
     app.config['MAX_CONTENT_LENGTH'] = 21 * 1024 * 1024  # 单文件 ≤20MB（PRD 7）
     os.makedirs(UPLOAD_DIR, exist_ok=True)
 

@@ -33,8 +33,18 @@ def _order_of(oid):
 
 
 def _order_visible(order):
-    if not g.ctx.is_plat and (not g.ctx.company or
-                              g.ctx.company['id'] not in (order['buyer_id'], order['supplier_id'])):
+    """订单可见性：需方=普通订单 buyer 或聚合订单成员钢厂；供方=supplier。"""
+    if g.ctx.is_plat:
+        return
+    cid = g.ctx.company['id'] if g.ctx.company else None
+    if order['buyer_id']:
+        buyer_ok = order['buyer_id'] == cid
+    else:  # 集采聚合订单（buyer_id 为空）：成员钢厂可见
+        buyer_ok = q1(g.conn, """
+            SELECT id FROM biz_order_member
+            WHERE order_id=%s AND company_id=%s AND is_deleted=0
+            """, (order['id'], cid)) is not None
+    if not buyer_ok and order['supplier_id'] != cid:
         raise ApiError(40301, '无权限访问该订单')
 
 
@@ -73,12 +83,18 @@ def create_quality_check(oid):
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
     """, (check_no, oid, arrived, p.get('indicators'), p['conclusion'],
           p.get('checkDesc'), p.get('fileId'), g.ctx.user['id']), returning_id=True)
-    # 数量偏差超溢短装比例 → 生成 QTY_DIFF 预警（需方、供方）
+    # 数量偏差超溢短装比例 → 生成 QTY_DIFF 预警（需方：聚合订单通知成员钢厂；供方）
     qty = order['quantity']
     rate = order['more_less_rate'] or Decimal('5.00')
     if abs(arrived - qty) / qty * 100 > rate:
+        buyers = ([order['buyer_id']] if order['buyer_id'] else
+                  [m['company_id'] for m in qall(g.conn, """
+                      SELECT DISTINCT company_id FROM biz_order_member
+                      WHERE order_id=%s AND is_deleted=0
+                  """, (oid,))])
         create_alert(
-            g.conn, 'QTY_DIFF', 'ORDER', oid, [order['buyer_id'], order['supplier_id']],
+            g.conn, 'QTY_DIFF', 'ORDER', oid,
+            [r for r in buyers + [order['supplier_id']] if r],
             content='到货数量 %s 与订单数量 %s 偏差超过允差 %s%%，请双方确认处理意见'
                     % (arrived, qty, rate),
         )

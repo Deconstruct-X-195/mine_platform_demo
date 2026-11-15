@@ -45,13 +45,18 @@ def create_plan(oid):
 @bp.get('/orders/<int:oid>/logistics-plan')
 @auth_required
 def get_plan(oid):
-    """订单物流方案查询（前端 P.logistics 用）：无方案返回 null，有则校验双方可见性。"""
+    """订单物流方案查询（前端 P.logistics 用）：无方案返回 null，有则校验可见性。"""
     order = q1(g.conn, "SELECT id, buyer_id, supplier_id FROM biz_order WHERE id=%s AND is_deleted=0", (oid,))
     if not order:
         raise ApiError(40401, '订单不存在')
     if not g.ctx.is_plat and (not g.ctx.company or
                               g.ctx.company['id'] not in (order['buyer_id'], order['supplier_id'])):
-        raise ApiError(40301, '无权限访问该订单')
+        # 聚合订单 buyer_id 为空：参与钢厂按成员明细放行
+        if not (g.ctx.company and q1(g.conn, """
+                SELECT 1 AS ok FROM biz_order_member
+                WHERE order_id=%s AND company_id=%s AND is_deleted=0
+                """, (oid, g.ctx.company['id']))):
+            raise ApiError(40301, '无权限访问该订单')
     row = q1(g.conn, "SELECT * FROM biz_logistics_plan WHERE order_id=%s AND is_deleted=0", (oid,))
     if not row:
         return ok(None)
@@ -100,9 +105,8 @@ def create_waybill(pid):
     carrier_id = p.get('carrierId')
     if carrier_id:
         _check_carrier(carrier_id)
-        status = 'PENDING_ACCEPT'
-    else:
-        status = 'PENDING_ASSIGN'
+    # 承运商端已下线：运单创建即确认生效，默认平台承担运输，直接进入待发运
+    status = 'PENDING_DEPART'
     wid = execute(g.conn, """
         INSERT INTO biz_waybill (waybill_no, order_id, plan_id, segment_no, carrier_id, transport_mode,
             depart_place, arrive_place, plan_depart_date, plan_arrive_date, plan_qty, freight,
@@ -116,8 +120,6 @@ def create_waybill(pid):
     if deviation > 5:
         op_log(g.conn, g.ctx, 'biz_waybill', wid, 'DEVIATION', None,
                {'deviationRate': '%.2f%%' % deviation, 'reason': p.get('deviationReason')})
-    if status == 'PENDING_ACCEPT' and carrier_id:
-        send_msg(g.conn, carrier_id, '运单待接单', '运单已指派，请接单确认。', 'WAYBILL', wid)
     op_log(g.conn, g.ctx, 'biz_waybill', wid, 'CREATE', None, {'planQty': str(plan_qty), 'status': status})
     return ok({'id': wid, 'status': status, 'planTotalDeviation': '%.2f%%' % deviation})
 

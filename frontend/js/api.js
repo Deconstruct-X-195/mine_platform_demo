@@ -85,6 +85,18 @@
       if (fileId == null || fileId === '') return;
       return API.download('/files/' + fileId, fileName || String(fileId));
     },
+    /* 文件预览：带 token 取文件流（Blob），配合 iframe/objectURL 在线预览 */
+    async fileBlob(fileId) {
+      const headers = {};
+      const tk = localStorage.getItem(TOKEN_KEY);
+      if (tk) headers['Authorization'] = 'Bearer ' + tk;
+      const resp = await fetch('/api/v1/files/' + fileId, { headers });
+      if (!resp.ok) {
+        UI.toast('预览加载失败（HTTP ' + resp.status + '）', 'err');
+        throw new Error('HTTP ' + resp.status);
+      }
+      return resp.blob();
+    },
     saveAuth, clearAuth, currentUser, token,
     qs(params) {
       const s = Object.entries(params || {}).filter(([, v]) => v !== '' && v != null)

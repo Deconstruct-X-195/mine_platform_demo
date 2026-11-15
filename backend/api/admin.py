@@ -9,8 +9,8 @@ from ..common import (ApiError, doc_no, get_params, json_payload, ok, op_log,
                       page_args, page_data, parse_date, parse_datetime,
                       require_fields, send_msg)
 from ..db import execute, qall, q1
-from ..security import plat_required
-from ..state_machine import transition
+from ..security import hash_password, plat_required
+from ..state_machine import transition, add_node
 from . import bp
 from .inquiry import _check_invites, create_and_send_agg_inquiry, reveal_inquiry
 from .logistics import _check_carrier
@@ -42,15 +42,42 @@ def pending_companies():
     if audit:
         where += ' AND audit_status=%s'
         args.append(audit)
+    keyword = (params.get('keyword') or '').strip()
+    if keyword:
+        # 关键字检索：企业名称/信用代码/联系人/联系电话/登录账号
+        where += """ AND (company_name ILIKE %s OR credit_code ILIKE %s OR contact_name ILIKE %s
+            OR contact_phone ILIKE %s OR EXISTS (
+                SELECT 1 FROM sys_user u2 WHERE u2.company_id = ent_company.id
+                  AND u2.is_deleted = 0 AND u2.username ILIKE %s))"""
+        args.extend(['%' + keyword + '%'] * 5)
     total = q1(g.conn, 'SELECT count(*) AS c FROM ent_company ' + where, args)['c']
     rows = qall(g.conn, """
         SELECT id, company_name AS "companyName", credit_code AS "creditCode",
                company_types AS "companyTypes", contact_name AS "contactName",
                contact_phone AS "contactPhone", audit_status AS "auditStatus",
-               audit_remark AS "auditRemark", status, created_at AS "createdAt"
+               audit_remark AS "auditRemark", status, created_at AS "createdAt",
+               (SELECT u.username FROM sys_user u WHERE u.company_id = ent_company.id
+                  AND u.is_deleted = 0 ORDER BY u.id LIMIT 1) AS "account"
         FROM ent_company %s ORDER BY id DESC LIMIT %%s OFFSET %%s
         """ % where, args + [size, (page - 1) * size])
     return ok(page_data(rows, total, page, size))
+
+
+@bp.put('/admin/companies/<int:cid>/reset-password')
+@plat_required
+def reset_company_password(cid):
+    """运营端重置企业账号密码（演示约定：重置为 demo123456）。"""
+    row = q1(g.conn, "SELECT id, company_name FROM ent_company WHERE id=%s AND is_deleted=0", (cid,))
+    if not row:
+        raise ApiError(40401, '企业不存在')
+    users = qall(g.conn, "SELECT id FROM sys_user WHERE company_id=%s AND is_deleted=0", (cid,))
+    if not users:
+        raise ApiError(40401, '该企业暂无账号')
+    execute(g.conn, "UPDATE sys_user SET password_hash=%s WHERE company_id=%s AND is_deleted=0",
+            (hash_password('demo123456'), cid))
+    op_log(g.conn, g.ctx, 'sys_user', cid, 'RESET_PASSWORD', None,
+           {'company': row['company_name'], 'accounts': len(users)})
+    return ok({'reset': len(users)})
 
 
 @bp.put('/admin/companies/<int:cid>/audit')
@@ -65,14 +92,60 @@ def audit_company(cid):
     remark = p.get('remark')
     if not approve and not (remark and str(remark).strip()):
         raise ApiError(40001, '驳回必须填写原因')
-    to = 'APPROVED' if approve else 'REJECTED'
-    transition(g.conn, g.ctx, 'ent_company', '企业', 'ent_company', cid, to)
-    execute(g.conn, "UPDATE ent_company SET audit_remark=%s, updated_by=%s WHERE id=%s",
-            (remark or '审核通过', g.ctx.user['id'], cid))
     from ..common import send_msg
-    send_msg(g.conn, cid, '准入审核%s' % ('通过' if approve else '驳回'),
-             remark or '恭喜，您的企业已通过平台准入审核，可开始使用业务功能。', 'COMPANY', cid)
-    return ok({'auditStatus': to})
+    import json as _json
+    pending = None
+    if row.get('pending_changes'):
+        try:
+            pending = _json.loads(row['pending_changes'])
+        except Exception:
+            pending = None
+    change_review = bool(pending)
+    # 变更字段 → 数据库列映射（与 company.py 信息维护一致）
+    FIELD_COL = {'companyName': 'company_name', 'creditCode': 'credit_code', 'province': 'province',
+                 'city': 'city', 'address': 'address', 'legalPerson': 'legal_person',
+                 'contactName': 'contact_name', 'contactPhone': 'contact_phone',
+                 'contactEmail': 'contact_email', 'businessScope': 'business_scope',
+                 'bankName': 'bank_name', 'bankAccount': 'bank_account'}
+    if approve:
+        to = 'APPROVED'
+        transition(g.conn, g.ctx, 'ent_company', '企业', 'ent_company', cid, to)
+        if change_review:
+            cols = {FIELD_COL[k]: str(v) for k, v in pending.items() if k in FIELD_COL}
+            if cols:
+                sets = ', '.join('%s=%%s' % c for c in cols)
+                execute(g.conn, "UPDATE ent_company SET " + sets + ", audit_remark=%s, "
+                        "pending_changes=NULL, updated_by=%s WHERE id=%s",
+                        list(cols.values()) + ['信息变更审核通过', g.ctx.user['id'], cid])
+            else:
+                execute(g.conn, "UPDATE ent_company SET audit_remark=%s, pending_changes=NULL, "
+                        "updated_by=%s WHERE id=%s", ('信息变更审核通过', g.ctx.user['id'], cid))
+            op_log(g.conn, g.ctx, 'ent_company', cid, 'CHANGE APPROVED', None, pending)
+            send_msg(g.conn, cid, '信息变更审核通过',
+                     '您提交的企业信息变更已审核通过，企业信息已自动更新。', 'COMPANY', cid)
+        else:
+            execute(g.conn, "UPDATE ent_company SET audit_remark=%s, pending_changes=NULL, "
+                    "updated_by=%s WHERE id=%s", (remark or '审核通过', g.ctx.user['id'], cid))
+            send_msg(g.conn, cid, '准入审核%s' % ('通过' if approve else '驳回'),
+                     remark or '恭喜，您的企业已通过平台准入审核，可开始使用业务功能。', 'COMPANY', cid)
+    elif change_review:
+        # 信息变更驳回：恢复准入状态（企业信息保持不变），丢弃变更
+        to = 'APPROVED'
+        transition(g.conn, g.ctx, 'ent_company', '企业', 'ent_company', cid, to)
+        execute(g.conn, "UPDATE ent_company SET audit_status='APPROVED', audit_remark=%s, "
+                "pending_changes=NULL, updated_by=%s WHERE id=%s",
+                ('信息变更未通过：' + str(remark).strip(), g.ctx.user['id'], cid))
+        op_log(g.conn, g.ctx, 'ent_company', cid, 'CHANGE REJECTED', None, pending)
+        send_msg(g.conn, cid, '企业信息变更未通过',
+                 '您提交的企业信息变更未通过审核：' + str(remark).strip() + '。企业信息保持不变。', 'COMPANY', cid)
+    else:
+        to = 'REJECTED'
+        transition(g.conn, g.ctx, 'ent_company', '企业', 'ent_company', cid, to)
+        execute(g.conn, "UPDATE ent_company SET audit_remark=%s, pending_changes=NULL, "
+                "updated_by=%s WHERE id=%s", (remark or '审核通过', g.ctx.user['id'], cid))
+        send_msg(g.conn, cid, '准入审核%s' % ('通过' if approve else '驳回'),
+                 remark or '恭喜，您的企业已通过平台准入审核，可开始使用业务功能。', 'COMPANY', cid)
+    return ok({'auditStatus': to, 'changeReview': change_review})
 
 
 @bp.put('/admin/companies/<int:cid>/status')
@@ -97,7 +170,9 @@ def toggle_company(cid):
 @bp.get('/admin/demand-pool')
 @plat_required
 def demand_pool():
-    """归集各钢厂需求单（按明细行展开：一行 = 需求单 × 品种明细）。"""
+    """归集各钢厂需求单（按明细行展开：一行 = 需求单 × 品种明细）。
+    钢厂端询价提交（非草稿）后，行内展示关联询价（单号/状态/报价截止）——
+    运营端据此在「报价询价」模块平台代发，钢厂端不直接联系供应商端。"""
     params = get_params()
     page, size = page_args(params)
     where = 'WHERE d.is_deleted=0 AND i.is_deleted=0'
@@ -106,6 +181,9 @@ def demand_pool():
     if status:
         where += ' AND d.status=%s'
         args.append(status)
+    inq_sub = """(SELECT x.{col} FROM biz_inquiry x
+                  WHERE x.demand_item_id=i.id AND x.is_deleted=0 AND x.status <> 'DRAFT'
+                  ORDER BY x.id DESC LIMIT 1)"""
     total = q1(g.conn, """
         SELECT count(*) AS c
         FROM biz_demand_item i
@@ -119,7 +197,19 @@ def demand_pool():
                d.delivery_type AS "deliveryType", d.delivery_place AS "deliveryPlace",
                d.expect_arrive_start AS "expectArriveStart", d.expect_arrive_end AS "expectArriveEnd",
                d.status, d.version AS "version",
-               COALESCE(d.submitted_at, d.updated_at) AS "submittedAt"
+               COALESCE(d.submitted_at, d.updated_at) AS "submittedAt",
+               (SELECT a.agg_no FROM biz_aggregated_order_item m
+                 JOIN biz_aggregated_order a ON a.id=m.agg_id AND a.is_deleted=0
+                 WHERE m.demand_item_id=i.id AND m.is_deleted=0
+                 ORDER BY m.id DESC LIMIT 1) AS "aggNo",
+               (SELECT a.id FROM biz_aggregated_order_item m
+                 JOIN biz_aggregated_order a ON a.id=m.agg_id AND a.is_deleted=0
+                 WHERE m.demand_item_id=i.id AND m.is_deleted=0
+                 ORDER BY m.id DESC LIMIT 1) AS "aggId",
+               %s AS "inquiryNo",
+               %s AS "inquiryStatus",
+               %s AS "inquiryDeadline",
+               %s AS "inquiryId"
         FROM biz_demand_item i
         JOIN biz_demand d ON d.id=i.demand_id
         JOIN ent_company c ON c.id=d.company_id
@@ -127,7 +217,8 @@ def demand_pool():
         %s
         ORDER BY COALESCE(d.submitted_at, d.updated_at) DESC, d.id DESC, i.id
         LIMIT %%s OFFSET %%s
-        """ % where, args + [size, (page - 1) * size])
+        """ % (inq_sub.format(col='inquiry_no'), inq_sub.format(col='status'),
+               inq_sub.format(col='deadline'), inq_sub.format(col='id'), where), args + [size, (page - 1) * size])
     return ok(page_data(rows, total, page, size))
 
 
@@ -229,7 +320,9 @@ def aggregated_orders():
                (SELECT i.inquiry_no FROM biz_inquiry i
                  WHERE i.agg_id=a.id AND i.is_deleted=0 ORDER BY i.id DESC LIMIT 1) AS "inquiryNo",
                (SELECT i.status FROM biz_inquiry i
-                 WHERE i.agg_id=a.id AND i.is_deleted=0 ORDER BY i.id DESC LIMIT 1) AS "inquiryStatus"
+                 WHERE i.agg_id=a.id AND i.is_deleted=0 ORDER BY i.id DESC LIMIT 1) AS "inquiryStatus",
+               (SELECT i.sent_at FROM biz_inquiry i
+                 WHERE i.agg_id=a.id AND i.is_deleted=0 ORDER BY i.id DESC LIMIT 1) AS "inquirySentAt"
         FROM biz_aggregated_order a
         JOIN base_variety v ON v.id=a.variety_id
         %s ORDER BY a.id DESC LIMIT %%s OFFSET %%s
@@ -242,7 +335,10 @@ def aggregated_orders():
 def aggregated_order_detail(aid):
     """归集订单详情：成员明细（钢厂 × 需求 × 份额）。"""
     a = q1(g.conn, """
-        SELECT a.*, v.variety_name AS "varietyName", v.category
+        SELECT a.id, a.agg_no AS "aggNo", a.variety_id AS "varietyId", a.grade,
+               a.total_qty AS "totalQty", a.status, a.remark,
+               a.created_at AS "createdAt", a.created_by AS "createdBy",
+               v.variety_name AS "varietyName", v.category
         FROM biz_aggregated_order a JOIN base_variety v ON v.id=a.variety_id
         WHERE a.id=%s AND a.is_deleted=0
         """, (aid,))
@@ -341,10 +437,10 @@ def close_aggregated_order(aid):
         active = q1(g.conn, """
             SELECT count(*) AS c FROM biz_inquiry
             WHERE is_deleted=0 AND status IN ('DRAFT','SENT','QUOTING')
-              AND (demand_id=%s OR (agg_id IS NOT NULL AND agg_id IN (
+              AND (demand_id=%s OR (agg_id IS NOT NULL AND agg_id <> %s AND agg_id IN (
                     SELECT DISTINCT agg_id FROM biz_aggregated_order_item
-                    WHERE demand_id=%s AND agg_id <> %s AND is_deleted=0)))
-            """, (m['demand_id'], m['demand_id'], aid))['c']
+                    WHERE demand_id=%s AND is_deleted=0)))
+            """, (m['demand_id'], aid, m['demand_id']))['c']
         drow = q1(g.conn, "SELECT id, status FROM biz_demand WHERE id=%s", (m['demand_id'],))
         if not active and drow and drow['status'] == 'INQUIRING':
             transition(g.conn, g.ctx, 'biz_demand', '需求单', 'biz_demand', m['demand_id'], 'SUBMITTED')
@@ -447,6 +543,189 @@ def create_platform_inquiries():
            {'batchNo': batch_no, 'aggId': agg['id'], 'aggNo': agg['agg_no'],
             'totalQty': str(agg['total_qty'])})
     return ok({'batchNo': batch_no, 'inquiryId': iid, 'aggNo': agg['agg_no']})
+
+
+@bp.get('/admin/quote-history')
+@plat_required
+def quote_history_list():
+    """询价历史（按轮次）：每轮询价单及其报价家数、钢厂反馈家数，用于追溯历史报价与反馈。"""
+    params = get_params()
+    page, size = page_args(params)
+    where = "WHERE i.is_deleted=0 AND i.source='PLATFORM' AND i.agg_id IS NOT NULL"
+    args = []
+    total = q1(g.conn, 'SELECT count(*) AS c FROM biz_inquiry i ' + where, args)['c']
+    rows = qall(g.conn, """
+        SELECT i.id, i.inquiry_no AS "inquiryNo", i.batch_no AS "batchNo",
+               a.agg_no AS "aggNo", v.variety_name AS "varietyName", i.grade, i.quantity,
+               i.deadline, i.status, i.expect_arrive_date AS "expectArriveDate",
+               i.inquiry_desc AS "inquiryDesc",
+               to_char(i.sent_at, 'YYYY-MM-DD HH24:MI') AS "sentAt",
+               (SELECT count(*) FROM biz_quote q
+                 WHERE q.inquiry_id=i.id AND q.is_deleted=0 AND q.status <> 'REJECTED') AS "quoteCount",
+               (SELECT count(*) FROM biz_agg_inquiry_feedback f
+                 WHERE f.inquiry_id=i.id AND f.is_deleted=0) AS "feedbackCount"
+        FROM biz_inquiry i
+        LEFT JOIN biz_aggregated_order a ON a.id=i.agg_id
+        LEFT JOIN base_variety v ON v.id=i.variety_id
+        %s ORDER BY i.id DESC LIMIT %%s OFFSET %%s
+        """ % where, args + [size, (page - 1) * size])
+    return ok(page_data(rows, total, page, size))
+
+
+@bp.get('/admin/quote-history/<int:iid>')
+@plat_required
+def quote_history_detail(iid):
+    """单轮询价历史明细：本轮全部报价（含时间/状态）+ 本轮钢厂反馈。"""
+    inq = q1(g.conn, """
+        SELECT i.id, i.inquiry_no AS "inquiryNo", i.batch_no AS "batchNo",
+               a.agg_no AS "aggNo", v.variety_name AS "varietyName", i.grade, i.quantity,
+               i.delivery_place AS "deliveryPlace", i.deadline, i.status,
+               i.inquiry_desc AS "inquiryDesc",
+               to_char(i.sent_at, 'YYYY-MM-DD HH24:MI') AS "sentAt"
+        FROM biz_inquiry i
+        LEFT JOIN biz_aggregated_order a ON a.id=i.agg_id
+        LEFT JOIN base_variety v ON v.id=i.variety_id
+        WHERE i.id=%s AND i.is_deleted=0
+        """, (iid,))
+    if not inq:
+        raise ApiError(40401, '询价单不存在')
+    quotes = qall(g.conn, """
+        SELECT q.id, q.quote_no AS "quoteNo", c.company_name AS "companyName",
+               q.price, q.quantity, q.delivery_date AS "deliveryDate",
+               q.pay_terms AS "payTerms", q.status, q.version,
+               to_char(q.created_at, 'YYYY-MM-DD HH24:MI') AS "quotedAt"
+        FROM biz_quote q JOIN ent_company c ON c.id=q.supplier_id
+        WHERE q.inquiry_id=%s AND q.is_deleted=0 AND q.status <> 'REJECTED'
+        ORDER BY q.price ASC
+        """, (iid,))
+    feedbacks = qall(g.conn, """
+        SELECT f.decision, f.reason, c.company_name AS "companyName",
+               to_char(f.created_at, 'YYYY-MM-DD HH24:MI') AS "createdAt"
+        FROM biz_agg_inquiry_feedback f JOIN ent_company c ON c.id=f.company_id
+        WHERE f.inquiry_id=%s AND f.is_deleted=0 ORDER BY f.id
+        """, (iid,))
+    return ok({'inquiry': inq, 'quotes': quotes, 'feedbacks': feedbacks})
+
+
+def _do_platform_award(conn, ctx, iid, quote):
+    """按份额定标核心（运营端手动定标与全员认可自动成单共用）。
+
+    前置：PLATFORM 归集询价且状态 CLOSED、报价可定标、可供量覆盖成员份额总量。
+    整张询价单锁货锁价生成 1 张聚合订单（buyer_id 为空），各钢厂份额写入
+    biz_order_member，随后通知各钢厂提交提货计划、通知供应商已定标。
+    """
+    inq = q1(conn, """
+        SELECT * FROM biz_inquiry
+        WHERE id=%s AND is_deleted=0 AND source='PLATFORM' AND agg_id IS NOT NULL
+        """, (iid,))
+    if not inq:
+        raise ApiError(40401, '归集询价单不存在')
+    if inq['status'] != 'CLOSED':
+        raise ApiError(40901, '询价单状态为 %s，需报价截止并揭示后方可定标' % inq['status'])
+    if not quote or quote['inquiry_id'] != iid:
+        raise ApiError(40401, '报价不存在')
+    if quote['status'] not in ('REVEALED', 'BARGAINING'):
+        raise ApiError(40901, '报价状态为 %s，不可定标' % quote['status'])
+
+    members = qall(conn, """
+        SELECT d.company_id AS "companyId", MIN(d.id) AS "demandId",
+               MIN(m.demand_item_id) AS "demandItemId",
+               COALESCE(SUM(m.quantity), 0) AS share
+        FROM biz_aggregated_order_item m
+        JOIN biz_demand d ON d.id=m.demand_id AND d.is_deleted=0
+        WHERE m.agg_id=%s AND m.is_deleted=0
+        GROUP BY d.company_id ORDER BY d.company_id
+        """, (inq['agg_id'],))
+    if not members:
+        raise ApiError(40001, '归集订单无成员钢厂，无法定标')
+    total = sum((m['share'] for m in members), Decimal('0'))
+    if total > quote['quantity']:
+        raise ApiError(40001, '报价可供量 %.2f 吨不足定标总量 %.2f 吨' % (quote['quantity'], total))
+
+    price = quote['price']
+    deadline = datetime.now() + timedelta(hours=48)
+    amount = (price * total).quantize(Decimal('0.01'))
+    ono = doc_no(conn, 'DD')
+    uid = ctx.user['id'] if ctx and ctx.user else None
+    # 整单锁货锁价：只生成 1 张聚合订单（buyer_id 为空），参与钢厂写入成员明细
+    oid = execute(conn, """
+        INSERT INTO biz_order (order_no, inquiry_id, quote_id, demand_id, buyer_id, supplier_id,
+            variety_id, grade, quantity, more_less_rate, unit_price, amount, price_basis,
+            delivery_type, delivery_place, delivery_date, settle_type, quality_terms,
+            confirm_deadline, status, created_by, updated_by)
+        VALUES (%s,%s,%s,NULL,NULL,%s,%s,%s,%s,5,%s,%s,'WET',%s,%s,%s,%s,%s,%s,
+                'PENDING_CONFIRM',%s,%s) RETURNING id
+        """, (ono, iid, quote['id'], quote['supplier_id'],
+              inq['variety_id'], inq['grade'], total, price, amount,
+              inq['delivery_type'], inq['delivery_place'], quote['delivery_date'],
+              inq['settle_type'], quote['quality_commit'], deadline,
+              uid, uid), returning_id=True)
+    for m in members:
+        execute(conn, """
+            INSERT INTO biz_order_member (order_id, company_id, demand_id, demand_item_id, quantity)
+            VALUES (%s,%s,%s,%s,%s)
+            """, (oid, m['companyId'], m['demandId'], m['demandItemId'], m['share']))
+
+    transition(conn, ctx, 'biz_quote', '报价', 'biz_quote', quote['id'], 'WIN',
+               node_biz_type='ORDER', node_code='AWARDED', node_biz_id=oid)
+    for q in qall(conn, """
+            SELECT id FROM biz_quote
+            WHERE inquiry_id=%s AND id<>%s AND status IN ('REVEALED','BARGAINING') AND is_deleted=0
+            """, (iid, quote['id'])):
+        transition(conn, ctx, 'biz_quote', '报价', 'biz_quote', q['id'], 'LOSE')
+    execute(conn, "UPDATE biz_bargain SET status='EXPIRED', updated_at=now() WHERE inquiry_id=%s AND status='PENDING'", (iid,))
+    transition(conn, ctx, 'biz_inquiry', '询价单', 'biz_inquiry', iid, 'AWARDED',
+               node_biz_type='ORDER', node_code='ORDER_CREATED', node_biz_id=oid)
+    transition(conn, ctx, 'biz_aggregated_order', '归集订单', 'biz_aggregated_order',
+               inq['agg_id'], 'AWARDED')
+
+    # 成交回填：按成员明细累加 deal_qty；需求全部明细成交则转「已成交」
+    execute(conn, """
+        UPDATE biz_demand_item di SET deal_qty = COALESCE(di.deal_qty, 0) + m.quantity, updated_at=now()
+        FROM biz_aggregated_order_item m
+        WHERE m.agg_id=%s AND m.is_deleted=0 AND m.demand_item_id=di.id
+        """, (inq['agg_id'],))
+    for drow in qall(conn, """
+            SELECT d.id, d.status, SUM(di.quantity) AS qty, SUM(COALESCE(di.deal_qty, 0)) AS deal
+            FROM biz_demand d
+            JOIN biz_demand_item di ON di.demand_id=d.id AND di.is_deleted=0
+            WHERE d.id IN (SELECT m.demand_id FROM biz_aggregated_order_item m
+                            WHERE m.agg_id=%s AND m.is_deleted=0)
+              AND d.is_deleted=0
+            GROUP BY d.id, d.status
+            """, (inq['agg_id'],)):
+        if drow['status'] == 'INQUIRING' and drow['deal'] >= drow['qty']:
+            transition(conn, ctx, 'biz_demand', '需求单', 'biz_demand', drow['id'], 'DEALT')
+
+    ino = q1(conn, "SELECT inquiry_no FROM biz_inquiry WHERE id=%s", (iid,))['inquiry_no']
+    for m in members:
+        send_msg(conn, m['companyId'], '订单已生成',
+                 '归集询价 %s 已定标，已生成订单 %s（贵司份额 %s 吨），供应商确认订单后请在「订单」页提交提货计划（开始提货日期、日提货吨数）。'
+                 % (ino, ono, format(m['share'], '.3f')), 'ORDER', oid)
+    send_msg(conn, quote['supplier_id'], '已定标，请确认订单',
+             '归集询价 %s 已定标，已生成订单 %s（整单 %s 吨），请在 %s 前在「订单管理」完成订单确认，逾期未确认订单将自动取消。'
+             % (ino, ono, format(total, '.3f'), deadline.strftime('%Y-%m-%d %H:%M')), 'ORDER', oid)
+    op_log(conn, ctx, 'biz_order', oid, 'AWARD', None,
+           {'quoteId': quote['id'], 'price': str(price), 'quantity': str(total),
+            'members': len(members)})
+    return {'orderId': oid, 'orderNo': ono, 'totalQty': str(total),
+            'memberCount': len(members),
+            'confirmDeadline': deadline.strftime('%Y-%m-%d %H:%M:%S')}
+
+
+@bp.post('/admin/quote-inquiries/<int:iid>/award')
+@plat_required
+def platform_quote_award(iid):
+    """按份额定标（归集询价）：整张询价单锁货锁价，只生成 1 张订单。
+
+    归集询价 buyer_id 为空、份额归多家钢厂，钢厂端只读比价不可定标，
+    因此由平台在此定标；钢厂全员认可后系统也会自动触发同一逻辑
+    （见 inquiry.agg_inquiry_feedback），本接口用于兜底手动定标。
+    """
+    p = get_params()
+    require_fields(p, 'quoteId')
+    quote = q1(g.conn, "SELECT * FROM biz_quote WHERE id=%s AND is_deleted=0", (p['quoteId'],))
+    return ok(_do_platform_award(g.conn, g.ctx, iid, quote))
 
 
 @bp.get('/admin/quote-inquiries/<int:iid>/feedbacks')
@@ -556,8 +835,9 @@ def platform_contract_list():
         SELECT c.id, c.contract_no AS "contractNo", c.order_id AS "orderId", o.order_no AS "orderNo",
                b.company_name AS "buyerName", s.company_name AS "supplierName",
                c.version, c.signature_type AS "signatureType",
-               c.buyer_sign_at AS "buyerSignAt", c.supplier_sign_at AS "supplierSignAt",
                c.file_url AS "fileUrl", c.file_hash AS "fileHash",
+               c.buyer_file_url AS "buyerFileUrl", c.buyer_sign_at AS "buyerSignAt",
+               c.supplier_file_url AS "supplierFileUrl", c.supplier_sign_at AS "supplierSignAt",
                c.status, c.plat_status AS "platStatus", c.plat_remark AS "platRemark",
                c.plat_confirm_at AS "platConfirmAt", c.created_at AS "createdAt",
                (SELECT count(*) FROM biz_waybill w WHERE w.order_id=c.order_id AND w.is_deleted=0) AS "waybillCount"
@@ -573,7 +853,7 @@ def platform_contract_list():
 @bp.put('/admin/contracts/<int:cid>/verify')
 @plat_required
 def platform_contract_verify(cid):
-    """核验合同：approve → 生效并入台账；否则退回上传方（附原因）。"""
+    """合同归集：双方签署件齐备后，approve → 合同生效并入台账；否则退回上传方（附原因）。"""
     p = get_params()
     require_fields(p, 'approve')
     row = q1(g.conn, """
@@ -587,8 +867,10 @@ def platform_contract_verify(cid):
         raise ApiError(40901, '合同平台核验状态为 %s，不可核验' % (row['plat_status'] or '无'))
     if row['status'] != 'PENDING_SUPPLIER':
         raise ApiError(40901, '合同状态为 %s，不可核验' % row['status'])
-    approve = str(p['approve']).lower() in ('true', '1')
-    if approve:
+    if not row.get('buyer_file_url') or not row.get('supplier_file_url'):
+        raise ApiError(40901, '需方与供方合同扫描件未齐备，暂不可归集')
+    approve = str(p['approve']).strip().upper()
+    if approve in ('TRUE', '1'):
         transition(g.conn, g.ctx, 'biz_contract', '合同', 'biz_contract', cid, 'EFFECTIVE',
                    node_biz_type='ORDER', node_code='CONTRACT_EFFECTIVE', node_biz_id=row['order_id'])
         ostatus = q1(g.conn, "SELECT status FROM biz_order WHERE id=%s", (row['order_id'],))['status']
@@ -599,26 +881,29 @@ def platform_contract_verify(cid):
             UPDATE biz_contract SET plat_status='CONFIRMED', plat_confirm_by=%s, plat_confirm_at=now(),
                 updated_by=%s, updated_at=now() WHERE id=%s
             """, (g.ctx.user['id'], g.ctx.user['id'], cid))
-        text = '订单 %s 合同 %s 已通过平台核验并生效。' % (row['order_no'], row['contract_no'])
-        send_msg(g.conn, row['buyer_id'], '合同已核验生效', text, 'CONTRACT', cid)
-        send_msg(g.conn, row['supplier_id'], '合同已核验生效', text, 'CONTRACT', cid)
-        op_log(g.conn, g.ctx, 'biz_contract', cid, 'VERIFY', None, {'result': 'CONFIRMED'})
+        text = '订单 %s 合同 %s 签署件已完成平台归集，合同已生效。' % (row['order_no'], row['contract_no'])
+        send_msg(g.conn, row['buyer_id'], '合同已归集生效', text, 'CONTRACT', cid)
+        send_msg(g.conn, row['supplier_id'], '合同已归集生效', text, 'CONTRACT', cid)
+        op_log(g.conn, g.ctx, 'biz_contract', cid, 'CONSOLIDATE', None, {'result': 'CONFIRMED'})
         return ok({'id': cid, 'platStatus': 'CONFIRMED', 'status': 'EFFECTIVE'})
+    # 退回：区分退回需方 / 退回供方
+    if approve not in ('BUYER', 'SUPPLIER'):
+        raise ApiError(40001, '归集结论不合法，请选择归集完成/退回需方/退回供方')
     remark = (p.get('remark') or '').strip()
     if not remark:
         raise ApiError(40001, '退回必须填写原因')
-    if row['supplier_sign_at'] and row['buyer_sign_at']:
-        to_company = row['supplier_id'] if row['supplier_sign_at'] >= row['buyer_sign_at'] else row['buyer_id']
-    else:
-        to_company = row['buyer_id']
+    to_company = row['buyer_id'] if approve == 'BUYER' else row['supplier_id']
+    to_label = '需方' if approve == 'BUYER' else '供方'
     execute(g.conn, """
         UPDATE biz_contract SET plat_status='RETURNED', plat_remark=%s, updated_by=%s, updated_at=now()
         WHERE id=%s
         """, (remark, g.ctx.user['id'], cid))
     send_msg(g.conn, to_company, '合同扫描件被退回',
-             '合同 %s 扫描件未通过平台核验，原因：%s，请重新上传。' % (row['contract_no'], remark), 'CONTRACT', cid)
-    op_log(g.conn, g.ctx, 'biz_contract', cid, 'RETURN', None, {'remark': remark})
-    return ok({'id': cid, 'platStatus': 'RETURNED'})
+             '合同 %s 扫描件未通过平台核验（退回%s），原因：%s，请重新上传。'
+             % (row['contract_no'], to_label, remark), 'CONTRACT', cid)
+    op_log(g.conn, g.ctx, 'biz_contract', cid, 'RETURN(%s)' % to_label, None,
+           {'remark': remark, 'to': approve})
+    return ok({'id': cid, 'platStatus': 'RETURNED', 'returnTo': approve})
 
 
 # ---------- 运输调度：数据统计分析 ----------
@@ -654,23 +939,97 @@ def platform_logistics_stats():
 
 
 # ---------- 运输调度：物流调度 + 在途监控 ----------
+# ---------- 订单管理（集采订单：提货计划汇总 → 运输方案） ----------
+
+def _admin_order_select():
+    """订单管理列表/详情公共查询：订单基础字段 + 提货计划进度。"""
+    return """
+        SELECT o.id, o.order_no AS "orderNo",
+               COALESCE((SELECT i2.inquiry_no FROM biz_inquiry i2
+                          WHERE i2.agg_id=i.agg_id AND i2.is_deleted=0
+                          ORDER BY i2.id LIMIT 1), a.agg_no, '') AS "inquiryNo",
+               COALESCE(a.agg_no, '') AS "aggNo",
+               v.variety_name AS "varietyName", o.grade,
+               o.quantity AS "totalQty", o.more_less_rate AS "moreLessRate",
+               o.unit_price AS "unitPrice", o.amount, o.price_basis AS "priceBasis",
+               o.delivery_type AS "deliveryType", o.delivery_place AS "deliveryPlace",
+               o.delivery_date AS "deliveryDate", o.settle_type AS "settleType",
+               s.company_name AS "supplierName",
+               (SELECT count(*) FROM biz_order_member m
+                 WHERE m.order_id=o.id AND m.is_deleted=0) AS "millCount",
+               (SELECT count(*) FROM biz_order_member m
+                 WHERE m.order_id=o.id AND m.is_deleted=0 AND m.pickup_status='SUBMITTED') AS "pickupDoneCount",
+               o.status, o.created_at AS "createdAt", o.confirm_deadline AS "confirmDeadline"
+        FROM biz_order o
+        JOIN base_variety v ON v.id=o.variety_id
+        LEFT JOIN ent_company s ON s.id=o.supplier_id
+        LEFT JOIN biz_inquiry i ON i.id=o.inquiry_id
+        LEFT JOIN biz_aggregated_order a ON a.id=i.agg_id
+    """
+
+
+@bp.get('/admin/orders')
+@plat_required
+def admin_order_list():
+    """订单管理列表（运营端）：支持分页 + 状态 + 订单号模糊查询。"""
+    params = get_params()
+    page, size = page_args(params)
+    where, args = 'WHERE o.is_deleted=0', []
+    if params.get('status'):
+        where += ' AND o.status=%s'
+        args.append(params['status'])
+    kw = (params.get('keyword') or '').strip()
+    if kw:
+        where += ' AND o.order_no ILIKE %s'
+        args.append('%' + kw + '%')
+    total = q1(g.conn, 'SELECT count(*) AS c FROM biz_order o ' + where, args)['c']
+    rows = qall(g.conn, _admin_order_select() + ' %s ORDER BY o.id DESC LIMIT %%s OFFSET %%s' % where,
+                args + [size, (page - 1) * size])
+    return ok(page_data(rows, total, page, size))
+
+
+@bp.get('/admin/orders/<int:oid>')
+@plat_required
+def admin_order_detail(oid):
+    """订单详情（运营端）：订单字段 + 参与钢厂提货计划明细与汇总。"""
+    row = q1(g.conn, _admin_order_select() + ' WHERE o.id=%s AND o.is_deleted=0', (oid,))
+    if not row:
+        raise ApiError(40401, '订单不存在')
+    members = qall(g.conn, """
+        SELECT m.id, m.company_id AS "companyId", c.company_name AS "companyName",
+               m.quantity, m.pickup_status AS "pickupStatus",
+               m.pickup_start_date AS "pickupStartDate", m.daily_qty AS "dailyQty",
+               m.pickup_remark AS "pickupRemark", m.submitted_at AS "submittedAt"
+        FROM biz_order_member m JOIN ent_company c ON c.id=m.company_id
+        WHERE m.order_id=%s AND m.is_deleted=0 ORDER BY m.id
+        """, (oid,))
+    data = json_payload(row)
+    data['members'] = json_payload(members)
+    data['pickupSummary'] = {
+        'totalMills': len(members),
+        'doneMills': sum(1 for m in members if m['pickupStatus'] == 'SUBMITTED'),
+    }
+    return ok(data)
+
+
 @bp.get('/admin/logistics-orders')
 @plat_required
 def platform_logistics_orders():
-    """可调度订单（履约中），带方案与运单概况。"""
+    """可调度订单（待制定运输方案/履约中），带方案与运单概况。"""
     params = get_params()
     page, size = page_args(params)
-    where = "WHERE o.is_deleted=0 AND o.status='PERFORMING'"
+    where = "WHERE o.is_deleted=0 AND o.status IN ('PENDING_TRANSPORT','PERFORMING')"
     total = q1(g.conn, 'SELECT count(*) AS c FROM biz_order o ' + where)['c']
     rows = qall(g.conn, """
-        SELECT o.id, o.order_no AS "orderNo", b.company_name AS "buyerName",
+        SELECT o.id, o.order_no AS "orderNo",
+               COALESCE(b.company_name, '多钢厂集采') AS "buyerName",
                s.company_name AS "supplierName", o.quantity,
                c.contract_no AS "contractNo",
                p.id AS "planId", p.plan_no AS "planNo", p.org_mode AS "orgMode",
                (SELECT count(*) FROM biz_waybill w WHERE w.plan_id=p.id AND w.is_deleted=0 AND w.status<>'CANCELLED') AS "waybillCount",
                (SELECT coalesce(sum(w.plan_qty),0) FROM biz_waybill w WHERE w.plan_id=p.id AND w.is_deleted=0 AND w.status<>'CANCELLED') AS "plannedQty"
         FROM biz_order o
-        JOIN ent_company b ON b.id=o.buyer_id
+        LEFT JOIN ent_company b ON b.id=o.buyer_id
         JOIN ent_company s ON s.id=o.supplier_id
         LEFT JOIN biz_contract c ON c.order_id=o.id AND c.is_deleted=0 AND c.status='EFFECTIVE'
         LEFT JOIN biz_logistics_plan p ON p.order_id=o.id AND p.is_deleted=0
@@ -682,14 +1041,14 @@ def platform_logistics_orders():
 @bp.post('/admin/logistics-plans')
 @plat_required
 def platform_create_plan():
-    """运营代钢厂制定物流方案（订单履约中），方案自动给到钢厂（站内消息 + 现有页面可见）。"""
+    """运营代钢厂制定物流方案（待制定运输方案/履约中），方案自动给到钢厂（站内消息 + 现有页面可见）。"""
     p = get_params()
     require_fields(p, 'orderId', 'orgMode')
     order = q1(g.conn, "SELECT * FROM biz_order WHERE id=%s AND is_deleted=0", (p['orderId'],))
     if not order:
         raise ApiError(40401, '订单不存在')
-    if order['status'] != 'PERFORMING':
-        raise ApiError(40901, '仅履约中订单可制定物流方案（当前 %s）' % order['status'])
+    if order['status'] not in ('PENDING_TRANSPORT', 'PERFORMING'):
+        raise ApiError(40901, '仅待制定运输方案/履约中订单可制定物流方案（当前 %s）' % order['status'])
     if q1(g.conn, "SELECT id FROM biz_logistics_plan WHERE order_id=%s AND is_deleted=0", (p['orderId'],)):
         raise ApiError(40902, '该订单已存在物流方案')
     if p['orgMode'] not in ('SELF', 'PLATFORM'):
@@ -703,9 +1062,17 @@ def platform_create_plan():
         INSERT INTO biz_track_node (biz_type, biz_id, node_code, node_name, occur_time, source, remark, created_by)
         VALUES ('ORDER', %s, 'LOGISTICS_PLAN_CREATED', '平台制定物流方案', now(), 'MANUAL', %s, %s)
         """, (p['orderId'], p.get('remark') or ('组织方式 %s' % p['orgMode']), g.ctx.user['id']))
-    send_msg(g.conn, order['buyer_id'], '物流方案已制定',
-             '订单 %s 平台已制定物流方案，贵司无需操作，可在履约跟踪查看进度。' % order['order_no'],
-             'ORDER', p['orderId'])
+    # 集采聚合订单：方案制定后进入履约中；通知全部参与钢厂
+    receivers = [order['buyer_id']] if order['buyer_id'] else [
+        m['company_id'] for m in qall(g.conn,
+            "SELECT company_id FROM biz_order_member WHERE order_id=%s AND is_deleted=0", (p['orderId'],))]
+    for cid in receivers:
+        send_msg(g.conn, cid, '物流方案已制定',
+                 '订单 %s 平台已制定物流方案，贵司无需操作，可在履约跟踪查看进度。' % order['order_no'],
+                 'ORDER', p['orderId'])
+    if order['status'] == 'PENDING_TRANSPORT':
+        transition(g.conn, g.ctx, 'biz_order', '订单', 'biz_order', p['orderId'], 'PERFORMING',
+                   node_biz_type='ORDER', node_code='PLAN_CONFIGURED')
     op_log(g.conn, g.ctx, 'biz_logistics_plan', pid, 'PLATFORM_CREATE', None, p)
     return ok({'planId': pid})
 
@@ -722,11 +1089,19 @@ def platform_create_waybill(pid):
     if not plan:
         raise ApiError(40401, '物流方案不存在')
     p = get_params()
-    require_fields(p, 'segmentNo', 'transportMode', 'planQty', 'planDepartDate', 'planArriveDate')
-    if p['transportMode'] not in ('SEA', 'RAIL', 'ROAD', 'MULTIMODAL'):
-        raise ApiError(40001, '运输方式仅支持 SEA/RAIL/ROAD/MULTIMODAL')
+    require_fields(p, 'segmentNo', 'transportMode', 'planQty', 'planDepartDate', 'planArriveDate', 'freight')
+    # 运输方式：铁路直达 / 公铁联运 / 汽运直达（数据库沿用 RAIL/MULTIMODAL/ROAD 编码）
+    if p['transportMode'] not in ('RAIL', 'MULTIMODAL', 'ROAD'):
+        raise ApiError(40001, '运输方式仅支持 铁路直达/公铁联运/汽运直达')
+    # 公铁联运必须填写中转站；起运地限定港口
+    if p['transportMode'] == 'MULTIMODAL' and not (p.get('transitStation') or '').strip():
+        raise ApiError(40001, '公铁联运必须填写中转站')
+    if (p.get('departPlace') or '').strip() not in ('黄骅港', '天津港'):
+        raise ApiError(40001, '起运地仅支持 黄骅港/天津港')
     if parse_date(p, 'planArriveDate') < parse_date(p, 'planDepartDate'):
         raise ApiError(40001, '计划到达日不能早于计划发运日')
+    if not p.get('freight') or p['freight'] <= 0:
+        raise ApiError(40001, '运费为必填项且必须大于0')
     plan_qty = p['planQty']
     if plan_qty <= 0:
         raise ApiError(40001, '计划量必须大于0')
@@ -745,28 +1120,31 @@ def platform_create_waybill(pid):
     carrier_id = p.get('carrierId')
     if carrier_id:
         _check_carrier(carrier_id)
-        status = 'PENDING_ACCEPT'
-    else:
-        status = 'PENDING_ASSIGN'
+    # 承运商端已下线：运单创建即确认生效，默认平台承担运输，直接进入待发运
+    status = 'PENDING_DEPART'
     wid = execute(g.conn, """
         INSERT INTO biz_waybill (waybill_no, order_id, plan_id, segment_no, carrier_id, transport_mode,
-            depart_place, arrive_place, plan_depart_date, plan_arrive_date, plan_qty, freight,
-            vehicle_no, status, created_by, updated_by)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+            depart_place, transit_station, arrive_place, plan_depart_date, plan_arrive_date, plan_qty,
+            eta_at, freight, vehicle_no, status, created_by, updated_by)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
         """, (doc_no(g.conn, 'YD'), plan['order_id'], pid, seg_no, carrier_id,
-              p['transportMode'], p.get('departPlace'), p.get('arrivePlace'),
+              p['transportMode'], p.get('departPlace'), (p.get('transitStation') or '').strip() or None,
+              p.get('arrivePlace'),
               parse_date(p, 'planDepartDate'), parse_date(p, 'planArriveDate'), plan_qty,
-              p.get('freight'), p.get('vehicleNo'), status, g.ctx.user['id'], g.ctx.user['id']),
+              parse_datetime(p, 'etaDate', required=False),
+              p['freight'], p.get('vehicleNo'), status, g.ctx.user['id'], g.ctx.user['id']),
         returning_id=True)
     if deviation > 5:
         op_log(g.conn, g.ctx, 'biz_waybill', wid, 'DEVIATION', None,
                {'deviationRate': '%.2f%%' % deviation, 'reason': p.get('deviationReason')})
-    if status == 'PENDING_ACCEPT' and carrier_id:
-        send_msg(g.conn, carrier_id, '运单待接单',
-                 '订单 %s 分段运单已指派，请接单确认。' % plan['order_no'], 'WAYBILL', wid)
-    send_msg(g.conn, plan['buyer_id'], '运单已安排',
-             '订单 %s 分段 %s 运单已创建，贵司无需操作，可在履约跟踪查看进度。' % (plan['order_no'], p['segmentNo']),
-             'ORDER', plan['order_id'])
+    # 集采聚合订单无单一需方，通知全部参与钢厂
+    receivers = [plan['buyer_id']] if plan['buyer_id'] else [
+        m['company_id'] for m in qall(g.conn,
+            "SELECT company_id FROM biz_order_member WHERE order_id=%s AND is_deleted=0", (plan['order_id'],))]
+    for cid in receivers:
+        send_msg(g.conn, cid, '运单已安排',
+                 '订单 %s 分段 %s 运单已创建，贵司无需操作，可在履约跟踪查看进度。' % (plan['order_no'], p['segmentNo']),
+                 'ORDER', plan['order_id'])
     op_log(g.conn, g.ctx, 'biz_waybill', wid, 'PLATFORM_CREATE', None,
            {'planQty': str(plan_qty), 'status': status})
     return ok({'id': wid, 'status': status, 'planTotalDeviation': '%.2f%%' % deviation})
@@ -807,11 +1185,22 @@ def platform_waybill_advance(wid):
     require_fields(p, 'action')
     action = p['action']
     occur = parse_datetime(p, 'occurTime', required=False)
-    if action == 'DEPART':
+    if action == 'ETA':
+        # 船到港登记：不改变运单状态，仅记录实际船到港时间并写履约节点
+        if row['status'] not in ('PENDING_DEPART', 'IN_TRANSIT'):
+            raise ApiError(40901, '运单状态为 %s，不可登记船到港' % row['status'])
+        execute(g.conn, """
+            UPDATE biz_waybill SET actual_eta_at=%s, updated_by=%s, updated_at=now() WHERE id=%s
+            """, (occur or datetime.now(), g.ctx.user['id'], wid))
+        add_node(g.conn, g.ctx, 'WAYBILL', wid, 'WB_ETA_ARRIVED', occur=occur)
+        send_msg(g.conn, order['buyer_id'], '船已到港',
+                 '订单 %s 运单 %s 船已到港，待发运。' % (order['order_no'], row['waybill_no']),
+                 'WAYBILL', wid)
+    elif action == 'DEPART':
         if row['status'] != 'PENDING_DEPART':
             raise ApiError(40901, '运单状态为 %s，不可发运' % row['status'])
         transition(g.conn, g.ctx, 'biz_waybill', '运单', 'biz_waybill', wid, 'IN_TRANSIT',
-                   node_biz_type='WAYBILL', node_code='WAYBILL_DEPARTED')
+                   node_biz_type='WAYBILL', node_code='WB_DEPARTED')
         execute(g.conn, """
             UPDATE biz_waybill SET actual_depart_at=%s, actual_qty=%s, updated_by=%s, updated_at=now()
             WHERE id=%s
@@ -819,11 +1208,23 @@ def platform_waybill_advance(wid):
         send_msg(g.conn, order['buyer_id'], '运单已发运',
                  '订单 %s 运单 %s 已发运，可在履约跟踪查看在途节点。' % (order['order_no'], row['waybill_no']),
                  'WAYBILL', wid)
+    elif action == 'TRANSIT':
+        # 到达中转站登记：不改变运单状态，仅记录实际到达中转站时间并写履约节点
+        if row['status'] != 'IN_TRANSIT':
+            raise ApiError(40901, '运单状态为 %s，不可登记到达中转站' % row['status'])
+        execute(g.conn, """
+            UPDATE biz_waybill SET actual_transit_at=%s, updated_by=%s, updated_at=now() WHERE id=%s
+            """, (occur or datetime.now(), g.ctx.user['id'], wid))
+        add_node(g.conn, g.ctx, 'WAYBILL', wid, 'WB_ARRIVED_TRANSIT', occur=occur)
+        send_msg(g.conn, order['buyer_id'], '已到达中转站',
+                 '订单 %s 运单 %s 已到达中转站%s。' % (order['order_no'], row['waybill_no'],
+                 ('「%s」' % row['transit_station']) if row['transit_station'] else ''),
+                 'WAYBILL', wid)
     elif action == 'ARRIVE':
         if row['status'] != 'IN_TRANSIT':
             raise ApiError(40901, '运单状态为 %s，不可到达' % row['status'])
         transition(g.conn, g.ctx, 'biz_waybill', '运单', 'biz_waybill', wid, 'ARRIVED',
-                   node_biz_type='WAYBILL', node_code='WAYBILL_ARRIVED')
+                   node_biz_type='WAYBILL', node_code='WB_ARRIVED')
         execute(g.conn, """
             UPDATE biz_waybill SET actual_arrive_at=%s, updated_by=%s, updated_at=now() WHERE id=%s
             """, (occur, g.ctx.user['id'], wid))
@@ -833,7 +1234,7 @@ def platform_waybill_advance(wid):
         if row['status'] != 'ARRIVED':
             raise ApiError(40901, '运单状态为 %s，不可签收' % row['status'])
         transition(g.conn, g.ctx, 'biz_waybill', '运单', 'biz_waybill', wid, 'SIGNED',
-                   node_biz_type='WAYBILL', node_code='WAYBILL_SIGNED')
+                   node_biz_type='WAYBILL', node_code='WB_SIGNED')
         execute(g.conn, """
             UPDATE biz_waybill SET actual_arrive_at=coalesce(actual_arrive_at, %s), updated_by=%s,
                 updated_at=now() WHERE id=%s
@@ -843,7 +1244,7 @@ def platform_waybill_advance(wid):
         send_msg(g.conn, order['supplier_id'], '运单已签收',
                  '订单 %s 运单 %s 已签收。' % (order['order_no'], row['waybill_no']), 'WAYBILL', wid)
     else:
-        raise ApiError(40001, 'action 仅支持 DEPART/ARRIVE/SIGN')
+        raise ApiError(40001, 'action 仅支持 ETA/DEPART/TRANSIT/ARRIVE/SIGN')
     op_log(g.conn, g.ctx, 'biz_waybill', wid, 'PLATFORM_ADVANCE %s' % action, None, p)
     return ok({'id': wid, 'action': action})
 
@@ -871,15 +1272,18 @@ def platform_waybill_ops():
                c.contract_no AS "contractNo", b.company_name AS "buyerName",
                s.company_name AS "supplierName", w.segment_no AS "segmentNo",
                w.transport_mode AS "transportMode", w.depart_place AS "departPlace",
-               w.arrive_place AS "arrivePlace", w.plan_depart_date AS "planDepartDate",
+               w.transit_station AS "transitStation", w.arrive_place AS "arrivePlace",
+               w.plan_depart_date AS "planDepartDate",
                w.plan_arrive_date AS "planArriveDate", w.plan_qty AS "planQty",
+               w.eta_at AS "etaAt", w.actual_eta_at AS "actualEtaAt",
+               w.actual_transit_at AS "actualTransitAt",
                w.freight, w.vehicle_no AS "vehicleNo",
                cr.company_name AS "carrierName", w.actual_depart_at AS "actualDepartAt",
                w.actual_arrive_at AS "actualArriveAt", w.status, w.created_at AS "createdAt"
         FROM biz_waybill w
         JOIN biz_order o ON o.id=w.order_id
-        JOIN ent_company b ON b.id=o.buyer_id
-        JOIN ent_company s ON s.id=o.supplier_id
+        LEFT JOIN ent_company b ON b.id=o.buyer_id
+        LEFT JOIN ent_company s ON s.id=o.supplier_id
         LEFT JOIN ent_company cr ON cr.id=w.carrier_id
         LEFT JOIN biz_contract c ON c.order_id=o.id AND c.is_deleted=0 AND c.status='EFFECTIVE'
         %s ORDER BY w.id DESC LIMIT %%s OFFSET %%s
@@ -1050,11 +1454,11 @@ def dashboard():
 @bp.get('/admin/dashboard/charts')
 @plat_required
 def dashboard_charts():
-    """运营看板图表：货运趋势 / 矿种分布 / 运输方式运量对比。"""
+    """运营看板图表：货运趋势（近30日）/ 矿种分布 / 运输方式运量对比。"""
     freight = qall(g.conn, """
         SELECT DATE(created_at) AS "trendDate", SUM(plan_qty) AS qty, count(*) AS cnt
         FROM biz_waybill
-        WHERE is_deleted=0 AND created_at >= current_date - interval '13 days'
+        WHERE is_deleted=0 AND created_at >= current_date - interval '29 days'
         GROUP BY DATE(created_at) ORDER BY 1
     """)
     variety = qall(g.conn, """

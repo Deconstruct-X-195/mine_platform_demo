@@ -212,11 +212,8 @@ def send_inquiry(iid):
     drow = q1(g.conn, "SELECT id, status FROM biz_demand WHERE id=%s", (row['demand_id'],))
     if drow and drow['status'] == 'SUBMITTED':
         transition(g.conn, g.ctx, 'biz_demand', '需求单', 'biz_demand', row['demand_id'], 'INQUIRING')
-    # 通知受邀供应商
-    for inv in qall(g.conn, "SELECT supplier_id FROM biz_inquiry_invite WHERE inquiry_id=%s AND is_deleted=0", (iid,)):
-        send_msg(g.conn, inv['supplier_id'], '收到询价邀请',
-                 '询价单 %s 已发出，请于 %s 前报价。' % (row['inquiry_no'], row['deadline']),
-                 'INQUIRY', iid)
+    # 钢厂自发询价不直接推送供应商（钢厂端与供应商端不产生直接联系）：
+    # 询价提交后进入运营端「需求归集」，由运营端「报价询价」平台代发后才通知供应商。
     return ok({'id': iid, 'status': 'SENT'})
 
 
@@ -245,15 +242,31 @@ def list_inquiries():
             %s ORDER BY i.id DESC LIMIT %%s OFFSET %%s
             """ % where, args + [size, (page - 1) * size])
     elif g.ctx.has_role(ROLE_SUPPLIER):
-        where += """ AND EXISTS (SELECT 1 FROM biz_inquiry_invite inv
+        # 供应商仅可见平台代发/归集询价（source='PLATFORM'）；
+        # 钢厂自发询价（source='STEEL'）不直接推送供应商，由运营端归集后统一代发。
+        where += """ AND i.source='PLATFORM' AND EXISTS (SELECT 1 FROM biz_inquiry_invite inv
                      WHERE inv.inquiry_id=i.id AND inv.supplier_id=%s AND inv.is_deleted=0)"""
         args.append(g.ctx.company['id'])
+        # 询价单列表状态筛选：pending=待报价 / quoted=已报价 / closed=已截止（含已揭示、已定标、已流标）
+        tab = params.get('tab') or ''
+        if tab == 'pending':
+            where += (" AND NOT EXISTS (SELECT 1 FROM biz_quote q WHERE q.inquiry_id=i.id "
+                      "AND q.supplier_id=%s AND q.is_deleted=0) AND i.status IN ('SENT','QUOTING')")
+        elif tab == 'quoted':
+            where += (" AND EXISTS (SELECT 1 FROM biz_quote q WHERE q.inquiry_id=i.id "
+                      "AND q.supplier_id=%s AND q.is_deleted=0) AND i.status IN ('SENT','QUOTING')")
+        elif tab == 'closed':
+            where += " AND (i.status NOT IN ('SENT','QUOTING') OR i.deadline <= now())"
+        if tab in ('pending', 'quoted'):
+            args.append(g.ctx.company['id'])
         if params.get('status'):
             where += ' AND i.status=%s'
             args.append(params['status'])
         total = q1(g.conn, 'SELECT count(*) AS c FROM biz_inquiry i ' + where, args)['c']
-        # 占位符文本顺序：myQuoteId、myQuoteStatus 两个子查询，再 where 中 EXISTS 的 supplier_id 与可选 status
+        # 占位符文本顺序：myQuoteId、myQuoteStatus 两个子查询，再 where 中 EXISTS 的 supplier_id、可选 tab、可选 status
         sargs = [g.ctx.company['id']] * 3
+        if tab in ('pending', 'quoted'):
+            sargs.append(g.ctx.company['id'])
         if params.get('status'):
             sargs.append(params['status'])
         rows = qall(g.conn, """
@@ -285,9 +298,10 @@ def inquiry_detail(iid):
         raise ApiError(40401, '询价单不存在')
     is_buyer = g.ctx.company and (row['buyer_id'] == g.ctx.company['id']
                                   or _is_agg_member(g.conn, iid, g.ctx.company['id']))
-    is_supplier = g.ctx.company and q1(
+    is_supplier = g.ctx.company and row['source'] == 'PLATFORM' and q1(
         g.conn, "SELECT id FROM biz_inquiry_invite WHERE inquiry_id=%s AND supplier_id=%s AND is_deleted=0",
         (iid, g.ctx.company['id']))
+    # 供应商仅可查看平台代发/归集询价；钢厂自发询价不直接开放给供应商
     if not (g.ctx.is_plat or is_buyer or is_supplier):
         raise ApiError(40301, '无权限查看该询价单')
     data = json_payload(dict(row))
@@ -329,11 +343,86 @@ def inquiry_detail(iid):
         mine = q1(g.conn, """
             SELECT * FROM biz_quote WHERE inquiry_id=%s AND supplier_id=%s AND is_deleted=0
             """, (iid, g.ctx.company['id']))
-        data['myQuote'] = json_payload(dict(mine)) if mine else None
+        if mine:
+            my = json_payload(dict(mine))
+            my['files'] = _quote_files(g.conn, mine['id'])
+            data['myQuote'] = my
+        else:
+            data['myQuote'] = None
+        # 采购需求细节：技术参数（品位/质量要求）与溢短装（不含钢厂名称与价格意向）
+        data['requirement'] = json_payload(q1(g.conn, """
+            SELECT d.demand_name AS "demandName", d.quality_req AS "qualityReq",
+                   di.more_less_rate AS "moreLessRate"
+            FROM biz_inquiry i
+            LEFT JOIN biz_demand_item di ON di.id=i.demand_item_id AND di.is_deleted=0
+            LEFT JOIN biz_demand d ON d.id=di.demand_id AND d.is_deleted=0
+            WHERE i.id=%s
+            """, (iid,)))
+        # 历史轮次参考：同一归集单下本供应商曾参与的更早轮次（第几轮/上轮报价/钢厂反馈理由）。
+        # 仅取已揭示轮次（密封原则）；本供应商需曾报价或曾被邀请。
+        if row['agg_id']:
+            allq = qall(g.conn, "SELECT id FROM biz_inquiry WHERE agg_id=%s AND is_deleted=0 ORDER BY id",
+                        (row['agg_id'],))
+            rank = {r['id']: idx + 1 for idx, r in enumerate(allq)}
+            rounds = qall(g.conn, """
+                SELECT i.id, i.inquiry_no, i.status, i.deadline,
+                       q.id AS quote_id, q.price, q.quantity, q.freight_price,
+                       q.delivery_date, q.status AS quote_status, q.version,
+                       f.decision AS fb_decision, f.reason AS fb_reason
+                FROM biz_inquiry i
+                LEFT JOIN biz_quote q
+                    ON q.inquiry_id=i.id AND q.supplier_id=%s AND q.is_deleted=0
+                LEFT JOIN LATERAL (
+                    SELECT decision, reason FROM biz_agg_inquiry_feedback
+                    WHERE inquiry_id=i.id AND is_deleted=0
+                    ORDER BY id DESC LIMIT 1
+                ) f ON TRUE
+                WHERE i.agg_id=%s AND i.is_deleted=0 AND i.id < %s
+                  AND i.reveal_snapshot IS NOT NULL
+                  AND (q.id IS NOT NULL OR EXISTS (
+                        SELECT 1 FROM biz_inquiry_invite inv
+                        WHERE inv.inquiry_id=i.id AND inv.supplier_id=%s AND inv.is_deleted=0))
+                ORDER BY i.id
+                """, (g.ctx.company['id'], row['agg_id'], iid, g.ctx.company['id']))
+            data['historyRounds'] = []
+            for r in rounds:
+                item = json_payload(dict(r))
+                item['roundNo'] = rank.get(r['id'])
+                data['historyRounds'].append(item)
+            data['roundNo'] = rank.get(iid)
     return ok(data)
 
 
 # ---------------- 报价（密封） ----------------
+
+MAX_QUOTE_FILES = 5
+
+
+def _quote_files(conn, qid):
+    """报价附件列表（fileId+文件名）。"""
+    return qall(conn, """
+        SELECT file_id AS "fileId", file_name AS "fileName" FROM biz_quote_file
+        WHERE quote_id=%s AND is_deleted=0 ORDER BY id
+        """, (qid,))
+
+
+def _save_quote_files(conn, qid, p, company_id):
+    """校验并写入报价附件（fileIds 数组，最多 5 个；文件须为本企业经 /files 上传）。"""
+    ids = p.get('fileIds') or []
+    if not isinstance(ids, list):
+        raise ApiError(40001, 'fileIds 格式错误')
+    ids = [str(x).strip() for x in ids if str(x).strip()]
+    if len(ids) > MAX_QUOTE_FILES:
+        raise ApiError(40001, '附件最多 %d 个' % MAX_QUOTE_FILES)
+    for fid in ids:
+        f = q1(conn, "SELECT file_name, company_id FROM sys_file WHERE file_id=%s AND is_deleted=0", (fid,))
+        if not f:
+            raise ApiError(40401, '附件不存在或已删除')
+        if f['company_id'] != company_id:
+            raise ApiError(40301, '附件仅限使用本企业上传的文件')
+        execute(conn, "INSERT INTO biz_quote_file (quote_id, file_id, file_name, created_by) VALUES (%s,%s,%s,%s)",
+                (qid, fid, f['file_name'], g.ctx.user['id']))
+
 
 def _quote_payload_check(conn, inq, p):
     require_fields(p, 'deliveryDate')
@@ -402,6 +491,8 @@ def submit_quote(iid):
         transition(g.conn, g.ctx, 'biz_inquiry', '询价单', 'biz_inquiry', iid, 'QUOTING')
     execute(g.conn, "UPDATE biz_inquiry_invite SET status='RECEIVED' WHERE inquiry_id=%s AND supplier_id=%s",
             (iid, g.ctx.company['id']))
+    # 报价附件：经通用 /files 上传的文件关联到本次报价
+    _save_quote_files(g.conn, qid, p, g.ctx.company['id'])
     # 报价单推送运营端：站内消息提醒平台（receiver_company_id 为空 = 平台消息）
     send_msg(g.conn, None, '收到新报价',
              '供应商「%s」已对询价单 %s 提交报价（可供 %s 吨、交期 %s），请前往「报价询价」查看汇总。'
@@ -437,6 +528,9 @@ def update_quote(qid):
               p.get('qualityTerms'), parse_date(p, 'validUntil', required=False) or row['valid_until'],
               p.get('remark'), tax_type, freight_price, delivery_type,
               g.ctx.user['id'], qid))
+    # 修改报价：附件整体替换（旧附件置失效，按本次提交重建）
+    execute(g.conn, "UPDATE biz_quote_file SET is_deleted=1 WHERE quote_id=%s AND is_deleted=0", (qid,))
+    _save_quote_files(g.conn, qid, p, g.ctx.company['id'])
     op_log(g.conn, g.ctx, 'biz_quote', qid, 'UPDATE', json_payload(row),
            {'price': str(price), 'quantity': str(qty), 'version': row['version'] + 1})
     return ok({'id': qid, 'version': row['version'] + 1, 'status': 'SUBMITTED'})
@@ -453,6 +547,7 @@ def quote_detail(qid):
     if not allowed:
         raise ApiError(40301, '密封报价截止前仅供应商本人可见')
     data = json_payload(dict(row))
+    data['files'] = _quote_files(g.conn, qid)
     data['notice'] = '密封报价'
     return ok(data)
 
@@ -590,9 +685,49 @@ def agg_inquiry_feedback(iid):
              % (g.ctx.company['company_name'], row['inquiry_no'], verb,
                 ('，原因：' + str(reason).strip()) if reason else ''),
              'INQUIRY', iid)
+    # 全员认可 → 自动锁货锁价成单：价格升序取首个可供量覆盖份额总量的报价
+    auto = None
+    if p['decision'] == 'ACCEPTED' and row['status'] == 'CLOSED':
+        try:
+            members = qall(g.conn, """
+                SELECT DISTINCT d.company_id AS cid
+                FROM biz_aggregated_order_item m
+                JOIN biz_demand d ON d.id=m.demand_id AND d.is_deleted=0
+                WHERE m.agg_id=%s AND m.is_deleted=0
+                """, (row['agg_id'],))
+            total = q1(g.conn, """
+                SELECT COALESCE(SUM(m.quantity), 0) AS s
+                FROM biz_aggregated_order_item m
+                JOIN biz_demand d ON d.id=m.demand_id AND d.is_deleted=0
+                WHERE m.agg_id=%s AND m.is_deleted=0
+                """, (row['agg_id'],))['s']
+            okc = q1(g.conn, """
+                SELECT count(*) AS c FROM biz_agg_inquiry_feedback
+                WHERE inquiry_id=%s AND decision='ACCEPTED' AND is_deleted=0
+                  AND company_id = ANY(%s)
+                """, (iid, [m['cid'] for m in members]))['c']
+            quotes = qall(g.conn, """
+                SELECT * FROM biz_quote
+                WHERE inquiry_id=%s AND is_deleted=0 AND status IN ('REVEALED','BARGAINING')
+                ORDER BY price ASC, id ASC
+                """, (iid,))
+            pick = None
+            if members and int(okc) >= len(members):
+                pick = next((qt for qt in quotes if qt['quantity'] >= total), None)
+            if pick:
+                from .admin import _do_platform_award
+                auto = _do_platform_award(g.conn, None, iid, pick)
+                send_msg(g.conn, None, '全员认可，已自动定标成单',
+                         '归集询价 %s 全部钢厂认可报价，系统已自动锁货锁价生成订单 %s，无需手动定标。'
+                         % (row['inquiry_no'], auto['orderNo']), 'ORDER', auto['orderId'])
+        except ApiError as e:
+            auto = None
+            send_msg(g.conn, None, '自动定标未完成，请手动处理',
+                     '归集询价 %s 全部钢厂认可，但自动定标失败（%s），请在报价汇总中手动按份额定标。'
+                     % (row['inquiry_no'], e.message), 'INQUIRY', iid)
     op_log(g.conn, g.ctx, 'biz_inquiry', iid, 'AGG FEEDBACK', None,
            {'decision': p['decision'], 'reason': reason})
-    return ok({'decision': p['decision']})
+    return ok({'decision': p['decision'], 'autoAward': auto})
 
 
 # ---------------- 流标 ----------------

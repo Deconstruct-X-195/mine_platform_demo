@@ -39,11 +39,10 @@
     username.addEventListener('keyup', (e) => { if (e.key === 'Enter') submit(); });
   };
 
-  const TYPES = [['STEEL_BUYER', '钢厂（需方）'], ['SUPPLIER', '供应商（供方）'], ['LOGISTICS_CARRIER', '承运商']];
+  const TYPES = [['STEEL_BUYER', '钢厂（需方）'], ['SUPPLIER', '供应商（供方）']];
   const ROLE_DESC = {
     STEEL_BUYER: '采购铁矿石等大宗原料，发起需求与询价',
     SUPPLIER: '参与密封报价、议价与合同签订',
-    LOGISTICS_CARRIER: '承接物流方案与运单作业',
   };
   /* 全国 34 个省级行政区（六大区 + 港澳台标准排序），末位保留兼容项“其他” */
   const PROVINCE_GROUPS = [

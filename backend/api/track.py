@@ -18,7 +18,12 @@ def _order_view(oid):
         raise ApiError(40401, '订单不存在')
     if not g.ctx.is_plat and (not g.ctx.company or
                               g.ctx.company['id'] not in (row['buyer_id'], row['supplier_id'])):
-        raise ApiError(40301, '无权限访问该订单')
+        # 聚合订单 buyer_id 为空：参与钢厂按成员明细放行
+        if not (g.ctx.company and q1(g.conn, """
+                SELECT 1 AS ok FROM biz_order_member
+                WHERE order_id=%s AND company_id=%s AND is_deleted=0
+                """, (oid, g.ctx.company['id']))):
+            raise ApiError(40301, '无权限访问该订单')
     return row
 
 
@@ -37,6 +42,32 @@ def timeline(oid):
         ORDER BY occur_time, id
         """, (oid, oid, oid))
     return ok({'list': json_payload(nodes)})
+
+
+@bp.get('/orders/<int:oid>/tracking')
+@auth_required
+def tracking(oid):
+    """物流节点跟踪（物流服务页）：按分段运单返回四节点时间。
+
+    节点：船到港（计划 eta_at / 实际 actual_eta_at）→ 货物出港（actual_depart_at）
+    → 到达中转站（actual_transit_at，仅公铁联运展示）→ 到达目的地（actual_arrive_at）。
+    """
+    _order_view(oid)
+    wbs = qall(g.conn, """
+        SELECT w.id, w.waybill_no AS "waybillNo", w.segment_no AS "segmentNo",
+               w.transport_mode AS "transportMode", w.transit_station AS "transitStation",
+               w.depart_place AS "departPlace", w.arrive_place AS "arrivePlace",
+               w.plan_qty AS "planQty", w.freight, w.vehicle_no AS "vehicleNo",
+               w.plan_depart_date AS "planDepartDate", w.plan_arrive_date AS "planArriveDate",
+               w.eta_at AS "etaPlan", w.actual_eta_at AS "etaActual",
+               w.actual_depart_at AS "departAt", w.actual_transit_at AS "transitAt",
+               w.actual_arrive_at AS "arriveAt", w.status, w.created_at AS "createdAt",
+               cr.company_name AS "carrierName"
+        FROM biz_waybill w
+        LEFT JOIN ent_company cr ON cr.id=w.carrier_id
+        WHERE w.order_id=%s AND w.is_deleted=0 ORDER BY w.segment_no, w.id
+        """, (oid,))
+    return ok({'list': json_payload(wbs)})
 
 
 @bp.post('/orders/<int:oid>/nodes')

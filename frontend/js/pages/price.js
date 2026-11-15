@@ -1,139 +1,74 @@
-/* 价格（PRD 4.3/FR-03/T07）：基准价行情（钢厂）+ 远期预报发布与失效（供应商） */
+/* 价格（PRD 4.3/FR-03）：基准价行情（钢厂） */
 (function () {
   window.Pages = window.Pages || {};
-  const PT = { TEN_DAY: '旬度', MONTHLY: '月度' };
   const PB = { WET: '湿基', DRY: '干基' };
 
   /* -------- 钢厂：基准价行情 -------- */
+  const GRADE_OF = { 'PB粉': 61.5, '中华混一号': 61.5 };
   Pages.price = async function (page) {
     const d = await API.get('/base-prices/current');
-    const SRC_NOTE = '数据来源：兰格钢铁网公开报价锚点（2026-10-21 天津港 61.5% PB粉 667 元/湿吨、2026-11-09 天津港 657 元）；黄骅港无公开逐日报价，按天津港-2元推算；历史逐日为锚点间线性内插，仅供演示';
     const card = UI.h('div', { class: 'card' },
       UI.h('h3', {}, '今日基准价'),
-      UI.h('div', { class: 'hint', style: 'color:#b26a00;margin:-6px 0 10px' }, SRC_NOTE),
       UI.table([
         { key: 'varietyName', label: '产品名称' },
-        { label: '品位', render: (r) => (r.grade ? String(r.grade).replace(/\.?0+$/, '') + '%' : '-') },
+        { label: '品位', render: (r) => { const g = r.grade != null ? r.grade : GRADE_OF[r.varietyName]; return g != null ? String(g).replace(/\.?0+$/, '') + '%' : '-'; } },
         { label: '港口', render: (r) => r.port || '平台综合' },
-        { key: 'price', label: '基准价(元/吨)', num: true, render: (r) => UI.fmtMoney(r.price) },
+        { key: 'price', label: '基准价(元/湿吨)', num: true, render: (r) => UI.fmtMoney(r.price) },
         { key: 'priceBasis', label: '计价口径', render: (r) => PB[r.priceBasis] || r.priceBasis || '-' },
         { key: 'priceDate', label: '价格日期', render: (r) => UI.fmtDate(r.priceDate) },
         { key: 'sourceDesc', label: '来源' },
       ], d.today, '今日暂无基准价'));
     page.appendChild(card);
 
-    const bySeries = {};
+    /* 近30日走势：每港口一张图，名称行下方右侧品位切换（同运营端，PB粉 61.5%/60.8%） */
+    const byKey = {};
     (d.trend || []).forEach((r) => {
-      const key = r.varietyId + '|' + (r.grade || '') + '|' + (r.port || '');
-      (bySeries[key] = bySeries[key] || []).push(r);
+      const key = r.varietyId + '|' + (r.port || '');
+      (byKey[key] = byKey[key] || []).push(r);
     });
     const nameOf = {};
     (d.trend || []).forEach((r) => { if (r.varietyName) nameOf[r.varietyId] = r.varietyName; });
     (d.today || []).forEach((r) => { nameOf[r.varietyId] = r.varietyName; });
     const titleOf = (vid) => nameOf[vid] || '产品 ' + vid;
-    const trendCard = UI.h('div', { class: 'card' }, UI.h('h3', {}, '近 30 日走势'),
-      UI.h('div', { class: 'hint', style: 'color:#b26a00;margin:-6px 0 10px' }, SRC_NOTE));
-    const ids = Object.keys(bySeries);
+    const trendCard = UI.h('div', { class: 'card' }, UI.h('h3', {}, '近 30 日走势'));
+    const ids = Object.keys(byKey);
     if (!ids.length) trendCard.appendChild(UI.h('div', { class: 'empty' }, '暂无走势数据'));
     ids.forEach((key) => {
-      const [vid, grade, port] = key.split('|');
-      const g = grade ? ' ' + String(grade).replace(/\.?0+$/, '') + '%' : '';
-      const title = titleOf(vid) + g + (port ? ' · ' + port : ' · 平台综合');
-      const rows = bySeries[key].slice().sort((a, b) => String(a.priceDate).localeCompare(String(b.priceDate)));
+      const [vid, port] = key.split('|');
+      const byGrade = {};
+      byKey[key].forEach((r) => {
+        const g = r.grade != null ? Number(r.grade) : 61.5;
+        (byGrade[g] = byGrade[g] || []).push(r);
+      });
+      const grades = Object.keys(byGrade).map(Number).sort((a, b) => b - a);
+      if (!grades.length) return;
+      let cur = grades.includes(61.5) ? 61.5 : grades[0];
+      const chartBox = UI.h('div', {});
+      const gradeBtns = grades.map((g) => UI.h('button', {
+        class: 'sm',
+        style: 'margin-left:6px;padding:2px 10px;font-size:12px',
+        onclick: () => { cur = g; render(); },
+      }, String(g).replace(/\.?0+$/, '') + '%'));
+      function render() {
+        gradeBtns.forEach((b, i) => {
+          const on = grades[i] === cur;
+          b.style.background = on ? '#1a5cb0' : '#f2f2f7';
+          b.style.color = on ? '#fff' : '#1d1d1f';
+          b.style.borderColor = on ? '#1a5cb0' : '#e5e5ea';
+        });
+        chartBox.innerHTML = '';
+        chartBox.appendChild(UI.trendChart(
+          byGrade[cur].map((r) => ({ priceDate: r.priceDate, price: r.price }))
+            .sort((a, b) => String(a.priceDate).localeCompare(String(b.priceDate))), 'price'));
+      }
+      render();
       trendCard.appendChild(UI.h('div', { style: 'margin-bottom:16px' },
-        UI.h('div', { style: 'font-weight:bold;margin-bottom:6px' }, title),
-        UI.trendChart(rows, 'price')));
+        UI.h('div', { style: 'font-weight:bold;margin-bottom:6px' },
+          titleOf(vid) + (port ? ' · ' + port : ' · 平台综合')),
+        UI.h('div', { style: 'text-align:right;margin:-4px 0 4px' }, ...gradeBtns),
+        chartBox));
     });
     page.appendChild(trendCard);
   };
 
-  /* -------- 供应商：远期预报 -------- */
-  Pages.forecast = async function (page) {
-    const varieties = (await API.get('/base/varieties')).list;
-    const vOpts = varieties.map((v) => [v.id, v.varietyName + '(' + v.varietyCode + ')']);
-
-    const mineCard = UI.h('div', { class: 'card' });
-    const poolCard = UI.h('div', { class: 'card' });
-    page.appendChild(UI.h('div', { class: 'card' },
-      UI.h('div', { class: 'toolbar' },
-        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '我的预报'),
-        UI.h('div', { class: 'spacer' }),
-        UI.h('button', { class: 'primary', onclick: () => forecastForm(load) }, '新增预报'))));
-    page.appendChild(mineCard);
-    page.appendChild(UI.h('div', { class: 'card' }, UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '预报池（全部已生效预报，标注：预判价，非平台成交价）')));
-    page.appendChild(poolCard);
-
-    const cols = (mine) => [
-      { key: 'forecastNo', label: '预报编号' },
-      { key: 'varietyName', label: '品种' },
-      { label: '周期', render: (r) => (PT[r.periodType] || r.periodType || '-') + '（' + UI.fmtDate(r.periodStart) + ' ~ ' + UI.fmtDate(r.periodEnd) + '）' },
-      { key: 'availableQty', label: '可供量(吨)', num: true, render: (r) => UI.fmtMoney(r.availableQty) },
-      { key: 'forecastPrice', label: '预判价', num: true, render: (r) => UI.fmtMoney(r.forecastPrice) },
-      { key: 'priceBasis', label: '口径', render: (r) => PB[r.priceBasis] || r.priceBasis || '-' },
-      { key: 'deliveryPort', label: '交货港口' },
-      { key: 'validUntil', label: '有效期至', render: (r) => UI.fmtDate(r.validUntil) },
-      { key: 'status', label: '状态', render: (r) => UI.statusTag('FORECAST', r.status) },
-    ].concat(mine ? [{ label: '操作', render: (r) => r.status === 'EFFECTIVE'
-      ? UI.h('button', { class: 'sm danger', onclick: async () => {
-          if (!(await UI.confirmBox('确认将该预报置为失效？'))) return;
-          await API.post('/forecast-quotes/' + r.id + '/expire');
-          UI.toast('已失效', 'ok'); load();
-        } }, '置为失效')
-      : '-' }] : [{ key: 'supplierName', label: '供应商' }]);
-
-    async function load() {
-      const mine = await API.get('/forecast-quotes?mine=1&size=100');
-      mineCard.innerHTML = '';
-      mineCard.appendChild(UI.table(cols(true), mine.list || mine, '暂无预报'));
-      const pool = await API.get('/forecast-quotes?status=EFFECTIVE&size=100');
-      poolCard.innerHTML = '';
-      poolCard.appendChild(UI.table(cols(false), pool.list || pool, '暂无生效预报'));
-    }
-
-    function forecastForm(onDone) {
-      const varietySel = UI.selectField(vOpts, vOpts.length ? vOpts[0][0] : '');
-      const pt = UI.selectField(Object.entries(PT), 'MONTHLY');
-      const start = UI.input('date', '', { placeholder: '周期开始日，如 2026-11-01' });
-      const end = UI.input('date', '', { placeholder: '周期结束日，如 2026-11-30' });
-      const qty = UI.input('number', '', { placeholder: '可供数量（吨）' });
-      const price = UI.input('number', '', { placeholder: '预判价（元/吨）' });
-      const basis = UI.selectField(Object.entries(PB), 'WET');
-      const port = UI.input('text', '', { placeholder: '交货港口（选填）' });
-      const valid = UI.input('date', '', { placeholder: '预报有效期截止日' });
-      const remark = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '选填，补充说明' });
-      const m = UI.modal('新增远期预报', UI.h('form', { onsubmit: (e) => e.preventDefault() },
-        UI.h('div', { class: 'form-grid' },
-          UI.formRow('品种', varietySel, true),
-          UI.formRow('周期类型', pt, true),
-          UI.formRow('周期开始', start, true),
-          UI.formRow('周期结束', end, true),
-          UI.formRow('可供数量', qty, true),
-          UI.formRow('预判价', price, true),
-          UI.formRow('计价口径', basis),
-          UI.formRow('交货港口', port),
-          UI.formRow('有效期至', valid),
-          UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '备注'), remark)),
-        UI.h('div', { class: 'hint' }, '发布后将向需方展示，并标注"预判价，非平台成交价"')), [
-        UI.h('button', { class: 'primary', onclick: async () => {
-          const body = {
-            varietyId: Number(varietySel.value), periodType: pt.value,
-            periodStart: start.value, periodEnd: end.value,
-            availableQty: qty.value, forecastPrice: price.value,
-            priceBasis: basis.value,
-          };
-          if (!body.periodStart || !body.periodEnd) { UI.toast('周期日期为必填', 'err'); return; }
-          if (!body.availableQty || !body.forecastPrice) { UI.toast('可供数量与预判价为必填', 'err'); return; }
-          if (port.value.trim()) body.deliveryPort = port.value.trim();
-          if (valid.value) body.validUntil = valid.value;
-          if (remark.value.trim()) body.remark = remark.value.trim();
-          try {
-            await API.post('/forecast-quotes', body);
-            m.close(); UI.toast('预报已发布', 'ok'); onDone();
-          } catch (e) { /* toast 已提示 */ }
-        } }, '发 布'),
-      ], { wide: true });
-    }
-
-    await load();
-  };
 })();
