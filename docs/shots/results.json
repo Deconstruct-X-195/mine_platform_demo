@@ -5,7 +5,7 @@
     "detail": "OK"
   },
   {
-    "step": "S02 普阳登录+首页",
+    "step": "S02 需方登录+首页",
     "ok": true,
     "detail": "OK"
   },
@@ -30,7 +30,7 @@
     "detail": "OK"
   },
   {
-    "step": "S07 中矿登录+询价列表",
+    "step": "S07 供方登录+询价列表",
     "ok": true,
     "detail": "OK"
   },
@@ -50,22 +50,22 @@
     "detail": "OK"
   },
   {
-    "step": "S11 中矿接受还价",
+    "step": "S11 供方接受还价",
     "ok": true,
     "detail": "OK"
   },
   {
-    "step": "S12 普阳定标",
+    "step": "S12 需方定标",
     "ok": true,
     "detail": "OK"
   },
   {
-    "step": "S13 中矿确认订单",
+    "step": "S13 供方确认订单",
     "ok": true,
     "detail": "OK"
   },
   {
-    "step": "S14 普阳生成合同",
+    "step": "S14 需方生成合同",
     "ok": true,
     "detail": "OK"
   },
@@ -85,32 +85,37 @@
     "detail": "OK"
   },
   {
-    "step": "S18 结算工作台渲染",
+    "step": "S18 平台核验合同",
     "ok": true,
     "detail": "OK"
   },
   {
-    "step": "S19 质检录入",
+    "step": "S19 结算工作台渲染",
     "ok": true,
     "detail": "OK"
   },
   {
-    "step": "S20 生成结算",
+    "step": "S20 质检录入",
     "ok": true,
     "detail": "OK"
   },
   {
-    "step": "S21 供应商确认结算",
+    "step": "S21 生成结算",
     "ok": true,
     "detail": "OK"
   },
   {
-    "step": "S22 需方确认+付款登记",
+    "step": "S22 供应商确认结算",
     "ok": true,
     "detail": "OK"
   },
   {
-    "step": "S23 console错误收集",
+    "step": "S23 需方确认+付款登记",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S24 console错误收集",
     "ok": true,
     "detail": "OK"
   }

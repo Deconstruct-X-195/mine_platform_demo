@@ -255,12 +255,14 @@ def run():
     deliver = (now + timedelta(days=8)).strftime('%Y-%m-%d')
     for cli, price in ((sup1, 818.00), (sup2, 815.00), (sup3, 812.00)):
         cli.post('/inquiries/%d/quotes' % inq_id,
-                 {'price': price, 'quantity': 20000, 'deliveryDate': deliver, 'payTerms': 'T/T'})
+                 {'price': price, 'quantity': 20000, 'deliveryDate': deliver, 'payTerms': 'T/T',
+                  'taxType': 'INC_TAX', 'freightPrice': 30.0, 'deliveryType': 'PORT_FOB'})
         det = cli.get('/inquiries/%d' % inq_id)
         check('AC-08 供应商可见自己报价',
               det.get('myQuote', {}).get('status') == 'SUBMITTED', det.get('myQuote'))
     s, c, m = sup1.try_code('POST', '/inquiries/%d/quotes' % inq_id,
-                            {'price': 810, 'quantity': 20000, 'deliveryDate': deliver})
+                            {'price': 810, 'quantity': 20000, 'deliveryDate': deliver,
+                             'taxType': 'INC_TAX', 'freightPrice': 30.0, 'deliveryType': 'PORT_FOB'})
     check('AC-08 重复报价被拦截(40902)', c == 40902, m)
     det = steel.get('/inquiries/%d' % inq_id)
     leak = [i for i in det.get('invites', []) if 'price' in i or 'quantity' in i]
@@ -349,12 +351,22 @@ def run():
     stamp2 = upload(sup3, 'stamp-supplier-%s.png' % tag, PNG, 'image/png')
     r2 = sup3.post('/contracts/%d/sign' % c2,
                    {'signerName': '供方经办', 'confirm': 'true', 'fileId': stamp2})
-    check('AC-14 双签后 EFFECTIVE', r2['status'] == 'EFFECTIVE', r2)
+    check('AC-14 双签后待平台核验',
+          r2['status'] == 'PENDING_SUPPLIER' and r2.get('platStatus') == 'PENDING', r2)
+    s, c, m = plat.try_code('PUT', '/admin/contracts/%d/verify' % c2, {'approve': 'false'})
+    check('AC-14 核验退回必填原因(40001)', c == 40001, m)
+    s, c, m = steel.try_code('POST', '/orders/%d/logistics-plan' % oid, {'orgMode': 'PLATFORM'})
+    check('AC-14 核验前订单未履约不可配物流(40901)', c == 40901, m)
+    vr = plat.put('/admin/contracts/%d/verify' % c2, {'approve': 'true'})
+    check('AC-14 平台核验后合同生效',
+          vr['status'] == 'EFFECTIVE' and vr.get('platStatus') == 'CONFIRMED', vr)
     cd2 = steel.get('/contracts/%d' % c2)
     check('AC-14 生效合同哈希为供方盖章件',
           cd2['file_hash'] == hashlib.sha256(PNG).hexdigest(), cd2.get('file_hash'))
     od3 = steel.get('/orders/%d' % oid)
-    check('AC-14 双签后订单履约中', od3['status'] == 'PERFORMING', od3)
+    check('AC-14 核验后订单履约中', od3['status'] == 'PERFORMING', od3)
+    s, c, m = plat.try_code('PUT', '/admin/contracts/%d/verify' % c2, {'approve': 'true'})
+    check('AC-14 重复核验被拦截(40901)', c == 40901, m)
     s, c, m = steel.try_code('POST', '/contracts/%d/void' % c2, {'reason': '尝试作废已生效合同'})
     check('AC-15 已生效合同不可作废(40901)', c == 40901, m)
 
