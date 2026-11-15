@@ -126,16 +126,20 @@ def _dump(v):
     return json.dumps(json_payload(v), ensure_ascii=False)
 
 
-def send_msg(conn, receiver_company_id, title, content, biz_type=None, biz_id=None):
-    """站内消息（一期简化项：只写消息表 + 页面提示）。"""
+def send_msg(conn, receiver_company_id, title, content, biz_type=None, biz_id=None,
+             msg_category='NOTICE'):
+    """站内消息（一期简化项：只写消息表 + 页面提示）。
+
+    msg_category: NOTICE 通知 / WARN 预警 / ANNOUNCE 公告 / ACTIVITY 活动信息。
+    """
     from .db import execute
     execute(
         conn,
         """
-        INSERT INTO sys_message (receiver_company_id, title, content, biz_type, biz_id)
-        VALUES (%s, %s, %s, %s, %s)
+        INSERT INTO sys_message (receiver_company_id, title, content, biz_type, biz_id, msg_category)
+        VALUES (%s, %s, %s, %s, %s, %s)
         """,
-        (receiver_company_id, title, content, biz_type, biz_id),
+        (receiver_company_id, title, content, biz_type, biz_id, msg_category),
     )
 
 

@@ -75,14 +75,14 @@ CREATE TABLE base_price (
   CONSTRAINT uk_variety_date_port_grade UNIQUE (variety_id, price_date, port, grade)
 );
 
--- 港口现货价（品种×港口×日期唯一；运营看板"行业数据趋势"数据源，增量表）
+-- 港口现货价（品种×港口×日期×品位唯一；运营看板"行业数据趋势"数据源，增量表）
 CREATE TABLE IF NOT EXISTS base_port_price (
   id BIGSERIAL PRIMARY KEY,
   variety_id BIGINT NOT NULL, port_name VARCHAR(50) NOT NULL, price_date DATE NOT NULL,
-  price NUMERIC(18,2) NOT NULL,
+  price NUMERIC(18,2) NOT NULL, grade NUMERIC(5,2) NOT NULL DEFAULT 61.5,
   created_at TIMESTAMP NOT NULL DEFAULT now(), created_by BIGINT,
   is_deleted SMALLINT DEFAULT 0,
-  CONSTRAINT uk_port_variety_date UNIQUE (variety_id, port_name, price_date)
+  CONSTRAINT uk_port_variety_date UNIQUE (variety_id, port_name, price_date, grade)
 );
 CREATE INDEX IF NOT EXISTS idx_port_price_query ON base_port_price (variety_id, port_name, price_date);
 
@@ -218,6 +218,8 @@ CREATE TABLE biz_contract (
   contract_no VARCHAR(32) NOT NULL, order_id BIGINT NOT NULL, version INT DEFAULT 1,
   signature_type VARCHAR(20) DEFAULT 'PLATFORM_CONFIRM',
   file_url VARCHAR(500), file_hash VARCHAR(64), -- 生成文件 SHA-256
+  buyer_file_url VARCHAR(500), buyer_file_hash VARCHAR(64), -- 需方线下签署件（PDF 扫描件）
+  supplier_file_url VARCHAR(500), supplier_file_hash VARCHAR(64), -- 供方线下签署件（PDF 扫描件）
   buyer_sign_at TIMESTAMP, buyer_sign_user BIGINT, buyer_sign_ip VARCHAR(64),
   supplier_sign_at TIMESTAMP, supplier_sign_user BIGINT, supplier_sign_ip VARCHAR(64),
   void_reason VARCHAR(500),
@@ -249,7 +251,9 @@ CREATE TABLE biz_waybill (
   waybill_no VARCHAR(32) NOT NULL, order_id BIGINT NOT NULL, plan_id BIGINT NOT NULL,
   segment_no VARCHAR(32) NOT NULL, carrier_id BIGINT,
   transport_mode VARCHAR(20) NOT NULL, depart_place VARCHAR(100), arrive_place VARCHAR(100),
+  transit_station VARCHAR(100),
   plan_depart_date DATE, plan_arrive_date DATE, plan_qty NUMERIC(18,3) NOT NULL,
+  eta_at TIMESTAMP,
   freight NUMERIC(18,2), vehicle_no VARCHAR(50),
   actual_qty NUMERIC(18,3), actual_depart_at TIMESTAMP, actual_arrive_at TIMESTAMP,
   status VARCHAR(20) NOT NULL DEFAULT 'PENDING_ASSIGN',

@@ -12,12 +12,12 @@ TRANSITIONS = {
         'SUBMITTED': ['WITHDRAWN', 'INQUIRING', 'CLOSED'],
         'WITHDRAWN': ['SUBMITTED'],  # 撤回重提生成新版本
         'INQUIRING': ['DEALT', 'CLOSED', 'SUBMITTED'],  # SUBMITTED: 归集订单关闭后扣量释放回退
-        'DEALT': ['CLOSED'],
+        'DEALT': ['CLOSED', 'SUBMITTED'],  # SUBMITTED: 订单超时失效后成交回填回退
     },
     'biz_aggregated_order': {
         'OPEN': ['INQUIRING', 'CLOSED'],   # OPEN: 已归集待询价
         'INQUIRING': ['AWARDED', 'CLOSED'],
-        'AWARDED': ['CLOSED'],
+        'AWARDED': ['CLOSED', 'INQUIRING'],  # INQUIRING: 订单 48h 超时失效后重开（可重新询价）
     },
     'biz_demand_change': {
         'PENDING': ['APPROVED', 'REJECTED'],
@@ -43,7 +43,10 @@ TRANSITIONS = {
         'ONGOING': ['ACCEPTED', 'REJECTED', 'EXPIRED'],
     },
     'biz_order': {
-        'PENDING_CONFIRM': ['PENDING_CONTRACT', 'CANCELLED'],
+        # PENDING_PICKUP/PENDING_TRANSPORT：集采聚合订单先收集各钢厂提货计划，再制定运输方案
+        'PENDING_PICKUP': ['PENDING_TRANSPORT', 'CANCELLED'],
+        'PENDING_TRANSPORT': ['PERFORMING', 'CANCELLED'],
+        'PENDING_CONFIRM': ['PENDING_CONTRACT', 'PENDING_PICKUP', 'CANCELLED'],
         'PENDING_CONTRACT': ['PENDING_EFFECT', 'CANCELLED'],
         'PENDING_EFFECT': ['PERFORMING', 'PENDING_CONTRACT', 'CANCELLED'],  # 作废合同回到待生成
         'PERFORMING': ['COMPLETED'],
@@ -54,8 +57,7 @@ TRANSITIONS = {
         'PENDING_SUPPLIER': ['EFFECTIVE', 'VOID'],
     },
     'biz_waybill': {
-        'PENDING_ASSIGN': ['PENDING_ACCEPT', 'CANCELLED'],
-        'PENDING_ACCEPT': ['PENDING_DEPART', 'CANCELLED'],
+        # 承运商端已下线：运单创建即确认生效（平台承担运输），直接进入待发运
         'PENDING_DEPART': ['IN_TRANSIT'],
         'IN_TRANSIT': ['ARRIVED'],
         'ARRIVED': ['SIGNED'],
@@ -103,7 +105,9 @@ NODE_TITLES = {
         'WB_CREATED': '运单生成',
         'WB_ASSIGNED': '已指派承运商',
         'WB_ACCEPTED': '承运商接单',
+        'WB_ETA_ARRIVED': '船到港',
         'WB_DEPARTED': '已发运',
+        'WB_ARRIVED_TRANSIT': '到达中转站',
         'WB_ARRIVED': '已到达',
         'WB_SIGNED': '已签收',
         'MANUAL': '手工节点',

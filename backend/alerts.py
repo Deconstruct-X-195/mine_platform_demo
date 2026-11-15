@@ -17,7 +17,20 @@ ALERT_CONTENT = {
 
 
 def create_alert(conn, alert_type, biz_type, biz_id, company_ids, content=None):
-    """生成预警（去重：已有未关闭同类型同对象预警则跳过）。"""
+    """生成预警（去重：同对象同类型仅一条未关闭预警；且 24h 内曾生成过则节流跳过，
+    避免预警被人工处理后条件仍满足时每轮扫描重复生成并反复推送消息）。"""
+    recent = q1(
+        conn,
+        """
+        SELECT id FROM biz_alert
+        WHERE alert_type=%s AND biz_type=%s AND biz_id=%s AND is_deleted=0
+          AND created_at > now() - interval '24 hours'
+        LIMIT 1
+        """,
+        (alert_type, biz_type, biz_id),
+    )
+    if recent:
+        return None
     row = q1(
         conn,
         """

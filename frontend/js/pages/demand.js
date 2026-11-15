@@ -1,4 +1,4 @@
-/* 需求管理（PRD 4.2/FR-02/T06-T07）：钢厂需求单 CRUD/提交/撤回/关闭 + 供应商脱敏需求池 */
+/* 需求管理（PRD 4.2/FR-02/T06-T07）：钢厂需求单 CRUD/提交/撤回/关闭 */
 (function () {
   window.Pages = window.Pages || {};
   const DELIVERY = { PLANT: '到厂', STATION_SELF: '到站自提', PORT_FOB: '港口FOB', PORT_TRUCK: '港口汽运' };
@@ -111,7 +111,10 @@
     async function editForm(row, onDone) {
       let existing = null;
       if (row) existing = await API.get('/demands/' + row.id);
-      const varieties = (await API.get('/base/varieties')).list;
+      const allVarieties = (await API.get('/base/varieties')).list;
+      /* 需求产品限定：仅可选择 PB粉 和 中华混一号 */
+      const ALLOWED_VARIETIES = ['PB粉', '中华混一号'];
+      const varieties = allVarieties.filter((v) => ALLOWED_VARIETIES.indexOf(v.varietyName) >= 0);
       const vOpts = varieties.map((v) => [v.id, v.varietyName + '(' + v.varietyCode + ')']);
       const firstItem = (existing && existing.items && existing.items[0]) || {};
       const f = {
@@ -183,51 +186,4 @@
     await load();
   };
 
-  /* -------- 供应商：脱敏需求池 -------- */
-  Pages.pool = async function (page) {
-    let pageNo = 1;
-    const SIZE = 10;
-    const listCard = UI.h('div', { class: 'card' });
-    const pagerBox = UI.h('div', {});
-    page.appendChild(UI.h('div', { class: 'card' }, UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '需求池（已脱敏）')));
-    page.appendChild(listCard);
-    page.appendChild(pagerBox);
-
-    async function load() {
-      const d = await API.get('/demands' + API.qs({ page: pageNo, size: SIZE }));
-      listCard.innerHTML = '';
-      listCard.appendChild(UI.table([
-        { key: 'demandNo', label: '需求编号' },
-        { label: '品种/品位', render: (r) => UI.h('span', {}, ...(r.items || []).map((it, i) => [
-          i > 0 ? '；' : null, (it.varietyName || '-') + ' ' + (it.grade || ''),
-        ]).flat()) },
-        { key: 'totalQty', label: '总量(吨)', num: true, render: (r) => UI.fmtMoney(r.totalQty) },
-        { key: 'deliveryType', label: '交货方式', render: (r) => DELIVERY[r.deliveryType] || r.deliveryType || '-' },
-        { key: 'deliveryRegion', label: '交货区域' },
-        { key: 'expectMonth', label: '期望到货月份' },
-        { key: 'createdAt', label: '发布时间', render: (r) => UI.fmtDateTime(r.createdAt) },
-        { label: '操作', render: (r) => UI.h('button', { class: 'sm', onclick: () => detail(r) }, '详情') },
-      ], d.list, '暂无可接需求'));
-      pagerBox.innerHTML = '';
-      UI.pager(pagerBox, pageNo, SIZE, d.total, (p) => { pageNo = p; load(); });
-    }
-
-    async function detail(r) {
-      UI.modal('需求 ' + (r.demandNo || ''), UI.h('div', {},
-        UI.kv([
-          ['需求编号', r.demandNo], ['总量', UI.fmtMoney(r.totalQty) + ' 吨'],
-          ['交货方式', DELIVERY[r.deliveryType] || r.deliveryType], ['交货区域', r.deliveryRegion],
-          ['期望到货', r.expectMonth], ['发布时间', UI.fmtDateTime(r.createdAt)],
-        ]),
-        UI.h('h3', { style: 'margin-top:14px' }, '品种明细（脱敏概要）'),
-        UI.table([
-          { key: 'varietyName', label: '品种' },
-          { key: 'grade', label: '品位(%)' },
-          { key: 'quantity', label: '数量(吨)', num: true },
-          { key: 'moreLessRate', label: '溢短装(%)', num: true },
-        ], r.items || [])));
-    }
-
-    await load();
-  };
 })();

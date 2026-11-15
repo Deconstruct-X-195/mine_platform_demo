@@ -91,10 +91,25 @@ def init_schema(conn):
             ALTER TABLE biz_demand ADD COLUMN IF NOT EXISTS submitted_at TIMESTAMP;
             ALTER TABLE biz_inquiry ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'STEEL';
             ALTER TABLE biz_inquiry ADD COLUMN IF NOT EXISTS batch_no VARCHAR(32);
+            ALTER TABLE biz_demand ADD COLUMN IF NOT EXISTS settle_days INT;
             ALTER TABLE biz_contract ADD COLUMN IF NOT EXISTS plat_status VARCHAR(20);
             ALTER TABLE biz_contract ADD COLUMN IF NOT EXISTS plat_remark VARCHAR(500);
             ALTER TABLE biz_contract ADD COLUMN IF NOT EXISTS plat_confirm_by BIGINT;
             ALTER TABLE biz_contract ADD COLUMN IF NOT EXISTS plat_confirm_at TIMESTAMP;
+            ALTER TABLE biz_contract ADD COLUMN IF NOT EXISTS buyer_file_url VARCHAR(500);
+            ALTER TABLE biz_contract ADD COLUMN IF NOT EXISTS buyer_file_hash VARCHAR(64);
+            ALTER TABLE biz_contract ADD COLUMN IF NOT EXISTS supplier_file_url VARCHAR(500);
+            ALTER TABLE biz_contract ADD COLUMN IF NOT EXISTS supplier_file_hash VARCHAR(64);
+            -- 存量合同：旧版单文件字段按已上传方回填到双方独立扫描件字段
+            UPDATE biz_contract SET buyer_file_url=file_url, buyer_file_hash=file_hash
+                WHERE file_url IS NOT NULL AND buyer_file_url IS NULL AND buyer_sign_at IS NOT NULL;
+            UPDATE biz_contract SET supplier_file_url=file_url, supplier_file_hash=file_hash
+                WHERE file_url IS NOT NULL AND supplier_file_url IS NULL AND supplier_sign_at IS NOT NULL;
+            -- 港口价品位维度（PB粉 61.5/60.8 双品位，不同品位价格不同）
+            ALTER TABLE base_port_price ADD COLUMN IF NOT EXISTS grade NUMERIC(5,2) NOT NULL DEFAULT 61.5;
+            ALTER TABLE base_port_price DROP CONSTRAINT IF EXISTS uk_port_variety_date;
+            ALTER TABLE base_port_price ADD CONSTRAINT uk_port_variety_date
+                UNIQUE (variety_id, port_name, price_date, grade);
             CREATE TABLE IF NOT EXISTS biz_demand_change (
               id BIGSERIAL PRIMARY KEY,
               change_no VARCHAR(32) NOT NULL, demand_id BIGINT NOT NULL, company_id BIGINT NOT NULL,
@@ -140,6 +155,7 @@ def init_schema(conn):
             ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS freight_price NUMERIC(18,2);
             ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS delivery_type VARCHAR(20);
             ALTER TABLE sys_message ALTER COLUMN receiver_company_id DROP NOT NULL;
+            ALTER TABLE sys_message ADD COLUMN IF NOT EXISTS msg_category VARCHAR(20) NOT NULL DEFAULT 'NOTICE';
             CREATE TABLE IF NOT EXISTS biz_agg_inquiry_feedback (
               id BIGSERIAL PRIMARY KEY,
               inquiry_id BIGINT NOT NULL,
@@ -152,5 +168,42 @@ def init_schema(conn):
               is_deleted SMALLINT DEFAULT 0,
               CONSTRAINT uk_agg_feedback UNIQUE (inquiry_id, company_id)
             );
+            -- 集采聚合订单：整单锁货锁价，buyer_id 为空，参与钢厂以成员明细记录
+            ALTER TABLE biz_order ALTER COLUMN buyer_id DROP NOT NULL;
+            CREATE TABLE IF NOT EXISTS biz_order_member (              id BIGSERIAL PRIMARY KEY,
+              order_id BIGINT NOT NULL,
+              company_id BIGINT NOT NULL,
+              demand_id BIGINT,
+              demand_item_id BIGINT,
+              quantity NUMERIC(18,3) NOT NULL,
+              pickup_start_date DATE,
+              daily_qty NUMERIC(18,3),
+              pickup_remark VARCHAR(200),
+              pickup_status VARCHAR(20) DEFAULT 'PENDING',
+              submitted_at TIMESTAMP,
+              created_at TIMESTAMP NOT NULL DEFAULT now(),
+              is_deleted SMALLINT DEFAULT 0,
+              CONSTRAINT uk_order_member UNIQUE (order_id, company_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_order_member_order ON biz_order_member (order_id);
+            -- 分段运单：预计船到港时间（ETA）、中转站（公铁联运）
+            ALTER TABLE biz_waybill ADD COLUMN IF NOT EXISTS eta_at TIMESTAMP;
+            ALTER TABLE biz_waybill ADD COLUMN IF NOT EXISTS transit_station VARCHAR(100);
+            -- 物流节点跟踪：实际船到港时间、实际到达中转站时间
+            ALTER TABLE biz_waybill ADD COLUMN IF NOT EXISTS actual_eta_at TIMESTAMP;
+            ALTER TABLE biz_waybill ADD COLUMN IF NOT EXISTS actual_transit_at TIMESTAMP;
+            -- 报价附件（供应商报价时上传的资质/承诺等文件，经通用 /files 落盘后关联）
+            CREATE TABLE IF NOT EXISTS biz_quote_file (
+              id BIGSERIAL PRIMARY KEY,
+              quote_id BIGINT NOT NULL,
+              file_id VARCHAR(64) NOT NULL,
+              file_name VARCHAR(200),
+              created_at TIMESTAMP NOT NULL DEFAULT now(),
+              created_by BIGINT,
+              is_deleted SMALLINT DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_quote_file_quote ON biz_quote_file (quote_id);
+            -- 企业信息变更待审核：已准入企业改信息 → 暂存 JSON → 运营端审核通过后自动更新
+            ALTER TABLE ent_company ADD COLUMN IF NOT EXISTS pending_changes TEXT;
         """)
     return created

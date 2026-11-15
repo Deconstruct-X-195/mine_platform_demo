@@ -41,8 +41,8 @@ def generate(oid):
     transition(g.conn, g.ctx, 'biz_contract', '合同', 'biz_contract', cid, 'PENDING_BUYER',
                node_biz_type='ORDER', node_code='CONTRACT_GENERATED', node_biz_id=row['id'])
     transition(g.conn, g.ctx, 'biz_order', '订单', 'biz_order', oid, 'PENDING_EFFECT')
-    send_msg(g.conn, row['buyer_id'], '合同待签署（需方）',
-             '订单 %s 合同 v%d 已生成，请需求方首先签署。' % (row['order_no'], version), 'CONTRACT', cid)
+    send_msg(g.conn, row['buyer_id'], '合同待上传签署件（需方）',
+             '订单 %s 合同 v%d 已生成，请线下签署后上传本方签署件。' % (row['order_no'], version), 'CONTRACT', cid)
     op_log(g.conn, g.ctx, 'biz_contract', cid, 'GENERATE', None, {'version': version})
     return ok({'contractId': cid, 'version': version, 'status': 'PENDING_BUYER'})
 
@@ -67,49 +67,66 @@ def sign(cid):
     row, order = _contract(cid)
     is_buyer = g.ctx.company and order['buyer_id'] == g.ctx.company['id']
     is_supplier = g.ctx.company and order['supplier_id'] == g.ctx.company['id']
-    if row['status'] == 'PENDING_BUYER' and is_buyer:
+    if row['status'] not in ('PENDING_BUYER', 'PENDING_SUPPLIER'):
+        raise ApiError(40901, '合同状态为 %s，当前不可上传签署件' % row['status'])
+    if is_buyer:
         col, user_col = 'buyer_sign_at', 'buyer_sign_user'
-        to = 'PENDING_SUPPLIER'
+        file_col, hash_col = 'buyer_file_url', 'buyer_file_hash'
         role_label = '需方'
-    elif row['status'] == 'PENDING_SUPPLIER' and is_supplier:
+    elif is_supplier:
         col, user_col = 'supplier_sign_at', 'supplier_sign_user'
-        to = None  # 双方签齐后不自动生效：进入"待运营确认"，由运营端核验生效
+        file_col, hash_col = 'supplier_file_url', 'supplier_file_hash'
         role_label = '供方'
-    elif row['status'] == 'PENDING_SUPPLIER' and is_buyer and row['plat_status'] == 'RETURNED':
-        col, user_col = 'buyer_sign_at', 'buyer_sign_user'
-        to = None  # 扫描件被运营退回，需方重传（重新进入待核验）
-        role_label = '需方(重传)'
     else:
-        raise ApiError(40901, '当前不可签署（合同 %s / 本方角色不符，需方先签、供方后签）' % row['status'])
+        raise ApiError(40301, '仅合同双方可上传签署件')
+    if row['plat_status'] == 'CONFIRMED':
+        raise ApiError(40901, '合同已归集生效，不可再上传签署件')
 
     f = q1(g.conn, "SELECT * FROM sys_file WHERE file_id=%s AND is_deleted=0", (p['fileId'],))
     if not f:
-        raise ApiError(40401, '盖章件不存在，请先上传')
-    if f['content_type'] and not (f['content_type'].startswith('application/pdf')
-                                  or f['content_type'].startswith('image/')):
-        raise ApiError(40001, '盖章件仅支持 pdf/jpg/png')
+        raise ApiError(40401, '签署件不存在，请先上传')
+    if not (f['content_type'] or '').startswith('application/pdf'):
+        raise ApiError(40001, '合同签署件仅支持 PDF 扫描件')
     sha = _file_sha256(f['path'])
+    # 同一方可上传多份合同扫描件（如主合同+补充协议），file_id/hash 逗号分隔追加
+    prev_ids = [x for x in str(row[file_col] or '').split(',') if x]
+    if f['file_id'] in prev_ids:
+        raise ApiError(40901, '该扫描件已上传，请选择新的文件')
+    prev_hashes = [x for x in str(row[hash_col] or '').split(',') if x]
     execute(g.conn, """
-        UPDATE biz_contract SET file_url=%s, file_hash=%s, {col}=now(), {ucol}=%s, updated_by=%s
+        UPDATE biz_contract SET {fcol}=%s, {hcol}=%s, {col}=now(), {ucol}=%s, updated_by=%s
         WHERE id=%s
-        """.format(col=col, ucol=user_col),
-        (f['file_id'], sha, g.ctx.user['id'], g.ctx.user['id'], cid))
-    if to is None:
-        # 双方签齐（或退回重传）→ 待运营确认，合同状态保持 PENDING_SUPPLIER
-        execute(g.conn, "UPDATE biz_contract SET plat_status='PENDING', updated_by=%s WHERE id=%s",
+        """.format(fcol=file_col, hcol=hash_col, col=col, ucol=user_col),
+        (','.join(prev_ids + [f['file_id']]), ','.join(prev_hashes + [sha]),
+         g.ctx.user['id'], g.ctx.user['id'], cid))
+    other = 'supplier_sign_at' if is_buyer else 'buyer_sign_at'
+    if row[other]:
+        # 双方签署件齐备：线下签署完成 → 待运营端归集，不自动生效
+        if row['status'] == 'PENDING_BUYER':
+            transition(g.conn, g.ctx, 'biz_contract', '合同', 'biz_contract', cid, 'PENDING_SUPPLIER',
+                       node_biz_type='ORDER', node_code='CONTRACT_BOTH_UPLOADED',
+                       node_biz_id=order['id'])
+        execute(g.conn, "UPDATE biz_contract SET plat_status='PENDING', plat_remark=NULL, updated_by=%s WHERE id=%s",
                 (g.ctx.user['id'], cid))
-        text = '订单 %s 合同 %s 双方已签署，待平台核验后生效。' % (order['order_no'], row['contract_no'])
-        send_msg(g.conn, order['supplier_id'], '合同签署完成', text, 'CONTRACT', cid)
-        send_msg(g.conn, order['buyer_id'], '合同签署完成', text, 'CONTRACT', cid)
+        text = '订单 %s 合同 %s 双方签署件已上传，待运营端归集后合同生效。' % (order['order_no'], row['contract_no'])
+        send_msg(g.conn, order['supplier_id'], '签署件已上传', text, 'CONTRACT', cid)
+        send_msg(g.conn, order['buyer_id'], '签署件已上传', text, 'CONTRACT', cid)
+        status, plat_status = 'PENDING_SUPPLIER', 'PENDING'
     else:
-        transition(g.conn, g.ctx, 'biz_contract', '合同', 'biz_contract', cid, to,
-                   node_biz_type='ORDER', node_code='CONTRACT_BUYER_SIGNED',
-                   node_biz_id=order['id'])
-        send_msg(g.conn, order['supplier_id'], '合同待签署（供方）',
-                 '订单 %s 合同 %s 需方已签署，请供方签署。' % (order['order_no'], row['contract_no']), 'CONTRACT', cid)
-    op_log(g.conn, g.ctx, 'biz_contract', cid, 'SIGN(%s)' % role_label,
+        # 本方先上传/追加扫描件：仅首次上传时流转状态，提示另一方上传
+        status = 'PENDING_SUPPLIER' if is_buyer else row['status']
+        if is_buyer and row['status'] == 'PENDING_BUYER':
+            transition(g.conn, g.ctx, 'biz_contract', '合同', 'biz_contract', cid, 'PENDING_SUPPLIER',
+                       node_biz_type='ORDER', node_code='CONTRACT_BUYER_SIGNED',
+                       node_biz_id=order['id'])
+        target = order['supplier_id'] if is_buyer else order['buyer_id']
+        send_msg(g.conn, target, '合同待上传签署件',
+                 '订单 %s 合同 %s 对方已上传签署件，请线下签署后上传本方签署件。'
+                 % (order['order_no'], row['contract_no']), 'CONTRACT', cid)
+        plat_status = None
+    op_log(g.conn, g.ctx, 'biz_contract', cid, 'UPLOAD_SIGNED(%s)' % role_label,
            None, {'signerName': p['signerName'], 'fileSha256': sha})
-    return ok({'id': cid, 'status': to or 'PENDING_SUPPLIER', 'platStatus': 'PENDING' if to is None else None, 'fileSha256': sha})
+    return ok({'id': cid, 'status': status, 'platStatus': plat_status, 'fileSha256': sha})
 
 
 def _file_sha256(path):
@@ -152,6 +169,31 @@ def detail(cid):
     return ok(data)
 
 
+@bp.get('/contracts/<int:cid>/files')
+@auth_required
+def files_list(cid):
+    """签署件附件列表：双方各自可上传多份扫描件（file_id 逗号分隔存储）。"""
+    row, order = _contract(cid)
+
+    def files_of(col):
+        ids = [x for x in str(row[col] or '').split(',') if x]
+        if not ids:
+            return []
+        frows = qall(g.conn,
+                     "SELECT file_id, file_name FROM sys_file WHERE file_id = ANY(%s) AND is_deleted=0",
+                     (ids,))
+        name_by = {r['file_id']: r['file_name'] for r in frows}
+        return [{'fileId': i, 'fileName': name_by.get(i) or (i + '.pdf')} for i in ids]
+
+    return ok(json_payload({
+        'contractNo': row['contract_no'],
+        'buyer': files_of('buyer_file_url'),
+        'supplier': files_of('supplier_file_url'),
+        'buyerSignAt': row['buyer_sign_at'],
+        'supplierSignAt': row['supplier_sign_at'],
+    }))
+
+
 @bp.get('/contracts')
 @auth_required
 def list_mine():
@@ -170,6 +212,7 @@ def list_mine():
     rows = qall(g.conn, """
         SELECT c.id, c.contract_no AS "contractNo", c.order_id AS "orderId", o.order_no AS "orderNo",
                c.version, c.status, c.file_url AS "fileUrl", c.file_hash AS "fileHash",
+               c.buyer_file_url AS "buyerFileUrl", c.supplier_file_url AS "supplierFileUrl",
                c.buyer_sign_at AS "buyerSignAt", c.supplier_sign_at AS "supplierSignAt",
                c.void_reason AS "voidReason", c.created_at AS "createdAt"
         FROM biz_contract c JOIN biz_order o ON o.id=c.order_id
