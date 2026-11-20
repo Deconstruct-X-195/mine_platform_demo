@@ -7,7 +7,7 @@
     demand: ['需求管理', '#/demand'],
     price: ['基准价行情', '#/price'],
     inquiry: ['询价报价', '#/inquiry'],
-    bargain: ['议价定标', '#/bargain'],
+    demand_group_sup: ['需求归集', '#/demand-group-sup'],
     order: ['订单管理', '#/order'],
     logistics: ['物流服务', '#/logistics'],
     track: ['履约跟踪', '#/track'],
@@ -16,8 +16,15 @@
     port_price: ['价格趋势详情', '#/port-price'],
     price_records: ['价格行情详情', '#/price-records'],
     admin_companies: ['企业准入', '#/admin-companies'],
-    demand_pool: ['需求归集', '#/demand-pool'],
-    quote_center: ['报价询价', null],
+    company_center: ['企业准入', null],
+    company_list: ['准入申请列表', '#/company-list'],
+    company_archive: ['企业档案信息', '#/company-archive'],
+    demand_pool: ['需求归集', null],
+    demand_list: ['需求列表', '#/demand-list'],
+    demand_aggr: ['订单归集', '#/demand-aggr'],
+    demand_group: ['需求归集', '#/demand-group'],
+    demand_changes: ['变更申请', '#/demand-changes'],
+    quote_center: ['询价报价', null],
     quote_inquiry: ['询价', '#/quote-inquiry'],
     quote_history: ['询价历史', '#/quote-history'],
     order_admin: ['订单管理', '#/order-admin'],
@@ -28,8 +35,8 @@
     logs: ['操作日志', '#/logs'],
   };
   // 二级菜单：父级键 → 子菜单键顺序（父级不可点击，仅作分组标题）
-  const MENU_GROUPS = { quote_center: ['quote_inquiry', 'quote_history'] };
-  const MENU_PARENT = { quote_inquiry: 'quote_center', quote_history: 'quote_center' };
+  const MENU_GROUPS = { quote_center: ['quote_inquiry', 'quote_history'], company_center: ['company_list', 'company_archive'], demand_pool: ['demand_list', 'demand_aggr', 'demand_group', 'demand_changes'] };
+  const MENU_PARENT = { quote_inquiry: 'quote_center', quote_history: 'quote_center', company_list: 'company_center', company_archive: 'company_center', demand_list: 'demand_pool', demand_aggr: 'demand_pool', demand_group: 'demand_pool', demand_changes: 'demand_pool' };
   // 角色级菜单名覆盖：键为角色，值为 { 菜单键: 显示名 }
   const MENU_ROLE_LABEL = { STEEL_BUYER: { inquiry: '采购询价' } };
   function menuLabel(user, code) {
@@ -48,9 +55,18 @@
   const TITLE = '大宗矿产集采平台';
 
   function pageOf() {
-    const m = (location.hash || '').match(/^#\/([a-z][a-z0-9-]*)$/);
+    const m = (location.hash || '').match(/^#\/([a-z][a-z0-9-]*)(\?.*)?$/);
     // hash 用连字符（#/admin-companies），页面/菜单键用下划线（admin_companies）
     return m ? m[1].replace(/-/g, '_') : '';
+  }
+
+  /* 详情类页面 hash 查询参数（#/logistics-order-detail?oid=2） */
+  function pageQuery() {
+    const m = (location.hash || '').match(/^#\/[a-z][a-z0-9-]*\?(.*)$/);
+    if (!m) return {};
+    const out = {};
+    new URLSearchParams(m[1]).forEach((v, k) => { out[k] = v; });
+    return out;
   }
 
   function homeFor(user) {
@@ -62,7 +78,20 @@
   }
 
   function menuLinks(user) {
-    const codes = (user.menus || []).filter((c) => MENU_META[c]);
+    let codes = (user.menus || []).filter((c) => MENU_META[c]);
+    // 钢厂/供应商：基准价行情固定放总览下方（钢厂原有位置前移；供应商新增）
+    if ((user.roles || []).some((r) => r === 'STEEL_BUYER' || r === 'SUPPLIER')) {
+      const pi = codes.indexOf('price');
+      if (pi >= 0) codes.splice(pi, 1);
+      const ov = codes.indexOf('overview');
+      codes.splice(ov >= 0 ? ov + 1 : 0, 0, 'price');
+    }
+    // 企业准入展开为二级菜单（准入申请列表 / 企业档案信息）
+    const acIdx = codes.indexOf('admin_companies');
+    if (acIdx >= 0) codes.splice(acIdx, 1, 'company_list', 'company_archive');
+    // 需求归集展开为二级菜单（需求列表 / 订单归集 / 需求归集 / 变更申请审核）
+    const dpIdx = codes.indexOf('demand_pool');
+    if (dpIdx >= 0) codes.splice(dpIdx, 1, 'demand_list', 'demand_aggr', 'demand_group', 'demand_changes');
     const nodes = [];
     const used = {};
     codes.forEach((code) => {
@@ -73,7 +102,10 @@
         const children = MENU_GROUPS[parent].filter((c) => codes.indexOf(c) >= 0);
         if (!children.length) return;
         nodes.push(UI.h('div', { class: 'nav-group', 'data-group': parent },
-          UI.h('div', { class: 'nav-group-title' }, menuLabel(user, parent)),
+          UI.h('div', {
+            class: 'nav-group-title', title: '点击展开/收起',
+            onclick: (e) => { e.currentTarget.parentElement.classList.toggle('open'); },
+          }, menuLabel(user, parent)),
           ...children.map((c) => UI.h('a', { 'data-menu': c, href: MENU_META[c][1] }, menuLabel(user, c)))));
       } else {
         nodes.push(UI.h('a', { 'data-menu': code, href: MENU_META[code][1] }, menuLabel(user, code)));
@@ -108,8 +140,10 @@
     const drawer = UI.h('aside', { class: 'drawer', id: 'drawer' },
       UI.h('div', { class: 'drawer-head' },
         UI.h('div', { class: 'drawer-tabs' },
-          UI.h('button', { class: 'drawer-tab active', 'data-dtab': 'task', onclick: () => switchDrawerTab('task') }, '任务'),
-          UI.h('button', { class: 'drawer-tab', 'data-dtab': 'msg', onclick: () => switchDrawerTab('msg') }, '消息')),
+          UI.h('button', { class: 'drawer-tab active', 'data-dtab': 'task', onclick: () => switchDrawerTab('task') },
+            '任务', UI.h('span', { class: 'tab-badge', id: 'tab-badge-task', style: 'display:none' }, '0')),
+          UI.h('button', { class: 'drawer-tab', 'data-dtab': 'msg', onclick: () => switchDrawerTab('msg') },
+            '消息', UI.h('span', { class: 'tab-badge', id: 'tab-badge-msg', style: 'display:none' }, '0'))),
         UI.h('a', { class: 'drawer-more', href: '#/messages', onclick: () => closeDrawer() }, '更多')),
       UI.h('div', { class: 'drawer-body', id: 'drawer-body' }));
     root.appendChild(shell);
@@ -126,7 +160,26 @@
   }
   function openDrawer() {
     document.body.classList.add('drawer-open');
+    refreshDrawerBadges();
     loadDrawerBody();
+  }
+  function setTabBadge(id, n) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = n > 99 ? '99+' : String(n);
+    el.style.display = n > 0 ? '' : 'none';
+  }
+  /* 抽屉页签红点：任务=待办数量，消息=未读数量（打开抽屉/轮询/抽屉内加载时刷新） */
+  async function refreshDrawerBadges() {
+    if (!API.currentUser()) return;
+    try {
+      const [t, msg] = await Promise.all([
+        API.get('/tasks/todos', { silent: true }),
+        API.get('/messages?page=1&size=1', { silent: true }),
+      ]);
+      setTabBadge('tab-badge-task', t && t.list ? t.list.length : 0);
+      setTabBadge('tab-badge-msg', msg && msg.unread ? Number(msg.unread) : 0);
+    } catch (e) { /* 静默 */ }
   }
   function closeDrawer() { document.body.classList.remove('drawer-open'); }
   function switchDrawerTab(t) {
@@ -144,6 +197,7 @@
       if (drawerTab === 'task') {
         const d = await API.get('/tasks/todos');
         const list = d.list || [];
+        setTabBadge('tab-badge-task', list.length);
         body.innerHTML = '';
         if (!list.length) {
           body.appendChild(UI.h('div', { class: 'empty' }, '暂无待办任务'));
@@ -160,6 +214,7 @@
       } else {
         const d = await API.get('/messages?page=1&size=8');
         const list = d.list || [];
+        setTabBadge('tab-badge-msg', d.unread ? Number(d.unread) : 0);
         body.innerHTML = '';
         if (!list.length) {
           body.appendChild(UI.h('div', { class: 'empty' }, '暂无消息'));
@@ -194,13 +249,25 @@
   }
 
   function highlight(pageKey) {
+    /* 详情类独立页归属其来源菜单（顶栏标题/菜单高亮跟随一级菜单） */
+    const SUBPAGE_OF = { logistics_order_detail: 'logistics_dispatch' };
+    pageKey = SUBPAGE_OF[pageKey] || pageKey;
     document.querySelectorAll('.sidebar nav a[data-menu]').forEach((a) => {
       const on = a.getAttribute('data-menu') === pageKey;
       a.className = on ? 'active' : '';
     });
+    // 当前页面属于二级菜单时自动展开其父级分组
+    const parent = MENU_PARENT[pageKey];
+    document.querySelectorAll('.sidebar nav .nav-group').forEach((g) => {
+      if (parent && g.getAttribute('data-group') === parent) g.classList.add('open');
+    });
     const meta = MENU_META[pageKey];
     const title = document.getElementById('page-title');
-    if (title) title.textContent = meta ? menuLabel(API.currentUser(), pageKey) : '大宗矿产集采平台';
+    /* 企业准入/需求归集二级页签：顶栏统一显示一级菜单名，页内卡片标题区分页签 */
+    const GROUP_TOP = { company_list: 'admin_companies', company_archive: 'admin_companies',
+      demand_list: 'demand_pool', demand_aggr: 'demand_pool', demand_group: 'demand_pool', demand_changes: 'demand_pool' };
+    const titleKey = GROUP_TOP[pageKey] || pageKey;
+    if (title) title.textContent = MENU_META[titleKey] ? menuLabel(API.currentUser(), titleKey) : '大宗矿产集采平台';
   }
 
   /* 会话菜单静默刷新：每次页面加载调用一次 /auth/me，
@@ -264,7 +331,7 @@
       if (pageKey === 'messages') {
         await window.Pages.messages(holder, user);
       } else if (window.Pages && window.Pages[pageKey]) {
-        await window.Pages[pageKey](holder, user);
+        await window.Pages[pageKey](holder, user, pageQuery());
       } else {
         holder.appendChild(UI.h('div', { class: 'empty' }, '页面不存在'));
       }
@@ -300,5 +367,7 @@
   window.addEventListener('DOMContentLoaded', () => {
     route();
     refreshMsgBadge();
+    /* 轮询：30 秒刷新一次未读数与抽屉页签红点（未登录时内部自动跳过） */
+    setInterval(() => { refreshMsgBadge(); refreshDrawerBadges(); }, 30000);
   });
 })();

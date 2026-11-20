@@ -2,7 +2,7 @@
 
 核心规则：
 - 质检拒收（REJECT）不允许生成正常结算单，走退货说明文本。
-- 结算金额只能由服务端 Decimal 计算：（单价+质量调价元/吨）×结算数量 − 扣款，quantize(0.01)。
+- 结算金额只能由服务端 Decimal 计算：（单价+质量调价元/湿吨）×结算数量 − 扣款，quantize(0.01)。
 - 双方确认后结算冻结，后续调整需新增结算单并备注。
 - 归档三条件：全部运单已签收 + 结算已完成 + 无未关闭预警。
 """
@@ -18,7 +18,7 @@ from ..common import (ApiError, decimal_field, doc_no, get_params, json_payload,
                       ok, op_log, page_args, page_data, parse_date, require_fields,
                       send_msg)
 from ..db import execute, q1, qall
-from ..security import ROLE_STEEL, ROLE_SUPPLIER, auth_required, roles_required
+from ..security import ROLE_STEEL, ROLE_SUPPLIER, auth_required, plat_required, roles_required
 from ..state_machine import add_node, transition
 from . import bp
 
@@ -159,7 +159,7 @@ def create_settlement(oid):
            {'settleNo': settle_no, 'totalAmount': str(total)})
     send_msg(g.conn, order['supplier_id'], '结算单待确认',
              '订单 %s 已生成结算单 %s，金额 %s 元，请确认' % (order['order_no'], settle_no, total),
-             'SETTLEMENT', sid)
+             'SETTLEMENT', sid, need_action=True)
     return ok(_settlement_view(sid))
 
 
@@ -181,7 +181,7 @@ def confirm_settlement(sid):
         execute(g.conn, "UPDATE biz_settlement SET supplier_confirm_at=now() WHERE id=%s", (sid,))
         add_node(g.conn, g.ctx, 'SETTLEMENT', sid, 'SETTLE_SUPPLIER_CONFIRMED')
         send_msg(g.conn, s['buyerId'], '结算单待确认', '结算单 %s 供应商已确认，请需方确认' % s['settle_no'],
-                 'SETTLEMENT', sid)
+                 'SETTLEMENT', sid, need_action=True)
     elif s['status'] == 'PENDING_CONFIRM_BUYER':
         if not (is_buyer or g.ctx.is_plat):
             raise ApiError(40901, '当前等待需方确认')
@@ -228,42 +228,127 @@ def register_payment(sid):
     return ok({'id': pid, 'paymentNo': payment_no})
 
 
-# ---------------- 完成归档（FR-09-06） ----------------
+# ---------------- 订单完成确认与归档（FR-09-06） ----------------
+# 平台定位为归集/撮合/物流协同：合同签订与付款结算由供需双方线下完成，平台不登记付款。
+# 订单完成确认（新流程）：各钢厂成员与供应商各自确认「已完成提货验收及所有结算」；
+# 全部确认齐备后订单自动完成并归档（前端确认入口以物流服务推送过轨迹为前置）。
 
-@bp.post('/orders/<int:oid>/archive')
-@roles_required(ROLE_STEEL)
-def archive_order(oid):
-    order = _order_of(oid)
-    _order_visible(order)
+
+def _demand_members(oid):
+    """归集聚合订单的参与钢厂成员（含订单完成确认时间）。"""
+    return qall(g.conn, """
+        SELECT m.company_id AS "companyId", c.company_name AS "companyName",
+               m.quantity, m.finish_confirm_at AS "finishConfirmAt"
+        FROM biz_order_member m JOIN ent_company c ON c.id = m.company_id
+        WHERE m.order_id=%s AND m.is_deleted=0 ORDER BY m.id
+    """, (oid,))
+
+
+def _steel_confirmed(order):
+    """需方（钢厂侧）完成确认：归集单看全部成员钢厂 finish_confirm_at；传统单看 buyer_finish_confirm_at。"""
+    members = qall(g.conn, "SELECT finish_confirm_at FROM biz_order_member "
+                           "WHERE order_id=%s AND is_deleted=0", (order['id'],))
+    if members:
+        return all(m['finish_confirm_at'] for m in members)
+    return bool(order['buyer_finish_confirm_at'])
+
+
+def _order_receivers(order):
+    """订单相关企业：供方 + 需方（传统单）或参与钢厂成员（归集单）。"""
+    cids = [order['supplier_id']]
+    if order['buyer_id']:
+        cids.append(order['buyer_id'])
+    cids += [m['companyId'] for m in _demand_members(order['id'])]
+    return [c for c in dict.fromkeys(cids) if c]
+
+
+def _maybe_finish(order):
+    """各钢厂成员 + 供应商均确认「订单完成」后，订单自动完成并归档。"""
+    oid = order['id']
     if order['status'] != 'PERFORMING':
-        raise ApiError(40901, '订单当前状态为 %s，不能归档' % order['status'])
-    # 条件一：全部运单已签收
-    w = q1(g.conn, """
-        SELECT count(*) AS total, count(*) FILTER (WHERE status='SIGNED') AS signed
-        FROM biz_waybill WHERE order_id=%s AND is_deleted=0
-    """, (oid,))
-    if w['total'] != w['signed']:
-        raise ApiError(40901, '存在未签收运单，不能归档')
-    # 条件二：结算已完成（付款已登记）
-    s = q1(g.conn, """
-        SELECT count(*) AS c FROM biz_settlement
-        WHERE order_id=%s AND status='COMPLETED' AND is_deleted=0
-    """, (oid,))
-    if not s['c']:
-        raise ApiError(40901, '结算未完成（须双方确认并登记付款），不能归档')
-    # 条件三：无未关闭预警（订单与其运单）
-    open_alert = q1(g.conn, """
-        SELECT count(*) AS c FROM biz_alert
-        WHERE is_deleted=0 AND status IN ('PENDING','PROCESSING')
-          AND ((biz_type='ORDER' AND biz_id=%s)
-               OR (biz_type='WAYBILL' AND biz_id IN (SELECT id FROM biz_waybill WHERE order_id=%s)))
-    """, (oid, oid))
-    if open_alert['c']:
-        raise ApiError(40901, '存在未关闭预警，不能归档')
+        return False
+    if not (order['supplier_finish_confirm_at'] and _steel_confirmed(order)):
+        return False
     transition(g.conn, g.ctx, 'biz_order', '订单', 'biz_order', oid, 'COMPLETED',
                node_biz_type='ORDER', node_code='ORDER_ARCHIVED')
-    send_msg(g.conn, order['supplier_id'], '订单已归档', '订单 %s 已完成归档' % order['order_no'],
-             'ORDER', oid)
+    for cid in _order_receivers(order):
+        send_msg(g.conn, cid, '订单已完成归档',
+                 '订单 %s 各方已确认订单完成，订单已自动完成并归档。' % order['order_no'], 'ORDER', oid)
+    op_log(g.conn, g.ctx, 'biz_order', oid, 'ORDER COMPLETE', None, {'archive': True})
+    return True
+
+
+@bp.get('/orders/<int:oid>/finish-status')
+@auth_required
+def finish_status(oid):
+    """订单完成确认状态：供应商/各钢厂成员确认时间与完成条件是否满足。"""
+    order = _order_of(oid)
+    _order_visible(order)
+    return ok({
+        'orderNo': order['order_no'], 'status': order['status'],
+        'supplierFinishConfirmAt': order['supplier_finish_confirm_at'],
+        'buyerFinishConfirmAt': order['buyer_finish_confirm_at'],
+        'steelConfirmed': _steel_confirmed(order),
+        'members': _demand_members(oid),
+        'canComplete': order['status'] == 'PERFORMING'
+                       and bool(order['supplier_finish_confirm_at']) and _steel_confirmed(order),
+    })
+
+
+@bp.post('/orders/<int:oid>/finish-confirm')
+@auth_required
+def finish_confirm(oid):
+    """订单完成确认：钢厂成员/供应商确认「已完成提货验收及所有结算」；
+    全部钢厂成员 + 供应商确认齐备后订单自动完成。"""
+    order = _order_of(oid)
+    _order_visible(order)
+    cid = g.ctx.company['id'] if g.ctx.company else None
+    if not cid:
+        raise ApiError(40301, '平台不参与订单完成确认，请由供需双方确认')
+    if order['status'] != 'PERFORMING':
+        raise ApiError(40901, '订单当前状态为 %s，不可确认订单完成' % order['status'])
+    if order['supplier_id'] == cid:
+        if order['supplier_finish_confirm_at']:
+            raise ApiError(40901, '供应商已确认订单完成，无需重复操作')
+        execute(g.conn, "UPDATE biz_order SET supplier_finish_confirm_at=now(), updated_by=%s, updated_at=now() "
+                        "WHERE id=%s", (g.ctx.user['id'], oid))
+        add_node(g.conn, g.ctx, 'ORDER', oid, 'SUPPLIER_FINISH_CONFIRMED')
+        note = '供应商已确认订单完成'
+    else:
+        m = q1(g.conn, "SELECT finish_confirm_at FROM biz_order_member "
+                       "WHERE order_id=%s AND company_id=%s AND is_deleted=0", (oid, cid))
+        if m:
+            if m['finish_confirm_at']:
+                raise ApiError(40901, '本厂已确认订单完成，无需重复操作')
+            execute(g.conn, "UPDATE biz_order_member SET finish_confirm_at=now() "
+                            "WHERE order_id=%s AND company_id=%s AND is_deleted=0", (oid, cid))
+            add_node(g.conn, g.ctx, 'ORDER', oid, 'MILL_FINISH_CONFIRMED', remark='成员钢厂订单完成确认')
+        elif order['buyer_id'] == cid:
+            if order['buyer_finish_confirm_at']:
+                raise ApiError(40901, '本厂已确认订单完成，无需重复操作')
+            execute(g.conn, "UPDATE biz_order SET buyer_finish_confirm_at=now(), updated_by=%s, updated_at=now() "
+                            "WHERE id=%s", (g.ctx.user['id'], oid))
+            add_node(g.conn, g.ctx, 'ORDER', oid, 'MILL_FINISH_CONFIRMED')
+        else:
+            raise ApiError(40301, '仅需方钢厂或供应商可确认订单完成')
+        note = '钢厂已确认订单完成'
+    for c in [x for x in _order_receivers(order) if x != cid]:
+        send_msg(g.conn, c, note, '订单 %s %s，请及时确认订单完成。' % (order['order_no'], note), 'ORDER', oid,
+                need_action=True)
+    op_log(g.conn, g.ctx, 'biz_order', oid, 'FINISH CONFIRM', None, {'company': cid})
+    completed = _maybe_finish(_order_of(oid))
+    return ok({'confirmed': True, 'completed': completed})
+
+
+@bp.post('/orders/<int:oid>/archive')
+@plat_required
+def archive_order(oid):
+    """完成归档兜底触发（平台）：各方订单完成确认齐备时手动触发自动完成检查。"""
+    order = _order_of(oid)
+    _order_visible(order)
+    completed = _maybe_finish(order)
+    if not completed:
+        raise ApiError(40901, '完成条件未齐备：需各钢厂成员与供应商均确认订单完成')
     return ok({'id': oid, 'status': 'COMPLETED'})
 
 

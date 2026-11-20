@@ -104,12 +104,14 @@ def _expire_orders(conn):
 
 
 def _rollback_agg_order(conn, agg_id):
-    """聚合订单失效：回退成员需求明细成交回填与归集锁定量，需求/归集订单状态回退。"""
+    """聚合订单失效：回退成员需求明细成交回填，并重新锁回成员份额量
+    （定标时已释放询价锁定量、转入 deal_qty；回退后归集订单重开询价，量需保持锁定），
+    需求/归集订单状态回退。"""
     from .state_machine import transition
     execute(conn, """
         UPDATE biz_demand_item di
         SET deal_qty = GREATEST(COALESCE(di.deal_qty, 0) - m.quantity, 0),
-            inquired_qty = GREATEST(COALESCE(di.inquired_qty, 0) - m.quantity, 0),
+            inquired_qty = LEAST(COALESCE(di.inquired_qty, 0) + m.quantity, di.quantity),
             updated_at = now()
         FROM biz_aggregated_order_item m
         WHERE m.agg_id=%s AND m.is_deleted=0 AND m.demand_item_id=di.id

@@ -146,8 +146,8 @@ def run():
     rec('A3 归集量全量锁定', it_a2['inquired_qty'] == it_a2['quantity']
         and it_b2['inquired_qty'] == it_b2['quantity'],
         'inquired %s/%s' % (it_a2['inquired_qty'], it_b2['inquired_qty']))
-    rec('A4 需求转 INQUIRING', it_a2['demand_status'] == 'INQUIRING'
-        and it_b2['demand_status'] == 'INQUIRING',
+    rec('A4 需求转待询价(TO_INQUIRY)', it_a2['demand_status'] == 'TO_INQUIRY'
+        and it_b2['demand_status'] == 'TO_INQUIRY',
         '%s/%s' % (it_a2['demand_status'], it_b2['demand_status']))
 
     agg_detail = plat.get('/admin/aggregated-orders/%s' % agg_id)
@@ -203,6 +203,10 @@ def run():
         'source=%s buyer=%s qty=%s' % (inq['source'], inq['buyer_id'], inq['quantity']))
     rec('B3 归集订单转 INQUIRING', pg1(
         "SELECT status FROM biz_aggregated_order WHERE id=%s", (agg_id,))['status'] == 'INQUIRING')
+    it_a3, it_b3 = demand_item(item_ids[0]), demand_item(item_ids[1])
+    rec('B3b 推送询价后需求转询价中', it_a3['demand_status'] == 'INQUIRING'
+        and it_b3['demand_status'] == 'INQUIRING',
+        '%s/%s' % (it_a3['demand_status'], it_b3['demand_status']))
 
     steel_msg = pg1("""
         SELECT count(*) AS c FROM sys_message

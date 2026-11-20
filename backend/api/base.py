@@ -46,7 +46,8 @@ def current_prices():
     rows = qall(g.conn, today_sql + ' ORDER BY p.variety_id, p.port_name, COALESCE(p.grade, 61.5), p.price_date DESC, p.id DESC',
                 port_args)
     trend_sql = """
-        SELECT p.variety_id AS "varietyId", v.variety_name AS "varietyName",
+        SELECT DISTINCT ON (p.variety_id, p.port_name, COALESCE(p.grade, 61.5), p.price_date)
+               p.variety_id AS "varietyId", v.variety_name AS "varietyName",
                p.price_date AS "priceDate", p.price, p.port_name AS "port",
                COALESCE(p.grade, 61.5) AS "grade"
         FROM base_port_price p JOIN base_variety v ON v.id=p.variety_id
@@ -56,7 +57,7 @@ def current_prices():
     if vid:
         trend_sql += ' AND p.variety_id=%s'
         trend_args.append(vid)
-    trend = qall(g.conn, trend_sql + ' ORDER BY p.variety_id, p.port_name, COALESCE(p.grade, 61.5), p.price_date', trend_args)
+    trend = qall(g.conn, trend_sql + ' ORDER BY p.variety_id, p.port_name, COALESCE(p.grade, 61.5), p.price_date, p.id DESC', trend_args)
     if not rows:
         # 港口价尚未维护时兜底：沿用兰格锚点基准价（base_price），日期如实显示
         anchor_today = """
@@ -135,7 +136,7 @@ def port_prices():
 @bp.post('/base-prices/ports')
 @auth_required
 def save_port_price():
-    """设置港口现货价（平台运营专用；同品种×港口×日期 upsert）。"""
+    """设置港口现货价（平台运营专用；同键已有记录时不覆盖，仅提醒并新增一条）。"""
     if not g.ctx.is_plat:
         raise ApiError(40301, '仅平台运营可维护港口价格')
     p = get_params()
@@ -159,16 +160,21 @@ def save_port_price():
     port_name = str(p['portName']).strip()
     if not port_name or len(port_name) > 50:
         raise ApiError(40001, '港口名称必填且不超过50字')
+    # 同键（品种×港口×日期×品位）已有记录：不覆盖原记录，直接新增一条（前端按 duplicated 提醒）
+    dup = q1(g.conn, """
+        SELECT price FROM base_port_price
+        WHERE variety_id=%s AND port_name=%s AND price_date=%s AND grade=%s AND is_deleted=0
+        ORDER BY id DESC LIMIT 1
+    """, (p['varietyId'], port_name, d, grade))
     row = q1(g.conn, """
         INSERT INTO base_port_price (variety_id, port_name, price_date, price, grade, created_by)
         VALUES (%s,%s,%s,%s,%s,%s)
-        ON CONFLICT (variety_id, port_name, price_date, grade)
-        DO UPDATE SET price=EXCLUDED.price, is_deleted=0
         RETURNING id
     """, (p['varietyId'], port_name, d, price, grade, g.ctx.user['id']), )
-    op_log(g.conn, g.ctx, 'base_port_price', row['id'], 'UPSERT', None,
+    op_log(g.conn, g.ctx, 'base_port_price', row['id'], 'CREATE', None,
            {'portName': port_name, 'priceDate': str(d), 'price': price, 'grade': grade})
-    return ok({'id': row['id']})
+    return ok({'id': row['id'], 'duplicated': dup is not None,
+               'existingPrice': str(dup['price']) if dup is not None else None})
 
 
 @bp.delete('/base-prices/ports/<int:pid>')

@@ -85,6 +85,7 @@ def create_waybill(pid):
         raise ApiError(40901, '订单不在履约中，不可创建运单')
     p = get_params()
     require_fields(p, 'segmentNo', 'transportMode', 'planQty', 'planDepartDate', 'planArriveDate')
+    p['segmentNo'] = str(p['segmentNo'])  # 分段号统一按字符串落库（数字输入防 varchar 比较报错）
     if p['transportMode'] not in ('SEA', 'RAIL', 'ROAD', 'MULTIMODAL'):
         raise ApiError(40001, '运输方式仅支持 SEA/RAIL/ROAD/MULTIMODAL')
     if parse_date(p, 'planArriveDate') < parse_date(p, 'planDepartDate'):
@@ -146,7 +147,8 @@ def assign_waybill(wid):
         raise ApiError(40901, '运单状态为 %s，不可指派' % row['status'])
     execute(g.conn, "UPDATE biz_waybill SET carrier_id=%s, status='PENDING_ACCEPT', updated_by=%s, updated_at=now() WHERE id=%s",
             (p['carrierId'], g.ctx.user['id'], wid))
-    send_msg(g.conn, p['carrierId'], '运单待接单', '运单 %s 已指派给贵司，请接单确认。' % row['waybill_no'], 'WAYBILL', wid)
+    send_msg(g.conn, p['carrierId'], '运单待接单', '运单 %s 已指派给贵司，请接单确认。' % row['waybill_no'], 'WAYBILL', wid,
+             need_action=True)
     op_log(g.conn, g.ctx, 'biz_waybill', wid, 'ASSIGN', None, {'carrierId': p['carrierId']})
     return ok({'id': wid, 'status': 'PENDING_ACCEPT'})
 
@@ -213,9 +215,13 @@ def list_waybills():
         where += ' AND w.carrier_id=%s'
         args.append(g.ctx.company['id'] or -1)
     else:
-        where += """ AND w.order_id IN (SELECT id FROM biz_order
-                     WHERE buyer_id=%s OR supplier_id=%s)"""
-        args += [g.ctx.company['id'] or -1, g.ctx.company['id'] or -1]
+        # 聚合订单 buyer_id 为空：参与钢厂按成员明细放行（与 track._order_view 同口径）
+        cid = g.ctx.company['id'] or -1
+        where += """ AND (w.order_id IN (SELECT id FROM biz_order
+                     WHERE buyer_id=%s OR supplier_id=%s)
+                     OR w.order_id IN (SELECT order_id FROM biz_order_member
+                     WHERE company_id=%s AND is_deleted=0))"""
+        args += [cid, cid, cid]
     if params.get('orderId'):
         where += ' AND w.order_id=%s'
         args.append(params['orderId'])

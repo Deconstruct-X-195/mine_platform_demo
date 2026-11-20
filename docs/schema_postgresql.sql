@@ -92,7 +92,7 @@ CREATE TABLE biz_demand (
   demand_no VARCHAR(32) NOT NULL, company_id BIGINT NOT NULL,
   demand_name VARCHAR(50) NOT NULL,
   delivery_type VARCHAR(20) NOT NULL, -- PORT_FOB,PORT_TRUCK,PLANT
-  delivery_place VARCHAR(100) NOT NULL,
+  delivery_place VARCHAR(100), -- 港口自提时可为空（港口由供应商报价确定）
   expect_arrive_start DATE NOT NULL, expect_arrive_end DATE NOT NULL,
   price_intent VARCHAR(500),
   settle_type VARCHAR(32) NOT NULL, settle_days INT, quality_req VARCHAR(500),
@@ -112,6 +112,7 @@ CREATE TABLE biz_demand_item (
   demand_id BIGINT NOT NULL, variety_id BIGINT NOT NULL,
   grade NUMERIC(5,2) NOT NULL, quantity NUMERIC(18,3) NOT NULL,
   more_less_rate NUMERIC(6,2) DEFAULT 5.00,
+  cycle_type VARCHAR(10), cycle_year INT, cycle_value INT,
   inquired_qty NUMERIC(18,3) DEFAULT 0, deal_qty NUMERIC(18,3) DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP NOT NULL DEFAULT now(),
   created_by BIGINT, updated_by BIGINT, is_deleted SMALLINT DEFAULT 0
@@ -155,6 +156,7 @@ CREATE TABLE biz_aggregated_order_item (
   demand_item_id BIGINT NOT NULL,
   company_id BIGINT NOT NULL,
   quantity NUMERIC(18,3) NOT NULL,
+  inquiry_id BIGINT,            -- 来源钢厂询价单（按询价单归集时回链）
   created_at TIMESTAMP NOT NULL DEFAULT now(),
   is_deleted SMALLINT DEFAULT 0
 );

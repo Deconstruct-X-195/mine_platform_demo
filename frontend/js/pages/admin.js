@@ -1,12 +1,41 @@
 /* 运营后台（PRD 4.10/FR-10）：仪表盘/企业审核/基础数据/订单管理/运输调度/预警/字典/日志 */
 (function () {
   window.Pages = window.Pages || {};
+  /* 跨页交接：详情页「保税库存分析表」→ 返回运输调度列表页后直接打开对应分析表 */
+  let pendingGridOrder = null;
 
   /* 吨数统一两位小数（后端数值可能带 3 位小数） */
   function fmtQty(v) {
     if (v == null || v === '') return '-';
     const n = Number(v);
     return isNaN(n) ? String(v) : n.toFixed(2);
+  }
+
+  /* 报价详情：展示供应商报价单全部填写信息（运营端，不受密封期限制） */
+  async function quoteDetailModal(iid, x) {
+    try {
+      const d = await API.get('/admin/quote-inquiries/' + iid + '/summary');
+      const q = (d.quotes || []).find((z) => z.id === x.quoteId) || {};
+      UI.modal('报价详情 · ' + (q.quoteNo || ''), UI.h('div', {},
+        UI.kv([
+          ['报价单号', q.quoteNo || '-'],
+          ['供应商', q.companyName || x.supplierName || '-'],
+          ['单价(元/湿吨)', q.price != null ? UI.fmtMoney(q.price) : '-'],
+          ['含税/不含税', ({ INC_TAX: '含税', EX_TAX: '不含税' }[q.taxType]) || '-'],
+          ['其他综合费用(元/湿吨)', q.freightPrice != null ? UI.fmtMoney(q.freightPrice) : '-'],
+          ['总价(元/湿吨)', q.price != null
+            ? UI.fmtMoney(Number(q.price) + Number(q.freightPrice || 0)) : '-'],
+          ['可供数量(湿吨)', q.quantity != null ? fmtQty(q.quantity) : '-'],
+          ['预计到港时间', q.deliveryDate ? UI.fmtDate(q.deliveryDate) : '-'],
+          ['到货港口', q.deliveryPlace || '-'],
+          ['付款条款', q.payTerms || '-'],
+          ['其他', q.qualityCommit || '-'],
+          ['备注', q.remark || '-'],
+          ['有效期至', q.validUntil ? UI.fmtDate(q.validUntil) : '-'],
+          ['版本', q.version != null ? 'v' + q.version : '-'],
+          ['报价状态', q.status ? UI.statusTag('QUOTE', q.status) : '-'],
+        ])));
+    } catch (e) { /* toast 已提示 */ }
   }
 
   /* 文件在线预览：文件流 Blob → objectURL → iframe（无需下载）；暴露到 window 供其他页面模块复用 */
@@ -24,11 +53,11 @@
   Pages.dashboard = async function (page) {
     const d = await API.get('/admin/dashboard');
     const charts = await API.get('/admin/dashboard/charts');
-    // 长条统计卡：准入企业 / 集采总货量 / 运单总数 / 总交易额
+    // 长条统计卡：准入企业 / 集采总货量 / 订单总数 / 总交易额
     const stripItems = [
       ['准入企业', String(d.companyApproved || 0), '家'],
-      ['集采总货量', Number(d.procureQty || 0).toLocaleString('zh-CN'), '吨'],
-      ['运单总数', String(d.waybillTotal || 0), '单'],
+      ['集采总货量', Number(d.procureQty || 0).toLocaleString('zh-CN'), '湿吨'],
+      ['订单总数', String(d.orderTotal || 0), '单'],
       ['总交易额', '¥' + Number(d.totalAmount || 0).toLocaleString('zh-CN'), ''],
     ];
     page.appendChild(UI.h('div', { class: 'card stat-strip' },
@@ -108,7 +137,7 @@
       quoteBox.appendChild(UI.table([
         { label: '日期', render: (r) => UI.fmtDate(r.priceDate) },
         { label: '行业价格(元/湿吨)', num: true, render: (r) => r.industry != null ? UI.fmtMoney(r.industry) : '—' },
-        { label: '交易价格(元/吨)', num: true, render: (r) => r.deal != null ? UI.fmtMoney(r.deal) : '—' },
+        { label: '交易价格(元/湿吨)', num: true, render: (r) => r.deal != null ? UI.fmtMoney(r.deal) : '—' },
         { label: '涨跌', render: (r) => chgTag(r.chg) },
       ], quoteRowsOf(curHbGrade).slice(0, 7), '暂无价格数据'));
     }
@@ -141,16 +170,16 @@
       UI.h('div', { class: 'toolbar' },
         UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '货运趋势')),
       freightRows.length >= 2
-        ? UI.trendChart(freightRows, 'price', '吨')
+        ? UI.trendChart(freightRows, 'price', '湿吨')
         : UI.h('div', { class: 'empty' }, '暂无运单数据')));
     // 矿种分布 + 运输方式运量对比（同行两列）
     page.appendChild(UI.h('div', { class: 'dash-charts' },
       UI.h('div', { class: 'card' },
         UI.h('h3', {}, '矿种分布'),
-        UI.donutChart(varietyDist, 'qty', 'name', '总运量(吨)')),
+        UI.donutChart(varietyDist, 'qty', 'name', '总运量(湿吨)')),
       UI.h('div', { class: 'card' },
         UI.h('h3', {}, '运输方式运量对比'),
-        UI.hbarChart(modeDist, 'qty', 'name', '吨'))));
+        UI.hbarChart(modeDist, 'qty', 'name', '湿吨'))));
   };
 
   /* 涨跌标签：红涨绿跌，无对比基准显示 — */
@@ -294,7 +323,7 @@
     });
     Object.keys(byPortChg).forEach((p) => {
       let prev = null;
-      byPortChg[p].slice().sort((a, b) => String(a.priceDate).localeCompare(String(b.priceDate))).forEach((r) => {
+      byPortChg[p].slice().sort((a, b) => String(a.priceDate).localeCompare(String(b.priceDate)) || (a.id - b.id)).forEach((r) => {
         r.chg = prev != null ? r.price - prev : null;
         prev = r.price;
       });
@@ -307,18 +336,20 @@
         UI.h('div', { class: 'spacer' }),
         UI.h('button', { class: 'sm', onclick: () => { location.hash = '#/dashboard'; } }, '返回看板'))));
 
-    /* 筛选框（品位/港口）+ 价格录入按钮，筛选变化即重渲染表格；每页 15 条分页 */
+    /* 筛选框（品位/港口）+ 价格录入按钮，筛选变化即重渲染表格；每页 10 条分页 */
     const ports = Array.from(new Set(portRows.map((r) => r.portName || r.port || ''))).filter(Boolean).sort();
     let fGrade = '';
     let fPort = '';
     let pageNo = 1;
-    const pageSize = 15;
+    const picked = new Set(); // 行首勾选框（仅行选择展示）
+    const pageSize = 10;
     const gradeSel = UI.selectField([['', '全部品位'], ['61.5', '61.5%'], ['60.8', '60.8%']], '',
       { onchange: (e) => { fGrade = e.target.value; pageNo = 1; renderTable(); } });
     const portSel = UI.selectField([['', '全部港口']].concat(ports.map((p) => [p, p])), '',
       { onchange: (e) => { fPort = e.target.value; pageNo = 1; renderTable(); } });
 
     const COLS = [
+      UI.selCol(picked),
       { key: 'varietyName', label: '产品名称' },
       { label: '品位', render: (r) => gradeTxt(gradeOf(r)) },
       { label: '港口', render: (r) => r.portName || r.port || '-' },
@@ -329,7 +360,9 @@
       { label: '涨跌', render: (r) => chgTag(r.chg) },
       { label: '操作', render: (r) => UI.h('button', { class: 'sm', onclick: () => openEntryModal(r) }, '重新录入') },
     ];
-    const tableBox = UI.h('div', {});
+    /* 定高列表区 + 分页行同卡片（同需求归集）：横向滚动条固定在分页行上方 */
+    const tableBox = UI.h('div', { class: 'list-fixed' });
+    const pagerBox = UI.h('div', {});
     function renderTable() {
       const rows = allRows.filter((r) =>
         (!fGrade || String(gradeOf(r)) === fGrade) && (!fPort || (r.portName || r.port) === fPort));
@@ -338,7 +371,8 @@
       tableBox.innerHTML = '';
       tableBox.appendChild(UI.table(COLS,
         rows.slice((pageNo - 1) * pageSize, pageNo * pageSize), '暂无价格数据'));
-      UI.pager(tableBox, pageNo, pageSize, rows.length, (p) => { pageNo = p; renderTable(); });
+      pagerBox.innerHTML = '';
+      UI.pager(pagerBox, pageNo, pageSize, rows.length, (p) => { pageNo = p; renderTable(); });
     }
 
     /* 价格录入弹窗：填 产品名称/品位/港口/价格/价格日期（默认当天），计价口径(湿基)、来源(Mysteel) 由系统自动补充 */
@@ -353,10 +387,18 @@
       const defVar = row ? String(row.varietyId) : String(pb.id);
       const varietySel = UI.selectField(entryVarieties.map((v) => [String(v.id), v.varietyName]), defVar);
       const rowPort = row ? (row.portName || row.port || '') : '';
-      const portPick = ports.length
-        ? UI.selectField(ports.map((p) => [p, p]), rowPort || ports[0])
-        : UI.input('text', rowPort, { placeholder: '港口名称，如：黄骅港' });
-      const priceInp = UI.input('number', row ? String(row.price) : '', { placeholder: '价格（元/湿吨）' });
+      /* 港口：既可选择现有港口（datalist 下拉建议），也可直接录入新港口名称 */
+      const portInp = UI.input('text', rowPort, {
+        list: ports.length ? 'port-datalist' : null,
+        placeholder: ports.length ? '选择或输入港口名称' : '港口名称，如：黄骅港',
+        autocomplete: 'off',
+      });
+      const portPick = UI.h('div', { style: 'display:flex' },
+        portInp,
+        ports.length ? UI.h('datalist', { id: 'port-datalist' },
+          ports.map((p) => UI.h('option', { value: p }))) : null);
+      const priceInp = UI.input('number', row ? Number(row.price).toFixed(2) : '',
+        { placeholder: '价格（元/湿吨）', step: '0.01' });
       const FORM_GRADES = [61.5, 60.8];
       let curGrade = row ? gradeOf(row) : 61.5;
       const gradeBtns = FORM_GRADES.map((g) => UI.h('button', {
@@ -384,20 +426,26 @@
           UI.formRow('计价口径', UI.input('text', '湿基', {}), false),
           UI.formRow('来源', UI.input('text', 'Mysteel', {}), false)),
         UI.h('div', { class: 'hint', style: 'margin-top:8px' },
-          '同一港口同一日期同一品位重复保存将更新价格')), [
+          '同一品种×港口×日期×品位已有价格时，不覆盖原记录，提醒后新增一条记录')), [
         UI.h('button', { class: 'sm', onclick: () => m.close() }, '取 消'),
         UI.h('button', { class: 'primary', onclick: async () => {
-          const portName = String(portPick.value || '').trim();
+          const portName = String(portInp.value || '').trim();
           if (!portName) { UI.toast('请选择或填写港口', 'err'); return; }
           if (!(Number(priceInp.value) > 0)) { UI.toast('价格需大于 0', 'err'); return; }
           if (!dateInp.value) { UI.toast('请选择价格日期', 'err'); return; }
           try {
-            await API.post('/base-prices/ports', {
+            /* 重复录入规则：同键已有价格时不覆盖，仅提醒并新增一条 */
+            const res = await API.post('/base-prices/ports', {
               varietyId: Number(varietySel.value), portName,
               priceDate: dateInp.value, price: Number(priceInp.value), grade: curGrade,
             });
             m.close();
-            UI.toast('已保存，页面数据已自动更新', 'ok');
+            if (res && res.duplicated) {
+              UI.toast('同品种/港口/日期/品位已有价格记录（'
+                + Number(res.existingPrice).toFixed(2) + ' 元/湿吨），未覆盖原记录，已新增一条');
+            } else {
+              UI.toast('已保存，页面数据已自动更新', 'ok');
+            }
             /* 整页重渲染：全部价格数据/今日港口价/趋势图按录入的新数据自动更新 */
             window.App.route();
           } catch (e) { /* toast 已提示 */ }
@@ -418,57 +466,45 @@
           style: 'margin-left:12px',
           onclick: () => openEntryModal(),
         }, '价格录入')),
-      tableBox));
+      tableBox,
+      pagerBox));
     renderTable();
   };
 
-  /* -------- 企业审核台 -------- */
-  Pages.admin_companies = async function (page) {
+  /* -------- 企业审核台 --------
+     initialTab: list=准入申请列表 archive=企业档案信息（由侧边栏二级菜单路由决定） */
+  Pages.admin_companies = async function (page, initialTab) {
     let pageNo = 1;
-    const SIZE = 15;
+    let archivePageNo = 1;
+    const SIZE = 10;
     let auditStatus = '';
-    let tab = 'list'; // list=准入申请列表 archive=企业档案信息
+    let tab = initialTab || 'list'; // list=准入申请列表 archive=企业档案信息
     let keyword = '';
     let cache = [];
+    const pickedRows = new Set(); // 行首勾选框（仅行选择展示）
 
-    const TABS = [
-      ['list', '准入申请列表'],
-      ['archive', '企业档案信息'],
-    ];
-    const tabBar = UI.h('div', { class: 'tab-bar' },
-      ...TABS.map(([key, label]) => UI.h('button', {
-        class: 'tab-btn', 'data-tab': key,
-        onclick: () => { tab = key; pageNo = 1; render(); },
-      }, label)));
-
-    function syncTabs() {
-      tabBar.querySelectorAll('.tab-btn').forEach((b) => {
-        b.classList.toggle('active', b.getAttribute('data-tab') === tab);
-      });
-    }
-
-    const listBox = UI.h('div', {});
+    /* 定高列表区（同需求归集，10 行/页）：纵向超出滚动，横向滚动条固定在分页行上方 */
+    const listBox = UI.h('div', { class: 'list-fixed' });
     const pagerBox = UI.h('div', {});
 
     const filterEl = UI.h('div', {});
-    const bigCard = UI.h('div', { class: 'card company-audit-card' },
+    const bigCard = UI.h('div', { class: 'card' },
       UI.h('div', { class: 'toolbar' },
-        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '企业准入'),
-        UI.h('div', { class: 'spacer' }),
+        UI.h('h3', { style: 'margin:0;border:none;padding:0' },
+          tab === 'archive' ? '企业档案信息' : '准入申请列表'),
         filterEl),
-      tabBar,
       listBox,
       pagerBox);
     page.appendChild(bigCard);
     render();
 
-    /* 表格外层：整表框线 + 超宽横向滚动 + 固定高度区域内滚动 */
+    /* 表格外层：与需求列表一致，仅超宽时横向滚动 */
     function tableWrap(table) { return UI.h('div', { class: 'table-scroll-wrap' }, table); }
 
     function filterBox() { return filterEl; }
 
-    /* 企业类型中文显示（STEEL/SUPPLIER/LOGISTICS → 钢厂/供应商/承运商） */
-    const TYPE_CN = { STEEL: '钢厂（需方）', SUPPLIER: '供应商（供方）', LOGISTICS: '承运商' };
+    /* 企业类型中文显示（STEEL/SUPPLIER/LOGISTICS → 钢铁企业/供应商/承运商） */
+    const TYPE_CN = { STEEL: '钢铁企业（需方）', SUPPLIER: '供应商（供方）', LOGISTICS: '承运商' };
     function typesCn(s) {
       if (!s) return '-';
       return String(s).split(',').map((t) => TYPE_CN[t.trim()] || t.trim()).join('、');
@@ -477,36 +513,51 @@
     async function render() {
       const box = filterBox();
       if (!box) return;
-      syncTabs();
       box.innerHTML = '';
       // 两个页签都在表格上方提供关键字检索（企业名称/信用代码/联系人/账号）
       const kwInput = UI.input('text', keyword, {
         placeholder: '企业名称 / 信用代码 / 联系人 / 账号',
         style: 'width:230px;margin-right:8px',
       });
-      const go = () => { keyword = kwInput.value.trim(); pageNo = 1; render(); };
+      const go = () => { keyword = kwInput.value.trim(); pageNo = 1; archivePageNo = 1; render(); };
       kwInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
       box.appendChild(UI.h('span', { class: 'inline-flex' },
         kwInput,
-        UI.h('button', { class: 'sm', onclick: go }, '查询')));
+        UI.h('button', { class: 'sm', onclick: go }, '查询'),
+        UI.h('button', { class: 'sm', onclick: exportCsv }, '导 出')));
+      // 现阶段企业注册即默认准入，不再提供准入状态筛选
       if (tab === 'list') {
-        box.appendChild(UI.statusFilter('AUDIT', (v) => { auditStatus = v; pageNo = 1; load(); }));
         await load();
       } else {
-        listBox.innerHTML = '';
-        pagerBox.innerHTML = '';
-        const d = await API.get('/admin/companies' + API.qs({ auditStatus: '', keyword, page: 1, size: 200 }));
-        cache = d.list || [];
-        listBox.appendChild(tableWrap(UI.table([
-          { label: '序号', render: (r) => String(cache.indexOf(r) + 1) },
-          { key: 'companyName', label: '企业名称' },
-          { key: 'creditCode', label: '统一社会信用代码' },
-          { label: '企业类型', render: (r) => typesCn(r.companyTypes) },
-          { key: 'contactName', label: '联系人' },
-          { key: 'contactPhone', label: '联系电话' },
-          { label: '操作', render: (r) => UI.h('span', { class: 'inline-flex' }, UI.h('button', { class: 'sm', onclick: () => detail(r.id, 'archive') }, '详情')) },
-        ], cache, keyword ? '未找到匹配的企业' : '暂无企业档案')));
+        await loadArchive();
       }
+    }
+
+    /* 导出当前查询结果（两个页签列不同：准入列表含注册时间/账号/账号状态） */
+    async function exportCsv() {
+      const isList = tab === 'list';
+      const d = await API.get('/admin/companies' + API.qs({
+        auditStatus: isList ? auditStatus : '',
+        keyword, page: 1, size: 500 }));
+      const rows = d.list || [];
+      if (!rows.length) { UI.toast('暂无可导出的数据', 'err'); return; }
+      const esc = (s) => '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"';
+      const head = isList
+        ? ['企业名称', '统一社会信用代码', '企业类型', '联系人', '联系电话', '注册时间', '账号', '账号状态']
+        : ['企业名称', '统一社会信用代码', '企业类型', '联系人', '联系电话'];
+      const lines = [head.map(esc)].concat(rows.map((r) => (isList ? [
+        r.companyName, r.creditCode, typesCn(r.companyTypes), r.contactName, r.contactPhone,
+        r.createdAt ? UI.fmtDateTime(r.createdAt) : '', r.account || '', r.status === 'ENABLED' ? '启用' : '停用',
+      ] : [
+        r.companyName, r.creditCode, typesCn(r.companyTypes), r.contactName, r.contactPhone,
+      ]).map(esc).join(',')));
+      const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      const a = UI.h('a', { href: URL.createObjectURL(blob),
+        download: (isList ? '准入申请列表' : '企业档案信息') + '_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv' });
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      UI.toast('已导出 ' + rows.length + ' 条', 'ok');
     }
 
     async function load() {
@@ -514,19 +565,39 @@
       cache = d.list || [];
       listBox.innerHTML = '';
       listBox.appendChild(tableWrap(UI.table([
+        UI.selCol(pickedRows),
         { label: '序号', render: (r) => String((pageNo - 1) * SIZE + cache.indexOf(r) + 1) },
         { key: 'companyName', label: '企业名称' },
         { key: 'creditCode', label: '统一社会信用代码' },
         { label: '企业类型', render: (r) => typesCn(r.companyTypes) },
         { key: 'contactName', label: '联系人' },
         { key: 'contactPhone', label: '联系电话' },
-        { key: 'createdAt', label: '提交时间', render: (r) => r.createdAt ? UI.fmtDateTime(r.createdAt) : '—' },
+        { key: 'createdAt', label: '注册时间', render: (r) => r.createdAt ? UI.fmtDateTime(r.createdAt) : '—' },
         { key: 'account', label: '账号', render: (r) => r.account || '-' },
         { key: 'status', label: '账号状态', render: (r) => r.status === 'ENABLED' ? UI.h('span', { class: 'tag green' }, '启用') : UI.h('span', { class: 'tag red' }, '停用') },
         { label: '操作', render: (r) => acts(r) },
       ], d.list, '暂无企业')));
       pagerBox.innerHTML = '';
       UI.pager(pagerBox, pageNo, SIZE, d.total, (p) => { pageNo = p; load(); });
+    }
+
+    /* 企业档案信息页签：与准入列表同款分页（每页 10 条，分页条置于表格下方） */
+    async function loadArchive() {
+      const d = await API.get('/admin/companies' + API.qs({ auditStatus: '', keyword, page: archivePageNo, size: SIZE }));
+      cache = d.list || [];
+      listBox.innerHTML = '';
+      listBox.appendChild(tableWrap(UI.table([
+        UI.selCol(pickedRows),
+        { label: '序号', render: (r) => String((archivePageNo - 1) * SIZE + cache.indexOf(r) + 1) },
+        { key: 'companyName', label: '企业名称' },
+        { key: 'creditCode', label: '统一社会信用代码' },
+        { label: '企业类型', render: (r) => typesCn(r.companyTypes) },
+        { key: 'contactName', label: '联系人' },
+        { key: 'contactPhone', label: '联系电话' },
+        { label: '操作', render: (r) => UI.h('span', { class: 'inline-flex' }, UI.h('button', { class: 'sm', onclick: () => detail(r.id, 'archive') }, '详情')) },
+      ], cache, keyword ? '未找到匹配的企业' : '暂无企业档案')));
+      pagerBox.innerHTML = '';
+      UI.pager(pagerBox, archivePageNo, SIZE, d.total, (p) => { archivePageNo = p; loadArchive(); });
     }
 
     function acts(r) {
@@ -693,7 +764,7 @@
         box.appendChild(UI.kv([
           ['累计需求单', String(coop.demandCount || 0) + ' 单'],
           ['成交订单数', String(coop.orderCount || 0) + ' 单'],
-          ['累计成交量', String(coop.totalQty || 0) + ' 吨'],
+          ['累计成交量', String(coop.totalQty || 0) + ' 湿吨'],
           ['累计成交金额', '¥ ' + UI.fmtMoney(coop.totalAmount || 0)],
           ['关联合同数', String(coop.contractCount || 0) + ' 份'],
           ['最近成交时间', coop.lastDealAt ? UI.fmtDateTime(coop.lastDealAt) : '—'],
@@ -735,55 +806,50 @@
     }
   };
 
-  /* -------- 需求归集：需求列表 + 变更申请审核 -------- */
-  Pages.demand_pool = async function (page) {
+  /* 企业准入二级菜单路由：准入申请列表 / 企业档案信息（复用同一页面，初始页签不同） */
+  Pages.company_list = function (page) { return Pages.admin_companies(page, 'list'); };
+  Pages.company_archive = function (page) { return Pages.admin_companies(page, 'archive'); };
+
+  /* -------- 需求归集：需求列表 / 订单归集 / 变更申请审核
+     initialTab 由侧边栏二级菜单路由决定 -------- */
+  Pages.demand_pool = async function (page, initialTab) {
     const SIZE = 10;
     let pageNo = 1;
     let chPageNo = 1;
     let aggPageNo = 1;
-    let tab = 'demands'; // demands=需求列表 aggr=归集订单 changes=变更申请审核
+    // demands=需求列表 aggr=订单归集 group=需求归集 changes=变更申请审核（route() 传参可能为查询对象，仅接受合法页签字符串）
+    let tab = (initialTab === 'demands' || initialTab === 'aggr' || initialTab === 'group' || initialTab === 'changes')
+      ? initialTab : 'demands';
     let demandStatus = '';
     let changeStatus = '';
     let aggStatus = '';
     let demandRows = [];
     const picked = new Set(); // 勾选的待归集需求明细 id
+    const groupPicked = new Set(); // 需求归集页行首勾选框（行选择展示，用于后续批量推送供应商）
     const pickedAgg = new Set(); // 勾选的归集订单（OPEN）
+    const pickedCh = new Set(); // 变更申请行首勾选框（仅行选择展示）
     // 表格横向滚动容器：超宽时面板内右拉
     const scrollWrap = (node, style) => UI.h('div', { class: 'table-scroll-wrap', style }, node);
 
-    const TABS = [
-      ['demands', '需求列表'],
-      ['aggr', '订单归集'],
-      ['changes', '变更申请审核'],
-    ];
-    const tabBar = UI.h('div', { class: 'tab-bar' },
-      ...TABS.map(([key, label]) => UI.h('button', {
-        class: 'tab-btn', 'data-tab': key,
-        onclick: () => { tab = key; pageNo = 1; chPageNo = 1; aggPageNo = 1; picked.clear(); pickedAgg.clear(); render(); },
-      }, label)));
-
     const filterBox = UI.h('div', {});
-    const listBox = UI.h('div', {});
+    /* 三个二级菜单共用列表容器：定高列表区（.list-fixed，表头39px+10行×48px），切换页签高度保持不变；纵向超出滚动，横向滚动条固定在分页行上方 */
+    const listBox = UI.h('div', { class: 'list-fixed' });
     const pagerBox = UI.h('div', {});
 
+    /* 卡片标题随二级菜单页签变化：需求列表/订单归集/需求归集/变更申请 */
+    const TAB_TITLE = { demands: '需求列表', aggr: '订单归集', group: '需求归集', changes: '变更申请' };
+    const titleEl = UI.h('h3', { style: 'margin:0;border:none;padding:0' }, TAB_TITLE[tab] || '需求列表');
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('div', { class: 'toolbar' },
-        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '需求归集'),
+        titleEl,
         UI.h('div', { class: 'spacer' }),
         filterBox),
-      tabBar,
       listBox,
       pagerBox));
     render();
 
-    function syncTabs() {
-      page.querySelectorAll('.tab-btn').forEach((b) => {
-        b.classList.toggle('active', b.getAttribute('data-tab') === tab);
-      });
-    }
-
     async function render() {
-      syncTabs();
+      titleEl.textContent = TAB_TITLE[tab] || '需求列表';
       filterBox.innerHTML = '';
       pagerBox.innerHTML = '';
       if (tab === 'demands') {
@@ -803,10 +869,35 @@
         }, '去询价'));
         filterBox.appendChild(UI.statusFilter('AGG', (v) => { aggStatus = v; aggPageNo = 1; loadAggr(); }));
         await loadAggr();
+      } else if (tab === 'group') {
+        filterBox.appendChild(UI.statusFilter('AGG', (v) => { aggStatus = v; aggPageNo = 1; loadGroup(); }));
+        filterBox.appendChild(UI.h('button', { class: 'primary', style: 'margin-left:10px', onclick: pushGroups }, '推送供应商'));
+        await loadGroup();
       } else {
         filterBox.appendChild(UI.statusFilter('CHANGE', (v) => { changeStatus = v; chPageNo = 1; loadChanges(); }));
         await loadChanges();
       }
+    }
+
+    /* 申报周期展示：QUARTER → 2026年第4季度；MONTH → 2026年11月；ONE_TIME → 一次性订单（2026年12月） */
+    function cycleTxt(r) {
+      if (r && r.cycleType === 'ONE_TIME') {
+        return (r.cycleYear && r.cycleValue)
+          ? '一次性订单（' + r.cycleYear + '年' + r.cycleValue + '月）' : '一次性订单';
+      }
+      if (!r || !r.cycleType) return '—';
+      return r.cycleYear + '年' + (r.cycleType === 'QUARTER' ? '第' + r.cycleValue + '季度' : r.cycleValue + '月');
+    }
+
+    /* 周期类型文案：MONTH→月度，QUARTER→季度，ONE_TIME→一次性订单 */
+    function cycleTypeTxt(t) {
+      return ({ MONTH: '月度', QUARTER: '季度', ONE_TIME: '一次性订单' }[t]) || '—';
+    }
+
+    /* 申报周期值文案（不含类型前缀，配合独立的「周期类型」列）：ONE_TIME/MONTH → 2026年12月，QUARTER → 2026年第4季度 */
+    function cycleValueTxt(r) {
+      if (!r || !r.cycleType || !r.cycleYear || !r.cycleValue) return '—';
+      return r.cycleYear + '年' + (r.cycleType === 'QUARTER' ? '第' + r.cycleValue + '季度' : r.cycleValue + '月');
     }
 
     async function loadDemands() {
@@ -824,19 +915,19 @@
         { label: '序号', render: (r) => String((pageNo - 1) * SIZE + demandRows.indexOf(r) + 1) },
         { label: '单号', render: (r) => noLink(r.demandNo, () => demandDetail(r.demandId)) },
         { key: 'companyName', label: '企业' },
-        { key: 'category', label: '品类', render: (r) => r.category || '-' },
-        { key: 'varietyName', label: '矿种' },
-        { key: 'quantity', label: '吨数', num: true, render: (r) => fmtQty(r.quantity) },
+        /* 品类列展示矿种名称（PB粉/中华混一号），周期类型+申报周期两列分开展示 */
+        { key: 'varietyName', label: '品类', render: (r) => r.varietyName || r.category || '-' },
+        { label: '周期类型', render: (r) => cycleTypeTxt(r.cycleType) },
+        { label: '申报周期', render: (r) => cycleValueTxt(r) },
+        { key: 'quantity', label: '吨数(湿吨)', num: true, render: (r) => fmtQty(r.quantity) },
         { key: 'grade', label: '品位(%)', num: true },
         { label: '提货地点', render: (r) => {
-            const t = { PORT_FOB: '港口离岸', PORT_TRUCK: '港口自提', PLANT: '厂内自提' }[r.deliveryType] || '';
+            const t = { PORT_FOB: '港口离岸', PORT_TRUCK: '港口自提', PLANT: '场内自提' }[r.deliveryType] || '';
             return (r.deliveryPlace || '-') + (t ? '（' + t + '）' : '');
           } },
-        { label: '到货日期', render: (r) => UI.fmtDate(r.expectArriveStart) + ' ~ ' + UI.fmtDate(r.expectArriveEnd) },
+        { label: '预期到货时间', render: (r) => UI.fmtDate(r.expectArriveStart) + ' ~ ' + UI.fmtDate(r.expectArriveEnd) },
         { label: '归集单号', render: (r) => noLink(r.aggNo, () => aggDetail(r.aggId)) },
         { label: '询价单号', render: (r) => noLink(r.inquiryNo, () => inquiryModal(r.inquiryId, r.inquiryNo)) },
-        { label: '询价状态', render: (r) => r.inquiryStatus ? UI.statusTag('INQUIRY', r.inquiryStatus) : '—' },
-        { label: '报价截止', render: (r) => (r.inquiryDeadline ? UI.fmtDate(r.inquiryDeadline) : '—') },
         { key: 'status', label: '状态', render: (r) => UI.statusTag('DEMAND', r.status) },
         { label: '提交日期', render: (r) => (r.submittedAt ? UI.fmtDate(r.submittedAt) : '-') },
         { label: '操作', render: (r) => UI.h('button', { class: 'sm', onclick: () => demandDetail(r.demandId) }, '详情') },
@@ -844,26 +935,58 @@
       UI.pager(pagerBox, pageNo, SIZE, d.total, (p) => { pageNo = p; loadDemands(); });
     }
 
-    /* 合并归集：勾选同品种同品位的已提交明细 → 生成归集订单（后端锁定量） */
+    /* 合并归集：勾选同品种同品位同周期分组的已提交明细 → 生成归集单（后端锁定量）。
+       一次性订单明细 → 「订单归集」；月度/季度计划 → 「需求归集」（须申报周期一致），两类不可混合。
+       存在同品种同品位同分组、未询价（OPEN）的归集单时，可选择并入已有单或生成新单。 */
     async function mergeAggregated() {
       if (!picked.size) { UI.toast('请先在列表中勾选需求明细（仅「已提交」状态可勾选）', 'err'); return; }
       const rows = demandRows.filter((r) => picked.has(r.id));
       const key = (r) => String(r.varietyName) + '@' + (r.grade == null ? '' : String(r.grade));
       if (new Set(rows.map(key)).size > 1) { UI.toast('仅同品种且同品位的明细可合并归集', 'err'); return; }
+      const kindOf = (r) => (r.cycleType === 'ONE_TIME' || !r.cycleType) ? 'ORDER' : 'DEMAND';
+      if (new Set(rows.map(kindOf)).size > 1) {
+        UI.toast('一次性订单与月度/季度计划不可混合归集，请分开勾选分别归集', 'err'); return;
+      }
+      const kind = kindOf(rows[0]);
       const remain = rows.reduce((s, r) => s + (r.quantity - (r.inquiredQty || 0)), 0);
       if (remain <= 0) { UI.toast('勾选明细已无可归集量', 'err'); return; }
-      if (!(await UI.confirmBox('将 ' + rows.length + ' 条明细合并为归集订单（合计 ' + remain + ' 吨，全量锁定）？'))) return;
+      const r0 = rows[0];
+      /* 同品种同品位同分组、未询价（OPEN）的归集单：提供「并入已有 / 生成新单」选择 */
+      let targetId = null;
       try {
-        const res = await API.post('/admin/aggregated-orders', { itemIds: [...picked] });
+        const openAggs = ((await API.get('/admin/aggregated-orders' + API.qs({ status: 'OPEN', kind, size: 100 }))).list || [])
+          .filter((a) => a.varietyName === r0.varietyName && Number(a.grade) === Number(r0.grade));
+        if (openAggs.length) {
+          targetId = await new Promise((resolve) => {
+            const sel = UI.selectField([['', '生成新归集订单']].concat(
+              openAggs.map((a) => [String(a.id), a.aggNo + '（现有 ' + fmtQty(a.totalQty) + ' 湿吨）'])), '');
+            const m = UI.modal('合并归集 · 选择目标归集订单', UI.h('form', { onsubmit: (e) => e.preventDefault() },
+              UI.h('div', { class: 'hint', style: 'margin-bottom:8px' },
+                '存在同品种同品位、未询价的归集订单，可将本次勾选明细并入其中，或生成新订单：'),
+              UI.formRow('目标归集订单', sel, true)), [
+              UI.h('button', { class: 'primary', onclick: () => {
+                const v = sel.value ? Number(sel.value) : null;
+                m.close(); resolve(v);
+              } }, '确 定'),
+            ]);
+          });
+        }
+      } catch (e) { /* 查询失败按生成新订单处理 */ }
+      if (!(await UI.confirmBox('将 ' + rows.length + ' 条明细（合计 ' + remain + ' 湿吨，全量锁定）'
+        + (targetId ? '并入所选归集订单？' : '合并为新的归集订单？')))) return;
+      try {
+        const res = await API.post('/admin/aggregated-orders',
+          targetId ? { itemIds: [...picked], aggId: targetId } : { itemIds: [...picked] });
         picked.clear();
-        UI.toast('归集订单 ' + res.aggNo + ' 已生成（' + res.totalQty + ' 吨），即将跳转归集订单页', 'ok');
-        tab = 'aggr'; aggPageNo = 1; // 自动跳转归集订单页
-        render();
+        UI.toast((targetId ? '已并入' : '生成') + (res.kind === 'DEMAND' ? '需求归集 ' : '归集订单 ')
+          + res.aggNo + '（' + res.totalQty + ' 湿吨）', 'ok');
+        // 按周期分组跳转：月度/季度 → 需求归集页；一次性订单 → 订单归集页
+        location.hash = res.kind === 'DEMAND' ? '#/demand-group' : '#/demand-aggr';
       } catch (e) { /* toast 已提示 */ }
     }
 
     async function loadAggr() {
-      const d = await API.get('/admin/aggregated-orders' + API.qs({ status: aggStatus, page: aggPageNo, size: SIZE }));
+      const d = await API.get('/admin/aggregated-orders' + API.qs({ kind: 'ORDER', status: aggStatus, page: aggPageNo, size: SIZE }));
       const rows = d.list || [];
       listBox.innerHTML = '';
       listBox.appendChild(scrollWrap(UI.table([
@@ -886,46 +1009,138 @@
         { label: '归集时间', render: (r) => UI.fmtDateTime(r.createdAt) },
         { label: '询价时间', render: (r) => (r.inquirySentAt ? UI.fmtDateTime(r.inquirySentAt) : '—') },
         { label: '操作', render: (r) => UI.h('span', { class: 'inline-flex' },
-            UI.h('button', { class: 'sm', onclick: () => aggDetail(r.id) }, '详情'),
-            r.status === 'OPEN'
-              ? UI.h('button', { class: 'sm', onclick: () => aggClose(r) }, '关闭')
-              : null) },
+            UI.h('button', { class: 'sm', onclick: () => aggDetail(r.id) }, '详情')) },
       ], rows, '暂无归集订单（在需求列表勾选同品种同品位明细后点「合并归集」生成）')));
       UI.pager(pagerBox, aggPageNo, SIZE, d.total, (p) => { aggPageNo = p; loadAggr(); });
+    }
+
+    /* 需求归集：月度/季度计划合并归集结果（一次性订单归集在「订单归集」页）。
+       此页归集单不用于询价，勾选后推送给供应商作为采购参考 */
+    async function loadGroup() {
+      const d = await API.get('/admin/aggregated-orders' + API.qs({ kind: 'DEMAND', status: aggStatus, page: aggPageNo, size: SIZE }));
+      const rows = d.list || [];
+      listBox.innerHTML = '';
+      listBox.appendChild(UI.h('div', { class: 'hint', style: 'margin:0 0 8px' },
+        '此页为月度/季度计划的需求归集，不用于询价：可勾选归集单推送给供应商，作为其采购参考'));
+      listBox.appendChild(scrollWrap(UI.table([
+        UI.selCol(groupPicked),
+        { label: '序号', render: (r) => String((aggPageNo - 1) * SIZE + rows.indexOf(r) + 1) },
+        { label: '归集单号', render: (r) => noLink(r.aggNo, () => aggDetail(r.id)) },
+        { key: 'varietyName', label: '矿种' },
+        { key: 'grade', label: '品位(%)', num: true },
+        { key: 'totalQty', label: '总吨数(湿吨)', num: true, render: (r) => fmtQty(r.totalQty) },
+        { label: '参与钢厂', render: (r) => UI.h('div', { class: 'cell-xscroll', title: r.companyNames || '' }, r.companyNames || '-') },
+        { key: 'memberCount', label: '钢厂数', num: true },
+        { label: '周期类型', render: (r) => cycleTypeTxt(r.cycleType) },
+        { label: '申报周期', render: (r) => cycleValueTxt(r) },
+        { label: '归集时间', render: (r) => UI.fmtDateTime(r.createdAt) },
+        { label: '推送状态', render: (r) => r.pushedAt
+          ? UI.h('span', { class: 'tag blue', title: '推送时间：' + UI.fmtDateTime(r.pushedAt) }, '已推送')
+          : UI.h('span', { class: 'tag gray' }, '未推送') },
+        { label: '操作', render: (r) => UI.h('button', { class: 'sm', onclick: () => aggDetail(r.id) }, '详情') },
+      ], rows, '暂无需求归集（在需求列表勾选同品种同品位同周期的月度/季度计划后点「合并归集」生成）')));
+      UI.pager(pagerBox, aggPageNo, SIZE, d.total, (p) => { aggPageNo = p; loadGroup(); });
+    }
+
+    /* 推送需求归集：勾选归集单 → 弹窗选择接收供应商（准入且启用）→ 确认推送（采购参考，非询价） */
+    async function pushGroups() {
+      if (!groupPicked.size) { UI.toast('请先勾选要推送的需求归集单', 'err'); return; }
+      let opts;
+      try { opts = (await API.get('/admin/supplier-options')).list || []; }
+      catch (e) { return; /* toast 已提示 */ }
+      if (!opts.length) { UI.toast('暂无可推送的准入供应商', 'err'); return; }
+      const cbAll = () => box.querySelectorAll('input[type=checkbox]');
+      const box = UI.h('div', {},
+        UI.h('div', { class: 'hint', style: 'margin:0 0 10px' },
+          '将勾选的 ' + groupPicked.size + ' 条需求归集推送给所选供应商，供应商可在其「需求归集」菜单查看归集详情（含钢厂参与明细）'),
+        UI.h('div', { style: 'display:flex;align-items:center;gap:8px;margin-bottom:6px' },
+          UI.h('span', { class: 'muted', style: 'font-size:12px;flex:1' }, '选择接收供应商（准入且启用）'),
+          UI.h('button', { class: 'sm', onclick: () => cbAll().forEach((c) => { c.checked = true; }) }, '全选'),
+          UI.h('button', { class: 'sm', onclick: () => cbAll().forEach((c) => { c.checked = false; }) }, '清空')),
+        UI.h('div', { style: 'max-height:300px;overflow-y:auto;border:1px solid #e5e5ea;border-radius:8px;padding:8px 14px' },
+          opts.map((s) => UI.h('label', { style: 'display:flex;align-items:center;gap:9px;padding:5px 0;cursor:pointer' },
+            UI.h('input', { type: 'checkbox', 'data-id': s.id }),
+            UI.h('span', {}, s.companyName || ('#' + s.id))))));
+      const m = UI.modal('选择推送供应商', box, [
+        UI.h('button', { class: 'primary', onclick: async () => {
+          const supIds = Array.from(box.querySelectorAll('input[type=checkbox]:checked'))
+            .map((c) => Number(c.dataset.id));
+          if (!supIds.length) { UI.toast('请选择至少一家供应商', 'err'); return; }
+          try {
+            const res = await API.post('/admin/aggregated-orders/push',
+              { ids: [...groupPicked], supplierIds: supIds });
+            groupPicked.clear();
+            UI.toast('已推送 ' + res.pushed + ' 条需求归集给 ' + res.suppliers + ' 家供应商', 'ok');
+            loadGroup();
+          } catch (e) { return; /* toast 已提示 */ }
+          m.close();
+        } }, '确认推送'),
+      ]);
     }
 
     async function aggDetail(aid) {
       const d = await API.get('/admin/aggregated-orders/' + aid);
       const o = d.order;
-      UI.modal('归集订单详情 · ' + o.aggNo, UI.h('div', {},
-        UI.kv([
+      /* 取消归集：仅未询价（OPEN）且非按询价单归集（无来源询价单）的成员可移出 */
+      const canCancel = (m) => o.status === 'OPEN' && !m.inquiryId;
+      async function cancelAggItem(m) {
+        if (!(await UI.confirmBox('将 ' + (m.companyName || '-') + ' 的 ' + (m.demandNo || '-')
+          + '（' + fmtQty(m.quantity) + ' 湿吨）移出归集订单？'
+          + '该需求将回到未归集前的「已提交」状态，可重新合并归集。'))) return;
+        try {
+          await API.put('/admin/aggregated-orders/' + aid + '/items/' + m.id + '/cancel');
+          UI.toast('已取消归集：' + (m.demandNo || '-') + ' 已回到需求列表', 'ok');
+          dlg.close();
+          aggDetail(aid);
+        } catch (e) { /* toast 已提示 */ }
+      }
+      const isDemand = o.aggKind === 'DEMAND';
+      const dlg = UI.modal((isDemand ? '需求归集详情 · ' : '归集订单详情 · ') + o.aggNo, UI.h('div', {},
+        /* 需求归集详情：仅展示归集单号/矿种/品位/总吨数/周期类型/申报周期/归集时间（不用于询价，无状态与备注） */
+        UI.kv(isDemand ? [
+          ['归集单号', o.aggNo],
+          ['矿种', o.varietyName || '-'],
+          ['品位(%)', o.grade == null ? '-' : String(o.grade)],
+          ['总吨数(湿吨)', fmtQty(o.totalQty)],
+          ['周期类型', cycleTypeTxt(o.cycleType)],
+          ['申报周期', cycleValueTxt(o)],
+          ['归集时间', UI.fmtDateTime(o.createdAt)],
+        ] : [
           ['归集单号', o.aggNo],
           ['矿种', (o.varietyName || '-') + '（' + (o.category || '-') + '）'],
           ['品位(%)', o.grade == null ? '-' : String(o.grade)],
-          ['总吨数', fmtQty(o.totalQty)],
+          ['总吨数(湿吨)', fmtQty(o.totalQty)],
           ['状态', UI.statusTag('AGG', o.status)],
           ['备注', o.remark || '-'],
           ['归集时间', UI.fmtDateTime(o.createdAt)],
         ]),
-        UI.h('h3', { style: 'margin:14px 0 8px' }, '参与明细（钢厂份额）'),
+        UI.h('h3', { style: 'margin:14px 0 8px' }, isDemand ? '参与明细' : '参与明细（钢厂份额）'),
         scrollWrap(UI.h('table', { class: 'grid' },
-          UI.h('thead', {}, UI.h('tr', {},
-            UI.h('th', {}, '钢厂'), UI.h('th', {}, '需求单号'), UI.h('th', {}, '矿种'),
-            UI.h('th', { style: 'text-align:right' }, '归集份额(吨)'))),
-          UI.h('tbody', {}, (d.members || []).map((m) => UI.h('tr', {},
-            UI.h('td', {}, m.companyName || '-'),
-            UI.h('td', {}, m.demandNo || '-'),
-            UI.h('td', {}, m.varietyName || '-'),
-            UI.h('td', { class: 'num' }, fmtQty(m.quantity)))))))));
-    }
-
-    async function aggClose(r) {
-      if (!(await UI.confirmBox('关闭归集订单 ' + r.aggNo + '？将释放各钢厂锁定量，需求回退为已提交。'))) return;
-      try {
-        await API.put('/admin/aggregated-orders/' + r.id + '/close', {});
-        UI.toast('归集订单已关闭，锁定量已释放', 'ok');
-        loadAggr();
-      } catch (e) { /* toast 已提示 */ }
+          UI.h('thead', {}, UI.h('tr', {}, (isDemand
+            ? ['钢厂', '矿种', '品位(%)', '数量(湿吨)', '预期到货时间']
+            : ['钢厂', '需求单号', '矿种', '来源询价单', '询价状态', '归集份额(湿吨)', '操作'])
+            .map((t) => UI.h('th', {}, t)))),
+          UI.h('tbody', {}, (d.members || []).map((m) => isDemand
+            ? UI.h('tr', {},
+              UI.h('td', {}, m.companyName || '-'),
+              UI.h('td', {}, m.varietyName || '-'),
+              UI.h('td', { class: 'num' }, m.grade == null ? '-' : String(m.grade)),
+              UI.h('td', { class: 'num' }, fmtQty(m.quantity)),
+              /* 周期 = 预期到货时间范围 */
+              UI.h('td', {}, m.expectArriveStart
+                ? UI.fmtDate(m.expectArriveStart) + ' ~ ' + UI.fmtDate(m.expectArriveEnd) : '—'))
+            : UI.h('tr', {},
+              UI.h('td', {}, m.companyName || '-'),
+              UI.h('td', {}, m.demandNo || '-'),
+              UI.h('td', {}, m.varietyName || '-'),
+              UI.h('td', {}, m.inquiryNo
+                ? UI.h('a', { href: 'javascript:;', onclick: () => inquiryModal(m.inquiryId, m.inquiryNo) }, m.inquiryNo)
+                : '—'),
+              UI.h('td', {}, m.inquiryStatus ? UI.statusTag('INQUIRY', m.inquiryStatus) : '—'),
+              UI.h('td', { class: 'num' }, fmtQty(m.quantity)),
+              UI.h('td', {}, canCancel(m)
+                ? UI.h('button', { class: 'sm', onclick: () => cancelAggItem(m) }, '取消归集')
+                : UI.h('span', { class: 'muted' }, '—')))))))));
     }
 
     /* 单号超链接：点击跳转对应详情 */
@@ -942,10 +1157,9 @@
           UI.kv([
             ['询价单号', d.inquiryNo || inquiryNo],
             ['矿种', (d.varietyName || '-') + (d.grade != null ? ' / ' + d.grade + '%' : '')],
-            ['吨数', fmtQty(d.quantity)],
-            ['报价截止', UI.fmtDateTime(d.deadline)],
+            ['吨数(湿吨)', fmtQty(d.quantity)],
             ['期望到货', UI.fmtDate(d.expectArriveDate)],
-            ['最少响应', (d.minResponse || 0) + ' 家'],
+            ['询价说明', d.inquiry_desc || '-'],
             ['状态', UI.statusTag('INQUIRY', d.status)],
           ]),
           UI.h('h3', { style: 'margin:14px 0 8px' }, '邀请与响应'),
@@ -955,6 +1169,9 @@
               ? UI.h('span', { class: 'tag blue' }, '已邀请')
               : UI.h('span', { class: 'tag gray' }, x.status)) },
             { label: '报价状态', render: (x) => (x.quoteStatus ? UI.statusTag('QUOTE', x.quoteStatus) : '-') },
+            { label: '报价详情', render: (x) => (x.quoteId
+              ? UI.h('button', { class: 'sm', onclick: () => quoteDetailModal(iid, x) }, '详情')
+              : '-') },
           ], d.invites || [], '暂无邀请'))));
       } catch (e) { /* toast 已提示 */ }
     }
@@ -962,7 +1179,13 @@
     function demandDetail(demandId) {
       const rows = demandRows.filter((r) => r.demandId === demandId);
       const head = rows[0] || {};
-      const items = rows.map((r) => [r.category || '-', r.varietyName, r.grade, r.quantity]);
+      /* 采购周期文案（与钢厂端需求单一致）：月度→2026年11月，季度→2026年第4季度，一次性订单→一次性订单（2026年12月） */
+      const cyc = (r) => (r.cycleType === 'ONE_TIME')
+        ? ((r.cycleYear && r.cycleValue) ? '一次性订单（' + r.cycleYear + '年' + r.cycleValue + '月）' : '一次性订单')
+        : (r.cycleType && r.cycleYear && r.cycleValue)
+          ? r.cycleYear + '年' + (r.cycleType === 'QUARTER' ? '第' + r.cycleValue + '季度' : r.cycleValue + '月')
+          : '—';
+      const items = rows.map((r) => [r.category || '-', r.varietyName, r.grade, cyc(r), r.quantity]);
       UI.modal('需求详情 · ' + (head.demandNo || ''), UI.h('div', {},
         UI.kv([
           ['单号', head.demandNo],
@@ -977,18 +1200,22 @@
         scrollWrap(UI.h('table', { class: 'grid' },
           UI.h('thead', {}, UI.h('tr', {},
             UI.h('th', {}, '品类'), UI.h('th', {}, '矿种'),
-            UI.h('th', { style: 'text-align:right' }, '品位(%)'),
-            UI.h('th', { style: 'text-align:right' }, '吨数'))),
-          UI.h('tbody', {}, items.map(([cat, vn, g, q]) => UI.h('tr', {},
+            UI.h('th', {}, '品位(%)'),
+            UI.h('th', {}, '采购周期'),
+            UI.h('th', {}, '吨数(湿吨)'))),
+          UI.h('tbody', {}, items.map(([cat, vn, g, cy2, q]) => UI.h('tr', {},
             UI.h('td', {}, String(cat)),
             UI.h('td', {}, String(vn || '-')),
             UI.h('td', { class: 'num' }, String(g == null ? '-' : g)),
-            UI.h('td', { class: 'num' }, fmtQty(q)))))))));    }
+            UI.h('td', {}, String(cy2)),
+            UI.h('td', { class: 'num' }, fmtQty(q)))))))));
+    }
 
     async function loadChanges() {
       const d = await API.get('/admin/demand-changes' + API.qs({ status: changeStatus, page: chPageNo, size: SIZE }));
       listBox.innerHTML = '';
       listBox.appendChild(scrollWrap(UI.table([
+        UI.selCol(pickedCh),
         { label: '序号', render: (r) => String((chPageNo - 1) * SIZE + (d.list.indexOf(r) + 1)) },
         { key: 'changeNo', label: '变更单号' },
         { key: 'demandNo', label: '需求单号', render: (r) => r.demandNo || '-' },
@@ -1004,41 +1231,74 @@
       UI.pager(pagerBox, chPageNo, SIZE, d.total, (p) => { chPageNo = p; loadChanges(); });
     }
 
+    /* 变更差异行：中文字段名 + 值翻译，仅列出有变化的项（删除申请无内容差异） */
+    function chgRows(r) {
+      if ((r.afterData || {}).deleteRequest) return [];
+      const DELIVERY = { PLANT: '到场', STATION_SELF: '到站自提', PORT_FOB: '港口FOB', PORT_TRUCK: '港口自提' };
+      const SETTLE = { PREPAY: '预付款', COD: '货到付款', CREDIT: '账期结算', INSTALLMENT: '分期' };
+      const b = r.beforeData || {}, a = r.afterData || {};
+      const rows = [];
+      /* 数值归一化：8000.000 与 8600 按数值比较，展示去掉尾零 */
+      const norm = (v) => {
+        if (v == null || v === '') return '';
+        const n = parseFloat(v);
+        return isNaN(n) ? String(v) : String(n);
+      };
+      const push = (label, x, y) => {
+        const nx = norm(x), ny = norm(y);
+        if (nx !== ny) rows.push([label, nx, ny]);
+      };
+      const cyc = (it) => (it && it.cycleType === 'ONE_TIME')
+        ? ((it.cycleYear && it.cycleValue)
+          ? '一次性订单（' + it.cycleYear + '年' + it.cycleValue + '月）' : '一次性订单')
+        : (!it || !it.cycleType ? '-' :
+          (it.cycleYear || '-') + '年' + (it.cycleType === 'QUARTER'
+            ? '第' + (it.cycleValue || '-') + '季度' : (it.cycleValue || '-') + '月'));
+      push('需求名称', b.demandName, a.demandName);
+      push('交货方式', DELIVERY[b.deliveryType] || b.deliveryType, DELIVERY[a.deliveryType] || a.deliveryType);
+      push('交货地点', b.deliveryPlace || '-', a.deliveryPlace || '-');
+      push('期望到货开始', b.expectArriveStart || '-', a.expectArriveStart || '-');
+      push('期望到货结束', b.expectArriveEnd || '-', a.expectArriveEnd || '-');
+      push('结算方式', SETTLE[b.settleType] || b.settleType, SETTLE[a.settleType] || a.settleType);
+      push('账期天数', b.settleDays || '-', a.settleDays || '-');
+      push('质量要求', b.qualityReq || '-', a.qualityReq || '-');
+      const bi = (b.items || [])[0] || {}, ai = (a.items || [])[0] || {};
+      push('品类', bi.varietyName, ai.varietyName);
+      push('品位(%)', bi.grade, ai.grade);
+      push('吨数(湿吨)', bi.quantity, ai.quantity);
+      push('溢短装(%)', bi.moreLessRate, ai.moreLessRate);
+      push('采购周期', cyc(bi), cyc(ai));
+      return rows;
+    }
+
     function changeSummary(r) {
-      const before = r.beforeData || {};
-      const after = r.afterData || {};
-      const parts = [];
-      Object.keys(after).forEach((k) => {
-        if (String(before[k]) !== String(after[k])) {
-          parts.push(k + ' ' + (before[k] == null ? '-' : before[k]) + '→' + after[k]);
-        }
-      });
-      return parts.join('；') || '-';
+      if ((r.afterData || {}).deleteRequest) return '删除申请（通过后需求单关闭）';
+      return chgRows(r).map(([k, x, y]) => k + ' ' + (x == null ? '-' : x) + '→' + (y == null ? '-' : y)).join('；') || '-';
     }
 
     function changeDiff(r) {
-      const before = r.beforeData || {};
-      const after = r.afterData || {};
-      const keys = [];
-      Object.keys(before).forEach((k) => { if (keys.indexOf(k) < 0) keys.push(k); });
-      Object.keys(after).forEach((k) => { if (keys.indexOf(k) < 0) keys.push(k); });
-      if (!keys.length) return UI.h('div', { class: 'hint' }, '无变更明细');
+      const rows = chgRows(r);
+      if ((r.afterData || {}).deleteRequest) {
+        return UI.h('div', { class: 'hint' },
+          '该记录为删除申请：审核通过后需求单将关闭并自动移出未询价归集订单（份额释放）；驳回则需求回退删除前状态。');
+      }
+      if (!rows.length) return UI.h('div', { class: 'hint' }, '无变更明细');
       return scrollWrap(UI.h('table', { class: 'grid' },
         UI.h('thead', {}, UI.h('tr', {},
           UI.h('th', {}, '变更项'),
-          UI.h('th', { style: 'text-align:right' }, '变更前'),
-          UI.h('th', { style: 'text-align:right' }, '变更后'))),
-        UI.h('tbody', {}, keys.map((k) => UI.h('tr', {},
+          UI.h('th', {}, '变更前'),
+          UI.h('th', {}, '变更后'))),
+        UI.h('tbody', {}, rows.map(([k, x, y]) => UI.h('tr', {},
           UI.h('td', {}, k),
-          UI.h('td', { class: 'num' }, String(before[k] == null ? '-' : before[k])),
-          UI.h('td', { class: 'num' }, String(after[k] == null ? '-' : after[k]))))),
-        ), 'margin-bottom:8px');
+          UI.h('td', { class: 'num' }, String(x == null ? '-' : x)),
+          UI.h('td', { class: 'num' }, String(y == null ? '-' : y)))))),
+        'margin-bottom:8px');
     }
 
     function auditModal(r) {
       const approve = UI.selectField([['true', '通过'], ['false', '驳回']], 'true');
       const remark = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '审核意见（驳回必填）' });
-      const m = UI.modal('变更申请审核 · ' + r.changeNo, UI.h('form', { onsubmit: (e) => e.preventDefault() },
+      const m = UI.modal('变更申请 · ' + r.changeNo, UI.h('form', { onsubmit: (e) => e.preventDefault() },
         UI.h('h3', { style: 'margin:0 0 8px' }, '变更内容'),
         changeDiff(r),
         UI.h('div', { class: 'hint', style: 'margin:8px 0' }, '变更原因：' + (r.reason || '-')),
@@ -1071,24 +1331,32 @@
     }
   };
 
-  /* -------- 报价询价：汇集需求代钢厂统一询价 → 汇总报价返回钢厂 -------- */
+  /* 需求归集二级菜单路由：需求列表 / 订单归集 / 需求归集 / 变更申请审核（复用同一页面，初始页签不同） */
+  Pages.demand_list = function (page) { return Pages.demand_pool(page, 'demands'); };
+  Pages.demand_aggr = function (page) { return Pages.demand_pool(page, 'aggr'); };
+  Pages.demand_group = function (page) { return Pages.demand_pool(page, 'group'); };
+  Pages.demand_changes = function (page) { return Pages.demand_pool(page, 'changes'); };
+
+  /* -------- 询价报价：汇集需求代钢厂统一询价 → 汇总报价返回钢厂 -------- */
   Pages.quote_inquiry = async function (page) {
     const SIZE = 10;
     let pageNo = 1;
     let status = '';
+    const picked = new Set(); // 行首勾选框（仅行选择展示）
     // 表格横向滚动容器：超宽时面板内右拉
     const scrollWrap = (node, style) => UI.h('div', { class: 'table-scroll-wrap', style }, node);
 
-    const listCard = UI.h('div', { class: 'card' });
+    /* 定高列表区 + 分页行同卡片（同需求归集）：横向滚动条固定在分页行上方 */
+    const listBox = UI.h('div', { class: 'list-fixed' });
     const pagerBox = UI.h('div', {});
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('div', { class: 'toolbar' },
-        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '报价询价'),
+        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '询价报价'),
         UI.h('div', { class: 'spacer' }),
         UI.statusFilter('INQUIRY', (v) => { status = v; pageNo = 1; load(); }),
-        UI.h('button', { class: 'primary', onclick: () => createModal() }, '发起询价'))));
-    page.appendChild(listCard);
-    page.appendChild(pagerBox);
+        UI.h('button', { class: 'primary', onclick: () => createModal() }, '发起询价')),
+      listBox,
+      pagerBox));
     await load();
 
     // 从需求归集「去询价」跳转过来：自动弹出发起询价弹窗并带入勾选的归集订单
@@ -1100,8 +1368,9 @@
 
     async function load() {
       const d = await API.get('/admin/quote-inquiries' + API.qs({ status, page: pageNo, size: SIZE }));
-      listCard.innerHTML = '';
-      listCard.appendChild(scrollWrap(UI.table([
+      listBox.innerHTML = '';
+      listBox.appendChild(scrollWrap(UI.table([
+        UI.selCol(picked),
         { label: '序号', render: (r) => String((pageNo - 1) * SIZE + d.list.indexOf(r) + 1) },
         { label: '询价单号', render: (r) => UI.h('a', {
             href: 'javascript:;', style: 'color:#1a5cb0', onclick: () => detailModal(r) }, r.inquiryNo) },
@@ -1112,7 +1381,6 @@
         { key: 'varietyName', label: '矿种' },
         { key: 'quantity', label: '吨数(湿吨)', num: true, render: (r) => fmtQty(r.quantity) },
         { label: '交货地点', render: (r) => r.deliveryPlace || '-' },
-        { label: '报价截止', render: (r) => UI.fmtDateTime(r.deadline) },
         { key: 'status', label: '状态', render: (r) => UI.statusTag('INQUIRY', r.status) },
         { label: '响应', render: (r) => r.responded + '/' + r.invited },
         { label: '操作', render: (r) => UI.h('span', { class: 'inline-flex' },
@@ -1145,20 +1413,29 @@
     /* 发起询价：引用归集订单整单询价 + 统一询价条件 + 邀请供应商（仅归集询价）
        seedAggId：从「去询价」跳转带入时预选该归集订单 */
     async function createModal(seedAggId, presetRemark) {
-      const d = await API.get('/admin/aggregated-orders' + API.qs({ size: 100 }));
-      // OPEN=首次询价；INQUIRING=钢厂不认可等场景下可再次发起（无在途询价时）
+      const d = await API.get('/admin/aggregated-orders' + API.qs({ kind: 'ORDER', size: 100 }));
+      // OPEN=首次询价；INQUIRING=钢厂不认可等场景下可再次发起（无在途询价时）；仅一次性订单归集可发起询价
       const aggs = (d.list || []).filter((a) => a.status === 'OPEN' || a.status === 'INQUIRING');
       if (!aggs.length) { UI.toast('暂无可发起询价的归集订单（请先在需求归集页勾选明细合并生成）', 'err'); return; }
       const seedOk = seedAggId && aggs.some((a) => String(a.id) === String(seedAggId));
       const aggSel = UI.selectField(aggs.map((a) => [String(a.id),
         a.aggNo + ' · ' + a.varietyName + ' · ' + (a.grade == null ? '-' : a.grade) + '% · '
-        + a.totalQty + '吨 · ' + a.memberCount + '家钢厂']),
+        + a.totalQty + '湿吨 · ' + a.memberCount + '家钢厂']),
         String(seedOk ? seedAggId : aggs[0].id));
       const arrive = UI.input('date', new Date(Date.now() + 18 * 86400000).toISOString().slice(0, 10));
-      // 报价截止默认 期望到货日 -10 天 18:00（满足"不晚于到货日前 7 天"）
-      const ddlDef = new Date(new Date(arrive.value).getTime() - 10 * 86400000).toISOString();
-      const ddl = UI.input('datetime-local', ddlDef.slice(0, 10) + 'T18:00');
-      const minResp = UI.input('number', 2, { min: 1, max: 10 });
+      /* 期望到货日默认取所选归集单内各钢厂预期到货最早日（运营可手动更改） */
+      function applyAggArrive(aid) {
+        if (!aid) return;
+        API.get('/admin/aggregated-orders/' + aid).then((det) => {
+          const ds = (det.members || []).map((mm) => String(mm.expectArriveStart || '').slice(0, 10))
+            .filter(Boolean).sort();
+          if (ds.length && ds[0] !== arrive.value) {
+            arrive.value = ds[0];
+          }
+        }).catch(() => { /* 拉取失败保留默认 */ });
+      }
+      aggSel.addEventListener('change', () => applyAggArrive(aggSel.value));
+      applyAggArrive(aggSel.value);
       const cs = (await API.get('/companies' + API.qs({ type: 'SUPPLIER', size: 100 }))).list || [];
       const supChks = cs.map((c) => {
         const chk = UI.h('input', { type: 'checkbox' });
@@ -1175,9 +1452,7 @@
         UI.h('div', { class: 'form-row full' }, UI.h('label', { class: 'req' }, '归集订单'), aggSel),
         UI.h('h3', { style: 'margin:14px 0 8px' }, '统一询价条件'),
         UI.h('div', { class: 'form-grid' },
-          UI.formRow('期望到货日', arrive, true),
-          UI.formRow('报价截止', ddl, true, '至少为当前时间 +2 小时，且不晚于到货日前 7 天'),
-          UI.formRow('最少响应家数', minResp)),
+          UI.formRow('期望到货日', arrive, true)),
         UI.h('div', { class: 'form-row full' }, UI.h('label', { class: 'req' }, '邀请供应商'),
           UI.h('div', {}, supLabels)),
         UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '询价说明'), remark),
@@ -1186,19 +1461,12 @@
           errBox.textContent = '';
           if (!aggSel.value) { errBox.textContent = '请选择归集订单'; return; }
           if (!arrive.value) { errBox.textContent = '请填写期望到货日'; return; }
-          if (!ddl.value) { errBox.textContent = '请填写报价截止时间'; return; }
-          const ddlVal = ddl.value.replace('T', ' ') + ':00';
-          if (new Date(ddl.value).getTime() < Date.now() + 2 * 3600000) {
-            errBox.textContent = '报价截止时间必须至少为当前时间 +2 小时'; return;
-          }
           const supIds = supChks.filter((el) => el.checked).map((el) => Number(el.dataset.supplierId));
           if (!supIds.length) { errBox.textContent = '至少邀请一家供应商'; return; }
           try {
             const res = await API.post('/admin/quote-inquiries', {
               aggOrderId: Number(aggSel.value),
               arriveDate: arrive.value,
-              deadline: ddlVal,
-              minResponse: minResp.value,
               inviteSupplierIds: supIds,
               remark: remark.value.trim(),
             });
@@ -1220,7 +1488,7 @@
           ['归集单号', o.aggNo || '-'],
           ['矿种', (o.varietyName || '-') + (o.category ? '（' + o.category + '）' : '')],
           ['品位(%)', o.grade == null ? '-' : o.grade],
-          ['总吨数', fmtQty(o.totalQty)],
+          ['总吨数(湿吨)', fmtQty(o.totalQty)],
           ['状态', UI.statusTag('AGG', o.status)],
           ['备注', o.remark || '-'],
           ['归集时间', UI.fmtDateTime(o.createdAt)],
@@ -1230,7 +1498,7 @@
           { key: 'companyName', label: '钢厂' },
           { key: 'demandNo', label: '需求单号' },
           { key: 'varietyName', label: '矿种' },
-          { label: '归集份额(吨)', num: true, render: (m) => fmtQty(m.quantity) },
+          { label: '归集份额(湿吨)', num: true, render: (m) => fmtQty(m.quantity) },
         ], d.members || [], '暂无明细'))));
     }
 
@@ -1249,11 +1517,9 @@
           ['归集单号', r.aggNo || '-'],
           ['钢厂', r.companyName],
           ['矿种', d.varietyName || r.varietyName],
-          ['吨数', fmtQty(r.quantity)],
+          ['吨数(湿吨)', fmtQty(r.quantity)],
           ['品位(%)', r.grade == null ? '-' : r.grade],
-          ['报价截止', UI.fmtDateTime(r.deadline)],
           ['期望到货', UI.fmtDate(r.expectArriveDate)],
-          ['最少响应', r.minResponse + ' 家'],
           ['询价说明', d.inquiry_desc || '-'],
           ['状态', UI.statusTag('INQUIRY', r.status)],
         ]),
@@ -1262,6 +1528,9 @@
           { key: 'supplierName', label: '供应商' },
           { key: 'status', label: '邀请状态', render: (x) => x.status === 'INVITED' ? UI.h('span', { class: 'tag blue' }, '已邀请') : UI.h('span', { class: 'tag gray' }, x.status) },
           { key: 'quoteStatus', label: '报价状态', render: (x) => x.quoteStatus ? UI.statusTag('QUOTE', x.quoteStatus) : '-' },
+          { label: '报价详情', render: (x) => (x.quoteId
+            ? UI.h('button', { class: 'sm', onclick: () => quoteDetailModal(r.id, x) }, '详情')
+            : '-') },
         ], d.invites || [], '暂无邀请')),
         r.aggId ? UI.h('div', {},
           UI.h('h3', { style: 'margin:14px 0 8px' }, '钢厂反馈'),
@@ -1297,23 +1566,25 @@
       }
       const m = UI.modal((canReturn ? '汇总报价返回钢厂 · ' : '报价汇总 · ') + r.inquiryNo, UI.h('div', {},
         UI.h('div', { class: 'hint', style: 'margin-bottom:8px' },
-          '钢厂 ' + (r.companyName || '-') + ' · 矿种 ' + (r.varietyName || '-') + ' · 询价 ' + fmtQty(r.quantity) + ' 吨 · 报价 ' + quotes.length + ' 家（价格升序）'),
+          '钢厂 ' + (r.companyName || '-') + ' · 矿种 ' + (r.varietyName || '-') + ' · 询价 ' + fmtQty(r.quantity) + ' 湿吨 · 报价 ' + quotes.length + ' 家（价格升序）'),
         scrollWrap(UI.table([
           { label: '序号', render: (x) => String(quotes.indexOf(x) + 1) },
           { key: 'quoteNo', label: '报价单号' },
           { key: 'companyName', label: '供应商' },
-          { key: 'price', label: '单价(元/吨)', num: true, render: (x) => UI.fmtMoney(x.price) },
-          { key: 'quantity', label: '可供数量(吨)', num: true, render: (x) => fmtQty(x.quantity) },
+          { label: '总价(元/湿吨)', num: true,
+            render: (x) => UI.fmtMoney(Number(x.price) + Number(x.freightPrice || 0)) },
+          { key: 'taxType', label: '是否含税', render: (x) => ({ INC_TAX: '含税', EX_TAX: '不含税' }[x.taxType] || '-') },
+          { key: 'quantity', label: '可供数量(湿吨)', num: true, render: (x) => fmtQty(x.quantity) },
           { key: 'deliveryDate', label: '到货日', render: (x) => UI.fmtDate(x.deliveryDate) },
-          { key: 'payTerms', label: '付款条款', render: (x) => x.payTerms || '-' },
+          { key: 'deliveryPlace', label: '港口', render: (x) => x.deliveryPlace || '-' },
           { label: '操作', render: (x) => (canAward
               ? UI.h('button', { class: 'sm primary', onclick: () => awardQuote(r, x, shares, m) }, '定标')
               : '-') },
         ], quotes, '暂无报价')),
         canAward ? UI.h('div', { class: 'hint', style: 'margin-top:8px' },
           '按份额定标：整单锁货锁价，将生成 1 张订单并向各钢厂收集提货计划。'
-          + '份额预览：' + shares.map((s) => s.name + ' ' + fmtQty(s.qty) + ' 吨').join('；')
-          + '（合计 ' + fmtQty(shares.reduce((a, b) => a + b.qty, 0)) + ' 吨）') : null,
+          + '份额预览：' + shares.map((s) => s.name + ' ' + fmtQty(s.qty) + ' 湿吨').join('；')
+          + '（合计 ' + fmtQty(shares.reduce((a, b) => a + b.qty, 0)) + ' 湿吨）') : null,
         canReturn ? UI.h('div', { class: 'hint', style: 'margin-top:8px' },
           '确认后报价将揭示给钢厂（钢厂端「询价报价」页即可查看比价），并站内通知钢厂。') : null),
         canReturn ? [UI.h('button', { class: 'primary', onclick: async () => {
@@ -1334,8 +1605,8 @@
         return;
       }
       if (!(await UI.confirmBox('按 ' + q.companyName + ' 的报价 ' + UI.fmtMoney(q.price)
-          + ' 元/吨定标？整单锁货锁价，将生成 1 张订单（合计 ' + fmtQty(total)
-          + ' 吨）并向各钢厂收集提货计划，其余报价置为未中标。'))) return;
+          + ' 元/湿吨定标？整单锁货锁价，将生成 1 张订单（合计 ' + fmtQty(total)
+          + ' 湿吨）并向各钢厂收集提货计划，其余报价置为未中标。'))) return;
       try {
         const res = await API.post('/admin/quote-inquiries/' + r.id + '/award', { quoteId: q.id });
         modal.close();
@@ -1349,22 +1620,25 @@
   Pages.quote_history = async function (page) {
     const SIZE = 10;
     let pageNo = 1;
+    const picked = new Set(); // 行首勾选框（仅行选择展示）
     const scrollWrap = (node) => UI.h('div', { class: 'table-scroll-wrap' }, node);
-    const listCard = UI.h('div', { class: 'card' });
+    /* 定高列表区 + 分页行同卡片（同需求归集）：横向滚动条固定在分页行上方 */
+    const listBox = UI.h('div', { class: 'list-fixed' });
     const pagerBox = UI.h('div', {});
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('div', { class: 'toolbar' },
         UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '询价历史'),
         UI.h('div', { class: 'spacer' }),
-        UI.h('span', { class: 'hint' }, '按轮次记录每轮询价、全部报价与钢厂反馈，重新询价后历史不丢失'))));
-    page.appendChild(listCard);
-    page.appendChild(pagerBox);
+        UI.h('span', { class: 'hint' }, '按轮次记录每轮询价、全部报价与钢厂反馈，重新询价后历史不丢失')),
+      listBox,
+      pagerBox));
     await load();
 
     async function load() {
       const d = await API.get('/admin/quote-history' + API.qs({ page: pageNo, size: SIZE }));
-      listCard.innerHTML = '';
-      listCard.appendChild(scrollWrap(UI.table([
+      listBox.innerHTML = '';
+      listBox.appendChild(scrollWrap(UI.table([
+        UI.selCol(picked),
         { label: '序号', render: (r) => String((pageNo - 1) * SIZE + d.list.indexOf(r) + 1) },
         { label: '归集单号', render: (r) => r.aggNo || '-' },
         { label: '询价单号', render: (r) => UI.h('a', {
@@ -1387,9 +1661,8 @@
           ['询价单号', inq.inquiryNo],
           ['批次', inq.batchNo || '-'],
           ['矿种', inq.varietyName || '-'],
-          ['吨数', fmtQty(inq.quantity)],
+          ['吨数(湿吨)', fmtQty(inq.quantity)],
           ['交货地点', inq.deliveryPlace || '-'],
-          ['报价截止', UI.fmtDateTime(inq.deadline)],
           ['发出时间', inq.sentAt || '-'],
           ['状态', UI.statusTag('INQUIRY', inq.status)],
           ['询价说明', inq.inquiryDesc || '-'],
@@ -1398,8 +1671,8 @@
         (d.quotes || []).length ? scrollWrap(UI.table([
           { key: 'quoteNo', label: '报价单号' },
           { key: 'companyName', label: '供应商' },
-          { label: '单价(元/吨)', num: true, render: (x) => UI.fmtMoney(x.price) },
-          { label: '可供数量(吨)', num: true, render: (x) => fmtQty(x.quantity) },
+          { label: '单价(元/湿吨)', num: true, render: (x) => UI.fmtMoney(x.price) },
+          { label: '可供数量(湿吨)', num: true, render: (x) => fmtQty(x.quantity) },
           { label: '到货日', render: (x) => UI.fmtDate(x.deliveryDate) },
           { key: 'payTerms', label: '付款条款', render: (x) => x.payTerms || '-' },
           { key: 'quotedAt', label: '报价时间' },
@@ -1432,7 +1705,11 @@
       const vars = (await API.get('/base/varieties')).list || [];
       varCard.innerHTML = '';
       varCard.appendChild(UI.h('h3', {}, '品种列表'));
-      varCard.appendChild(UI.table([
+      /* 定高列表区（品种为少量基础数据，不设分页，面板高度与其他表格面板统一） */
+      const pickedRows = new Set(); // 行首勾选框（仅行选择展示）
+      const listBox = UI.h('div', { class: 'list-fixed' });
+      listBox.appendChild(UI.table([
+        UI.selCol(pickedRows),
         { key: 'varietyCode', label: '品种代码' },
         { key: 'varietyName', label: '品种名称' },
         { key: 'category', label: '品类', render: (r) => r.category || '-' },
@@ -1441,6 +1718,7 @@
         { key: 'status', label: '状态' },
         { label: '操作', render: (r) => UI.h('button', { class: 'sm', onclick: () => categoryForm(r) }, '改品类') },
       ], vars, '暂无品种'));
+      varCard.appendChild(listBox);
     }
 
     function varietyForm() {
@@ -1448,7 +1726,7 @@
       const name = UI.input('text', '', { placeholder: '如 PB 粉、高品位铁矿' });
       const category = UI.input('text', '', { placeholder: '如 粉矿、块矿、球团、混矿' });
       const grade = UI.input('text', '', { placeholder: '如 61.5（品位百分数，纯数字）' });
-      const unit = UI.input('text', '吨', { placeholder: '计量单位，默认 吨' });
+      const unit = UI.input('text', '湿吨', { placeholder: '计量单位，默认 湿吨' });
       const m = UI.modal('新增品种', UI.h('form', { onsubmit: (e) => e.preventDefault() },
         UI.h('div', { class: 'form-grid' },
           UI.formRow('品种代码', code, true),
@@ -1492,8 +1770,10 @@
     const SIZE = 10;
     let status = '';
     let keyword = '';
+    const picked = new Set(); // 行首勾选框（仅行选择展示）
     const scrollWrap = (node) => UI.h('div', { class: 'table-scroll-wrap' }, node);
-    const listCard = UI.h('div', { class: 'card' });
+    /* 定高列表区 + 分页行同卡片（同需求归集）：横向滚动条固定在分页行上方 */
+    const listBox = UI.h('div', { class: 'list-fixed' });
     const pagerBox = UI.h('div', {});
     const kw = UI.input('text', '', { placeholder: '订单号（模糊）', style: 'width:180px' });
     const search = () => { keyword = kw.value.trim(); pageNo = 1; load(); };
@@ -1503,22 +1783,24 @@
         UI.h('div', { class: 'spacer' }),
         UI.statusFilter('ORDER', (v) => { status = v; pageNo = 1; load(); }),
         kw,
-        UI.h('button', { class: 'primary', onclick: search }, '查询'))));
-    page.appendChild(listCard);
-    page.appendChild(pagerBox);
+        UI.h('button', { class: 'primary', onclick: search }, '查询')),
+      listBox,
+      pagerBox));
     await load();
 
     async function load() {
       const d = await API.get('/admin/orders' + API.qs({ page: pageNo, size: SIZE, status, keyword }));
-      listCard.innerHTML = '';
-      listCard.appendChild(scrollWrap(UI.table([
+      listBox.innerHTML = '';
+      listBox.appendChild(scrollWrap(UI.table([
+        UI.selCol(picked),
         { key: 'orderNo', label: '订单号' },
         { label: '询价单号', render: (r) => r.inquiryNo || '-' },
         { key: 'varietyName', label: '矿种' },
         { key: 'grade', label: '品位(%)' },
         { label: '总吨数(湿吨)', num: true, render: (r) => fmtQty(r.totalQty) },
-        { label: '单价(元/吨)', num: true, render: (r) => UI.fmtMoney(r.unitPrice) },
-        { label: '金额', num: true, render: (r) => UI.fmtMoney(r.amount) },
+        { label: '单价(元/湿吨)', num: true, render: (r) => UI.fmtMoney(r.unitPrice) },
+        { label: '运费(元/湿吨)', num: true, render: (r) => (r.freightPrice != null ? UI.fmtMoney(r.freightPrice) : '-') },
+        { label: '金额', num: true, render: (r) => UI.fmtMoney((Number(r.unitPrice) + Number(r.freightPrice || 0)) * Number(r.totalQty || 0)) },
         { label: '供应商', render: (r) => r.supplierName || '-' },
         { label: '参与钢厂数', num: true, render: (r) => String(r.millCount || 0) },
         { label: '提货计划', render: (r) => (r.millCount
@@ -1540,6 +1822,14 @@
       const pickupTag = (s) => (s === 'SUBMITTED'
         ? UI.h('span', { class: 'tag green' }, '已提交')
         : UI.h('span', { class: 'tag orange' }, '未提交'));
+      /* 订单完成确认情况：供应商 + 各钢厂成员（传统单看需方行）；全部确认后订单状态自动已完成 */
+      const finishTag = (at) => (at
+        ? UI.h('span', { class: 'tag green' }, UI.fmtDateTime(at))
+        : UI.h('span', { class: 'tag orange' }, '未确认'));
+      const finishRows = [{ name: d.supplierName || '-', role: '供应商', at: d.supplierFinishConfirmAt }]
+        .concat(members.length
+          ? members.map((m) => ({ name: m.companyName, role: '钢厂成员', at: m.finishConfirmAt }))
+          : [{ name: d.buyerFinishName || '需方钢厂', role: '钢厂（需方）', at: d.buyerFinishConfirmAt }]);
       UI.modal('订单详情 · ' + d.orderNo, UI.h('div', {},
         UI.kv([
           ['订单号', d.orderNo],
@@ -1548,8 +1838,9 @@
           ['矿种', d.varietyName || '-'],
           ['品位(%)', d.grade],
           ['总吨数(湿吨)', fmtQty(d.totalQty)],
-          ['单价(元/吨)', UI.fmtMoney(d.unitPrice)],
-          ['金额', UI.fmtMoney(d.amount)],
+          ['单价(元/湿吨)', UI.fmtMoney(d.unitPrice)],
+          ['运费(元/湿吨)', d.freightPrice != null ? UI.fmtMoney(d.freightPrice) : '-'],
+          ['金额', UI.fmtMoney((Number(d.unitPrice) + Number(d.freightPrice || 0)) * Number(d.totalQty || 0))],
           ['供应商', d.supplierName || '-'],
           ['交货地点', d.deliveryPlace || '-'],
           ['交货日', UI.fmtDate(d.deliveryDate)],
@@ -1566,7 +1857,13 @@
           { label: '备注', render: (m) => m.pickupRemark || '-' },
           { label: '状态', render: (m) => pickupTag(m.pickupStatus) },
           { label: '提交时间', render: (m) => (m.submittedAt ? UI.fmtDateTime(m.submittedAt) : '未提交') },
-        ], members)) : UI.h('div', { class: 'empty' }, '暂无参与钢厂')), null, { wide: true });
+        ], members)) : UI.h('div', { class: 'empty' }, '暂无参与钢厂'),
+        UI.h('h3', { style: 'margin:14px 0 8px' }, '订单完成确认情况'),
+        UI.table([
+          { key: 'name', label: '企业' },
+          { key: 'role', label: '角色' },
+          { label: '确认时间', render: (x) => finishTag(x.at) },
+        ], finishRows)), null, { wide: true });
     }
   };
 
@@ -1575,21 +1872,24 @@
     let pageNo = 1;
     const SIZE = 10;
     let status = '';
-    const listCard = UI.h('div', { class: 'card' });
+    const picked = new Set(); // 行首勾选框（仅行选择展示）
+    /* 定高列表区 + 分页行同卡片（同需求归集）：横向滚动条固定在分页行上方 */
+    const listBox = UI.h('div', { class: 'list-fixed' });
     const pagerBox = UI.h('div', {});
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('div', { class: 'toolbar' },
         UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '预警处理'),
         UI.h('div', { class: 'spacer' }),
-        UI.statusFilter('ALERT', (v) => { status = v; pageNo = 1; load(); }))));
-    page.appendChild(listCard);
-    page.appendChild(pagerBox);
+        UI.statusFilter('ALERT', (v) => { status = v; pageNo = 1; load(); })),
+      listBox,
+      pagerBox));
     await load();
 
     async function load() {
       const d = await API.get('/alerts' + API.qs({ status, page: pageNo, size: SIZE }));
-      listCard.innerHTML = '';
-      listCard.appendChild(UI.table([
+      listBox.innerHTML = '';
+      listBox.appendChild(UI.table([
+        UI.selCol(picked),
         { key: 'alertNo', label: '预警编号' },
         { key: 'alertType', label: '类型', render: (r) => UI.h('span', { class: 'tag orange' }, r.alertType) },
         { key: 'content', label: '预警内容', full: true },
@@ -1647,9 +1947,9 @@
         intro: '面向受邀供应商发出的采购询价，经报价、议价后定标成交。',
         desc: {
           DRAFT: '询价单尚未发出，仅创建方可见',
-          SENT: '询价已发送给受邀供应商，等待其在截止时间前报价',
-          QUOTING: '已有供应商提交报价，截止前持续接收',
-          CLOSED: '报价截止，进入比价、议价与定标环节',
+          SENT: '询价已发送给受邀供应商，等待供应商报价',
+          QUOTING: '已有供应商提交报价，持续接收报价中',
+          CLOSED: '询价已截止，进入比价、议价与定标环节',
           BARGAINING: '正与供应商就价格与条款磋商',
           AWARDED: '已确定中标供应商，随后生成订单',
           FAILED: '本次询价未达成交易而终止',
@@ -1687,8 +1987,8 @@
           PENDING_CONFIRM: '订单已生成，等待供应商确认接单，超时未确认将自动失效',
           PENDING_CONTRACT: '供应商已确认，等待生成合同并完成签署',
           PENDING_EFFECT: '双方已上传签署件，等待运营端合同归集生效',
-          PERFORMING: '合同已生效，进入发货、运输、签收与结算环节',
-          COMPLETED: '履约与结算全部完成，订单归档',
+          PERFORMING: '合同已生效，进入发货、运输、签收与验收环节（付款结算线下完成）',
+          COMPLETED: '供需双方确认验收完成，订单归档',
           CANCELLED: '订单被取消或超时未确认而失效',
         },
         notes: ['合同作废后，订单会退回"待签合同"，重新走合同生成与签署流程'],
@@ -1808,72 +2108,152 @@
     page.appendChild(wrap);
   };
 
-  /* -------- 操作日志 -------- */
+  /* -------- 操作日志（内容全中文展示：动作/业务类型/状态/变更内容键值均做中文映射） -------- */
   Pages.logs = async function (page) {
     let pageNo = 1;
-    const SIZE = 15;
-    const bizType = UI.input('text', '', { placeholder: '业务类型（如 DEMAND）', style: 'width:160px' });
+    const SIZE = 10;
+    const bizType = UI.input('text', '', { placeholder: '业务类型编码（可选）', style: 'width:160px' });
     const bizId = UI.input('text', '', { placeholder: '业务ID', style: 'width:100px' });
-    const listCard = UI.h('div', { class: 'card' });
+    const picked = new Set(); // 行首勾选框（仅行选择展示）
+    /* 定高列表区 + 分页行同卡片（同需求归集） */
+    const listBox = UI.h('div', { class: 'list-fixed' });
     const pagerBox = UI.h('div', {});
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('div', { class: 'toolbar' },
         UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '操作日志'),
         UI.h('div', { class: 'spacer' }),
         bizType, bizId,
-        UI.h('button', { class: 'sm primary', onclick: () => { pageNo = 1; load(); } }, '查询'))));
-    page.appendChild(listCard);
-    page.appendChild(pagerBox);
-    await load();
+        UI.h('button', { class: 'sm primary', onclick: () => { pageNo = 1; load(); } }, '查询')),
+      listBox,
+      pagerBox));
+
+    /* ---- 中文映射表 ---- */
+    const BIZ_TYPE = { ent_company: '企业准入', ent_qualification: '企业资质', sys_user: '平台用户',
+      sys_file: '文件', base_variety: '品种', base_price: '基准价', base_port_price: '港口价格',
+      biz_demand: '需求单', biz_demand_change: '变更申请', biz_inquiry: '询价单', biz_quote: '报价单',
+      biz_bargain: '议价', biz_aggregated_order: '归集订单', biz_order: '订单', biz_order_member: '订单成员',
+      biz_member_cargo: '成员货物', biz_contract: '合同', biz_logistics_plan: '物流方案',
+      biz_waybill: '运单', biz_track_node: '轨迹节点', biz_forecast_quote: '预测报价',
+      biz_settlement: '结算单', biz_payment: '支付单', biz_quality_check: '质检单' };
+    const BIZ_GROUP = { biz_demand: 'DEMAND', biz_demand_change: 'CHANGE', biz_inquiry: 'INQUIRY',
+      biz_quote: 'QUOTE', biz_bargain: 'BARGAIN', biz_aggregated_order: 'AGG', biz_order: 'ORDER',
+      biz_order_member: 'ORDER', biz_member_cargo: 'ORDER', biz_contract: 'CONTRACT',
+      biz_waybill: 'WAYBILL', biz_settlement: 'SETTLEMENT', biz_payment: 'SETTLEMENT',
+      biz_quality_check: 'SETTLEMENT', biz_forecast_quote: 'FORECAST', ent_company: 'AUDIT',
+      sys_user: 'USER' };
+    const NODE_LABEL = { ETA: '船到港', DEPART: '开始卸船', TRANSIT: '到达中转站',
+      ARRIVE: '卸货完成', PLACES: '起讫地' };
+    const ACTION_LABEL = { LOGIN: '登录', REGISTER: '企业注册', UPLOAD: '上传资质', CREATE: '新增',
+      UPDATE: '修改', DELETE: '删除', CLOSE: '关闭', UPSERT: '保存', 'CHANGE REQUEST': '提交信息变更',
+      'CHANGE APPROVED': '信息变更审核通过', 'CHANGE REJECTED': '信息变更审核驳回',
+      'SET STATUS': '设置账号状态', RESET_PASSWORD: '重置密码', 'CHANGE SYNC': '变更同步需求',
+      'AGG FEEDBACK': '归集询价反馈', 'PLATFORM CREATE': '平台代发询价', 'PLATFORM RETURN': '平台退回',
+      AWARD: '定标生成订单', CONSOLIDATE: '合并归集', SET_CARGO: '录入货物信息', PLATFORM_CREATE: '创建',
+      DEVIATION: '分段偏差说明', PUSH_SUPPLIER: '推送供应商', PUSH_MEMBER: '推送钢厂货物信息',
+      PUSH_MILLS: '推送至钢厂（轨迹）', PLATFORM_ASSIGN: '指派承运商', ASSIGN: '指派承运商',
+      SET_PLACES: '保存起讫地', WB_NODE_DRAFT: '保存节点草稿',
+      'PLATFORM_ADVANCE SUBMIT_DRAFT': '节点统一提交',
+      PICKUP_PLAN: '提交提货计划', GENERATE: '生成合同', VOID: '合同作废', SIGN: '货物签收',
+      MANUAL_NODE: '手工轨迹节点' };
+    const KEY_CN = { orderNo: '订单号', aggNo: '归集订单号', demandNo: '需求单号', inquiryNo: '询价单号',
+      waybillNo: '运单号', planNo: '方案号', mills: '推送钢厂', supplierId: '供方', buyerName: '需方',
+      companyName: '企业名称', demandName: '需求单名称', quantity: '数量', invites: '邀请供应商',
+      reason: '原因', result: '结果', version: '版本', carrierId: '承运商', planQty: '计划量',
+      fileName: '文件名', size: '大小', rail: '铁路直达方案', multimodal: '公铁联运方案',
+      truck: '汽运直达方案', remark: '方案说明', departPlace: '起始地', arrivePlace: '目的地',
+      occurTime: '发生时间', orgMode: '组织方式', segmentNo: '分段号', freight: '运费',
+      accounts: '账号数', company: '企业', status: '状态', action: '节点',
+      ETA: '船到港时间', DEPART: '开始卸船时间', TRANSIT: '到达中转站', ARRIVE: '卸货完成' };
+    const VALUE_CN = { ENABLED: '启用', DISABLED: '停用', PLATFORM: '平台配送', SELF: '钢厂自提',
+      RAIL: '铁路直达', MULTIMODAL: '公铁联运', ROAD: '汽运直达' };
+    /* 状态码 → 中文（优先按业务类型取对应状态字典组，找不到再全库兜底） */
+    function st(code, biz) {
+      if (code == null || code === '') return code;
+      const grp = (BIZ_GROUP[biz] && UI.STATUS[BIZ_GROUP[biz]]) || null;
+      if (grp && grp[code]) return grp[code][0];
+      for (const g of Object.values(UI.STATUS)) if (g[code]) return g[code][0];
+      return code;
+    }
+    function fmtAction(raw, biz) {
+      const s = String(raw);
+      const hit = ACTION_LABEL[s];
+      if (hit) return hit;
+      let m = s.match(/^STATUS (\w+)->(\w+)$/);
+      if (m) return '状态 ' + st(m[1], biz) + ' → ' + st(m[2], biz);
+      m = s.match(/^PLATFORM_ADVANCE (\w+)$/);
+      if (m) return '节点录入 · ' + (NODE_LABEL[m[1]] || m[1]);
+      m = s.match(/^NODE (\w+)$/);
+      if (m) return '登记节点 · ' + (NODE_LABEL[m[1]] || m[1]);
+      m = s.match(/^RETURN\((.+)\)$/);
+      if (m) return '退回（' + m[1] + '）';
+      m = s.match(/^UPLOAD_SIGNED\((.+)\)$/);
+      if (m) return '上传已签章合同（' + m[1] + '）';
+      return s;
+    }
+    /* 变更内容 JSON → 中文「键：值」串 */
+    function fmtAfter(after, biz) {
+      if (after == null || after === '') return '—';
+      let obj = after;
+      if (typeof after === 'string') {
+        try { obj = JSON.parse(after); } catch (e) { return after; }
+      }
+      if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+        return Object.entries(obj).map(([k, v]) => {
+          let vv = v;
+          if (k === 'status') vv = st(v, biz);
+          else if (k === 'action') vv = NODE_LABEL[v] || v;
+          else if (Array.isArray(v)) vv = v.map((x) => VALUE_CN[x] || x).join('、');
+          else if (VALUE_CN[v] != null) vv = VALUE_CN[v];
+          else if (v && typeof v === 'object') vv = JSON.stringify(v);
+          return (KEY_CN[k] || k) + '：' + vv;
+        }).join('；');
+      }
+      return String(obj);
+    }
 
     async function load() {
       const d = await API.get('/logs' + API.qs({ bizType: bizType.value.trim(), bizId: bizId.value.trim(), page: pageNo, size: SIZE }));
-      listCard.innerHTML = '';
-      listCard.appendChild(UI.table([
-        { key: 'bizType', label: '业务类型' },
+      listBox.innerHTML = '';
+      listBox.appendChild(UI.table([
+        UI.selCol(picked),
+        { key: 'bizType', label: '业务类型', render: (r) => BIZ_TYPE[r.bizType] || r.bizType },
         { key: 'bizId', label: '业务ID' },
-        { key: 'action', label: '动作' },
-        { key: 'after', label: '变更内容', full: true },
+        { label: '动作', render: (r) => fmtAction(r.action, r.bizType) },
+        { label: '变更内容', full: true, render: (r) => fmtAfter(r.after, r.bizType) },
         { key: 'createdAt', label: '时间', render: (r) => UI.fmtDateTime(r.createdAt) },
       ], d.list, '暂无日志'));
       pagerBox.innerHTML = '';
       UI.pager(pagerBox, pageNo, SIZE, d.total, (p) => { pageNo = p; load(); });
     }
+
+    await load();
   };
 
-  /* -------- 运输调度：物流调度 + 在途监控 -------- */
-  Pages.logistics_dispatch = async function (page) {
+  /* -------- 运输调度：订单列表 → 订单详情独立页（钢铁企业框 / 供应商框）--------
+     opts.oid 存在时渲染订单详情独立页（路由 #/logistics-order-detail?oid=） */
+  function logisticsPage(page, opts) {
     const SIZE = 10;
     let pageNo = 1;
-    let tab = 'dispatch'; // dispatch=物流调度 monitor=在途监控
-    let wbStatus = '';
     let orderRows = [];
-    let wbRows = [];
+    const pickedRows = new Set(); // 行首勾选框（仅行选择展示）
     const scrollWrap = (node, style) => UI.h('div', { class: 'table-scroll-wrap', style }, node);
     const MODE_LABEL = { RAIL: '铁路直达', MULTIMODAL: '公铁联运', ROAD: '汽运直达' };
-    const DEPART_PORTS = ['黄骅港', '天津港'];
     const ORG_LABEL = { SELF: '钢厂自提', PLATFORM: '平台配送' };
     const numInput = (attrs) => UI.h('input', Object.assign({ type: 'number', min: '0' }, attrs || {}));
 
-    const TABS = [
-      ['dispatch', '物流调度'],
-      ['monitor', '在途监控'],
-    ];
-    const tabBar = UI.h('div', { class: 'tab-bar' },
-      ...TABS.map(([key, label]) => UI.h('button', {
-        class: 'tab-btn', 'data-tab': key,
-        onclick: () => { tab = key; pageNo = 1; wbStatus = ''; render(); },
-      }, label)));
-    const filterBox = UI.h('div', {});
     const statsBox = UI.h('div', {});
-    const listBox = UI.h('div', {});
+    /* 定高列表区（同需求归集，10 行/页）：纵向超出滚动，横向滚动条固定在分页行上方 */
+    const listBox = UI.h('div', { class: 'list-fixed' });
     const pagerBox = UI.h('div', {});
-    page.appendChild(UI.h('div', { class: 'card dispatch-card' },
+    const mainCard = UI.h('div', { class: 'card dispatch-card' },
       UI.h('div', { class: 'toolbar' },
-        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '运输调度'),
-        UI.h('div', { class: 'spacer' }),
-        filterBox),
-      tabBar, statsBox, listBox, pagerBox));
+        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '运输调度')),
+      statsBox, listBox, pagerBox);
+    /* 订单详情独立页：真实路由跳转（#/logistics-order-detail?oid=），页面内分钢铁企业 / 供应商两个框 */
+    if (opts && opts.oid) {
+      return renderStandaloneDetail(Number(opts.oid));
+    }
+    page.appendChild(mainCard);
 
     /* ---- 保税进出库存分析表（按订单关联，可编辑演示表）：点击订单行显示对应表格 ---- */
     function defaultGrid() {
@@ -1885,22 +2265,24 @@
         ['进港', '汽运', ['计划到港量', '实际到港量', '计划累计到港量', '实际累计到港量', '实际与计划差额', '实际与计划累计差额']],
         ['进港', '火运', ['计划到港量', '实际到港量', '计划累计到港量', '实际累计到港量', '火运计划进港总量']],
         ['进港', '总计', ['计划进港总量', '实际进港总量', '实际与计划差额']],
-        ['出厂', '汽运出厂', ['计划出厂量', '实际出厂量', '计划累计出厂量', '实际累计出厂量', '实际与计划差额']],
+        ['出场', '汽运出场', ['计划出场量', '实际出场量', '计划累计出场量', '实际累计出场量', '实际与计划差额']],
       ];
       return {
         title: '保税进出库存分析表',
         cols: days.slice(),
         rows: spec.flatMap(([g, s, labels]) => labels.map((label) => ({ g, s, label, cells: days.map(() => '') }))),
+        merges: [], // Excel 式合并单元格 [r0,c0,r1,c1]（列坐标：0分组 1子类 2项目 3+数据列）
         footer: { label: '保税库存状态', value: '' },
       };
     }
     let gridOrder = null; // 当前展示分析表的订单
     let grid = null;
+    let sel = null; // Excel 式选区：点选起始格 + Shift 点选结束格
     function gridKey(orderId) { return 'mine_dispatch_analysis_v2_' + orderId; }
     function loadGrid(orderId) {
       try {
         const m = JSON.parse(localStorage.getItem(gridKey(orderId)) || 'null');
-        if (m && Array.isArray(m.cols) && Array.isArray(m.rows)) return m;
+        if (m && Array.isArray(m.cols) && Array.isArray(m.rows)) return Object.assign({ merges: [] }, m);
       } catch (e) { /* 使用默认结构 */ }
       return defaultGrid();
     }
@@ -1949,10 +2331,89 @@
       return UI.h('span', { class: 'cell-x ' + (cls || ''), title, contenteditable: 'false',
         onclick: (e) => { e.preventDefault(); e.stopPropagation(); fn(); } }, '×');
     }
+    /* ---- Excel 式合并单元格：merges=[r0,c0,r1,c1]，列坐标 0分组 1子类 2项目 3+数据列 ---- */
+    function getCell(row, ci) { return ci === 2 ? (row.label || '') : (row.cells[ci - 3] || ''); }
+    function setCell(row, ci, v) { if (ci === 2) row.label = v; else row.cells[ci - 3] = v; }
+    function inMerge(ri, ci) {
+      return (grid.merges || []).find((m) => ri >= m[0] && ri <= m[2] && ci >= m[1] && ci <= m[3]) || null;
+    }
+    function normSel() {
+      if (!sel) return null;
+      return { r0: Math.min(sel.r0, sel.r1), r1: Math.max(sel.r0, sel.r1),
+        c0: Math.min(sel.c0, sel.c1), c1: Math.max(sel.c0, sel.c1) };
+    }
+    function adjustMerges(delR, delC) {
+      const out = [];
+      (grid.merges || []).forEach((m) => {
+        let r0 = m[0], c0 = m[1], r1 = m[2], c1 = m[3];
+        if (delR != null) {
+          if (r1 < delR) { out.push(m); return; }
+          if (r0 > delR) { out.push([r0 - 1, c0, r1 - 1, c1]); return; }
+          r1 -= 1;
+        } else {
+          if (c1 < delC) { out.push(m); return; }
+          if (c0 > delC) { out.push([r0, c0 - 1, r1, c1 - 1]); return; }
+          c1 -= 1;
+        }
+        if (r1 >= r0 && c1 >= c0) out.push([r0, c0, r1, c1]);
+      });
+      grid.merges = out;
+    }
+    function mergeSel() {
+      const s = normSel();
+      if (!s || (s.r0 === s.r1 && s.c0 === s.c1)) {
+        UI.toast('请先点选起始格，再按住 Shift 点选结束格，选择要合并的区域', 'err'); return;
+      }
+      const overlap = (grid.merges || []).some((m) => !(m[2] < s.r0 || m[0] > s.r1 || m[3] < s.c0 || m[1] > s.c1));
+      if (overlap) { UI.toast('选择区域与已有合并单元格重叠', 'err'); return; }
+      grid.merges = (grid.merges || []).concat([[s.r0, s.c0, s.r1, s.c1]]);
+      sel = { r0: s.r0, c0: s.c0, r1: s.r0, c1: s.c0 };
+      renderGrid(); saveGrid();
+      UI.toast('已合并居中（内容保留左上格）', 'ok');
+    }
+    function unmergeSel() {
+      const s = normSel();
+      if (!s) { UI.toast('请先点选已合并的单元格', 'err'); return; }
+      const m = inMerge(s.r0, s.c0);
+      if (!m) { UI.toast('所选区域未合并', 'err'); return; }
+      grid.merges = (grid.merges || []).filter((x) => x !== m);
+      sel = null;
+      renderGrid(); saveGrid();
+    }
     function renderGrid() {
       statsBox.innerHTML = '';
       if (!gridOrder || !grid) return;
       const sp = gridSpans(grid.rows);
+      const nCol = 3 + grid.cols.length; // 0分组 1子类 2项目 3+数据
+      const selR = normSel();
+      /* 可选单元格（项目列与数据列，含合并格）：点击选区、Shift 扩选、双击编辑，不重建表格以保留输入焦点 */
+      const makeCell = (r, ri, ci) => {
+        const m = inMerge(ri, ci);
+        if (m && (m[0] !== ri || m[1] !== ci)) return null; // 被合并覆盖
+        const attrs = { class: 'cell-text', 'data-r': String(ri), 'data-c': String(ci),
+          style: 'min-height:18px;display:block' };
+        const td = UI.h('td', ci === 2 ? { class: 'row-label' } : { class: 'cell' });
+        if (m) {
+          td.setAttribute('rowspan', String(m[2] - m[0] + 1));
+          td.setAttribute('colspan', String(m[3] - m[1] + 1));
+          td.classList.add('merged');
+        }
+        const span = UI.h('span', attrs, getCell(r, ci));
+        td.appendChild(span);
+        editCell(span, (v) => { setCell(r, ci, v); });
+        td.addEventListener('click', (e) => {
+          if (e.shiftKey && sel) { sel.r1 = ri; sel.c1 = ci; } else { sel = { r0: ri, c0: ci, r1: ri, c1: ci }; }
+          highlightSel();
+        });
+        return td;
+      };
+      function highlightSel() {
+        const s = normSel();
+        table.querySelectorAll('.cell-text[data-r]').forEach((el) => {
+          const ri = Number(el.dataset.r); const ci = Number(el.dataset.c);
+          el.classList.toggle('selm', !!(s && ri >= s.r0 && ri <= s.r1 && ci >= s.c0 && ci <= s.c1));
+        });
+      }
       const table = UI.h('table', { class: 'grid analysis-grid' },
         UI.h('thead', {}, UI.h('tr', {},
           UI.h('th', { rowspan: '2', style: 'width:64px' }, '分组'),
@@ -1961,8 +2422,13 @@
           ...grid.cols.map((c, ci) => UI.h('th', { class: 'col-head' },
             editCell(UI.h('span', { class: 'head-text' }, c), (v) => { grid.cols[ci] = v; }),
             delBtn('删除该列', () => {
+              const gci = 3 + ci;
+              (grid.merges || []).forEach((m) => {
+                if (m[1] === gci && m[3] > m[1]) setCell(grid.rows[m[0]], gci + 1, getCell(grid.rows[m[0]], gci));
+              });
               grid.cols.splice(ci, 1);
               grid.rows.forEach((r) => r.cells.splice(ci, 1));
+              adjustMerges(null, gci); sel = null;
               renderGrid(); saveGrid();
             }))),
           UI.h('th', { rowspan: '2', style: 'width:40px' }, '删行'))),
@@ -1973,11 +2439,18 @@
               UI.h('td', { rowspan: String(sp.g[ri]), class: 'grp' }, r.g || ''), (v) => { r.g = v; }));
             if (sp.s[ri]) tr.appendChild(editCell(
               UI.h('td', { rowspan: String(sp.s[ri]), class: 'grp' }, r.s || ''), (v) => { r.s = v; }));
-            tr.appendChild(editCell(UI.h('td', { class: 'row-label' }, r.label || ''), (v) => { r.label = v; }));
-            grid.cols.forEach((_, ci) => tr.appendChild(editCell(
-              UI.h('td', { class: 'cell' }, r.cells[ci] || ''), (v) => { r.cells[ci] = v; })));
+            for (let ci = 2; ci < nCol; ci++) {
+              const td = makeCell(r, ri, ci);
+              if (td) tr.appendChild(td);
+            }
             tr.appendChild(UI.h('td', { class: 'row-op' },
-              delBtn('删除该行', () => { grid.rows.splice(ri, 1); renderGrid(); saveGrid(); }, 'row-x')));
+              delBtn('删除该行', () => {
+                (grid.merges || []).forEach((m) => {
+                  if (m[0] === ri && m[2] > m[0]) setCell(grid.rows[ri + 1], m[1], getCell(grid.rows[ri], m[1]));
+                });
+                grid.rows.splice(ri, 1); adjustMerges(ri, null); sel = null;
+                renderGrid(); saveGrid();
+              }, 'row-x')));
             return tr;
           }),
           UI.h('tr', {},
@@ -1995,20 +2468,28 @@
           grid.rows.forEach((r) => r.cells.push(''));
           renderGrid(); saveGrid();
         } }, '添加列'),
+        UI.h('button', { class: 'sm', onclick: mergeSel }, '合并居中'),
+        UI.h('button', { class: 'sm', onclick: unmergeSel }, '取消合并'),
+        UI.h('span', { class: 'muted', style: 'font-size:12px;align-self:center' },
+          '点选起始格，按住 Shift 点选结束格后「合并居中」'),
         UI.h('button', { class: 'sm', onclick: async () => {
           if (!(await UI.confirmBox('恢复默认表格结构？当前修改将全部清除。'))) return;
-          grid = defaultGrid(); renderGrid(); saveGrid();
+          grid = defaultGrid(); sel = null; renderGrid(); saveGrid();
         } }, '恢复默认'),
         UI.h('button', { class: 'sm', onclick: closeAnalysis }, '关闭分析')));
       statsBox.appendChild(UI.h('div', { class: 'grid-title-wrap' },
         editCell(UI.h('div', { class: 'grid-title' }, (grid.title || '保税进出库存分析表') + ' · ' + (gridOrder.orderNo || '')),
           (v) => { grid.title = v.replace(/\s*·\s*DD-\S+$/, ''); }),
         scrollWrap(table, 'border:1px solid #cfd4dc')));
+      highlightSel();
     }
     if (!document.getElementById('analysis-grid-style')) {
       document.head.appendChild(UI.h('style', { id: 'analysis-grid-style' }, `
         .analysis-grid { width: 100%; }
         .analysis-grid th, .analysis-grid td { border: 1px solid #cfd4dc; text-align: center; padding: 4px 6px; white-space: normal; }
+        .analysis-grid .cell-text { display: block; min-height: 18px; min-width: 40px; border-radius: 2px; }
+        .analysis-grid .cell-text.selm { background: #dceafc; box-shadow: inset 0 0 0 2px #1a5cb0; }
+        .analysis-grid td.merged { vertical-align: middle; }
         .analysis-grid td.grp { background: #f6f7fa; font-weight: 600; }
         .analysis-grid [contenteditable='true']:focus { outline: 2px solid #1a5cb0; outline-offset: -2px; background: #f0f6ff; }
         .analysis-grid .cell-x { display: inline-block; margin-left: 4px; width: 14px; height: 14px; line-height: 12px;
@@ -2019,38 +2500,32 @@
         .grid-tools { display: flex; gap: 8px; justify-content: flex-end; align-items: center; margin-bottom: 8px; }
         .grid-order-tag { color: var(--label-2, #6e6e73); font-size: 13px; margin-right: auto; }
         .dispatch-card tr.row-selected td { background: #eaf2fd; }
-        .dispatch-card table.grid { border-collapse: collapse; }
-        .dispatch-card table.grid th, .dispatch-card table.grid td { border: 1px solid var(--gray-4); }
+        /* 边框仅用于保税进出库存分析表（Excel 式）；普通业务表格与其他页面样式一致（无竖线，hairline 行分隔） */
+        .dispatch-card table.analysis-grid { border-collapse: collapse; }
+        .dispatch-card table.analysis-grid th, .dispatch-card table.analysis-grid td { border: 1px solid var(--gray-4); }
       `));
     }
     render();
-
-    function syncTabs() {
-      page.querySelectorAll('.tab-btn').forEach((b) => {
-        b.classList.toggle('active', b.getAttribute('data-tab') === tab);
-      });
+    /* 从详情页点「保税库存分析表」跳回列表页时，直接打开对应分析表 */
+    if (pendingGridOrder) {
+      const r0 = pendingGridOrder;
+      pendingGridOrder = null;
+      selectOrder(r0);
     }
 
     async function render() {
-      syncTabs();
-      filterBox.innerHTML = '';
       pagerBox.innerHTML = '';
       statsBox.innerHTML = '';
       listBox.innerHTML = '';
       listBox.style.display = '';
       pagerBox.style.display = '';
-      if (tab === 'dispatch') {
-        if (gridOrder) {
-          // 详情视图：只显示该订单的分析表
-          renderGrid();
-          listBox.style.display = 'none';
-          pagerBox.style.display = 'none';
-        } else {
-          await loadOrders();
-        }
+      if (gridOrder) {
+        // 详情视图：只显示该订单的分析表
+        renderGrid();
+        listBox.style.display = 'none';
+        pagerBox.style.display = 'none';
       } else {
-        filterBox.appendChild(UI.statusFilter('WAYBILL', (v) => { wbStatus = v; pageNo = 1; loadWaybills(); }));
-        await loadWaybills();
+        await loadOrders();
       }
     }
 
@@ -2059,30 +2534,32 @@
       orderRows = d.list || [];
       listBox.innerHTML = '';
       const tbl = UI.table([
+        UI.selCol(pickedRows),
         { label: '序号', render: (r) => String((pageNo - 1) * SIZE + orderRows.indexOf(r) + 1) },
         { key: 'orderNo', label: '订单号' },
         { key: 'buyerName', label: '需方(钢厂)' },
         { key: 'supplierName', label: '供方' },
-        { key: 'quantity', label: '订单量(吨)', num: true },
+        { key: 'quantity', label: '订单量(湿吨)', num: true },
         { label: '物流方案', render: (r) => r.planNo
           ? r.planNo + '（' + (ORG_LABEL[r.orgMode] || r.orgMode) + '）'
           : UI.h('span', { class: 'muted' }, '未制定') },
         { label: '运单概况', render: (r) => r.planId
-          ? String(r.waybillCount || 0) + ' 段 / 已排 ' + (r.plannedQty || 0) + ' 吨'
+          ? String(r.waybillCount || 0) + ' 段 / 已排 ' + (r.plannedQty || 0) + ' 湿吨'
           : '-' },
-        { label: '操作', render: (r) => r.planId
-          ? UI.h('button', { class: 'sm primary', onclick: (e) => { e.stopPropagation(); waybillCreateModal(r); } }, '新增分段运单')
-          : UI.h('button', { class: 'sm primary', onclick: (e) => { e.stopPropagation(); planModal(r); } }, '制定方案') },
+        { label: '操作', render: (r) => UI.h('span', { class: 'inline-flex' },
+          r.planId
+            ? UI.h('button', { class: 'sm primary', onclick: (e) => { e.stopPropagation(); waybillCreateModal(r); } }, '新增分段运单')
+            : UI.h('button', { class: 'sm primary', onclick: (e) => { e.stopPropagation(); planModal(r); } }, '制定方案')) },
       ], orderRows, '暂无履约中订单（合同生效后进入调度）');
       listBox.appendChild(scrollWrap(tbl));
-      // 点击订单行 → 显示该订单关联的保税进出库存分析表
+      // 点击订单行 → 订单详情整页（钢厂端 / 供应商端两个独立框）
       tbl.querySelectorAll('tbody tr').forEach((tr, i) => {
         const r = orderRows[i];
         if (!r) return;
         tr.style.cursor = 'pointer';
-        tr.title = '点击查看该订单的保税进出库存分析表';
+        tr.title = '点击查看成员钢厂与物流节点轨迹';
         if (gridOrder && gridOrder.id === r.id) tr.classList.add('row-selected');
-        tr.addEventListener('click', () => selectOrder(r));
+        tr.addEventListener('click', () => { location.hash = '#/logistics-order-detail?oid=' + r.id; });
       });
       UI.pager(pagerBox, pageNo, SIZE, d.total, (p) => { pageNo = p; loadOrders(); });
     }
@@ -2094,7 +2571,7 @@
         UI.kv([
           ['订单号', r.orderNo],
           ['需方(钢厂)', r.buyerName],
-          ['订单量', r.quantity + ' 吨'],
+          ['订单量', r.quantity + ' 湿吨'],
         ]),
         UI.h('div', { class: 'form-grid' },
           UI.formRow('组织方式', orgMode, true),
@@ -2110,227 +2587,517 @@
       ]);
     }
 
-    async function waybillCreateModal(r) {
+    async function waybillCreateModal(r, afterSave) {
       const remain = Math.max(0, (r.quantity || 0) - (r.plannedQty || 0));
       const segNo = numInput({ value: String((r.waybillCount || 0) + 1), min: '1', style: 'width:100%' });
       const mode = UI.selectField(Object.entries(MODE_LABEL), 'RAIL');
-      const departPlace = UI.selectField(DEPART_PORTS.map((p) => [p, p]), DEPART_PORTS[0]);
-      const transitWrap = UI.h('div', { class: 'form-row', style: 'display:none' },
-        UI.h('label', { class: 'req' }, '中转站'),
-        UI.h('input', { id: 'wb-transit-station', style: 'width:100%', placeholder: '如：邯郸南站' }));
-      const transitInp = transitWrap.querySelector('input');
-      const arrivePlace = UI.h('input', { style: 'width:100%', placeholder: '如：钢厂厂区' });
-      /* 预计船到港时间（ETA）与计划发运时间 */
-      const etaDate = UI.h('input', { type: 'datetime-local', style: 'width:100%' });
-      const departDate = UI.h('input', { type: 'date' });
-      const arriveDate = UI.h('input', { type: 'date' });
-      const planQty = numInput({ value: String(remain || ''), step: '0.001', style: 'width:100%' });
-      const freight = numInput({ step: '0.01', placeholder: '运费总额（元）' });
-      const vehicleNo = UI.h('input', { placeholder: '车船号（可选）' });
-      const deviationReason = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '分段合计与订单量偏差>5%时必填' });
-      /* 公铁联运时显示中转站输入 */
-      const syncTransit = () => { transitWrap.style.display = mode.value === 'MULTIMODAL' ? '' : 'none'; };
-      mode.addEventListener('change', syncTransit);
+      /* 各运输方式已排量：供应商端方案分方式排量，每种运输方式单独录入运输量 */
+      const byMode = {};
+      (r.waybills || []).forEach((w) => {
+        const k = w.transportMode || '-';
+        byMode[k] = (byMode[k] || 0) + (Number(w.planQty) || 0);
+      });
+      const modeTxt = Object.keys(MODE_LABEL).filter((k) => byMode[k])
+        .map((k) => MODE_LABEL[k] + ' ' + Math.round(byMode[k] * 100) / 100 + ' 湿吨').join(' · ') || '暂无';
+      /* 起始地/目的地预填（订单成交报价到货港口 / 钢厂交货地址），可改 */
+      const departPlace = UI.h('input', { type: 'text', style: 'width:100%;height:32px', placeholder: '如：黄骅港', value: r.startPlace || '' });
+      const arrivePlace = UI.h('input', { type: 'text', style: 'width:100%;height:32px', placeholder: '如：邯郸南站 / 钢厂场区', value: r.destPlace || '' });
+      /* 运输量：本次分段运单的排量（默认剩余可排，可改；各方式合计不超过订单量） */
+      const planQty = numInput({ value: Number(remain).toFixed(2), min: '0.01', step: '0.01', style: 'width:100%' });
       const m = UI.modal('新增分段运单 · ' + r.orderNo, UI.h('form', { onsubmit: (e) => e.preventDefault() },
         UI.kv([
           ['物流方案', r.planNo + '（' + (ORG_LABEL[r.orgMode] || r.orgMode) + '）'],
-          ['订单量', r.quantity + ' 吨'],
-          ['已排量', (r.plannedQty || 0) + ' 吨'],
-          ['剩余可排', remain + ' 吨'],
+          ['订单量', r.quantity + ' 湿吨'],
+          ['已排量', (r.plannedQty || 0) + ' 湿吨'],
+          ['各方式已排', modeTxt],
+          ['剩余可排', remain + ' 湿吨'],
         ]),
         UI.h('div', { class: 'form-grid' },
           UI.formRow('分段号', segNo, true),
           UI.formRow('运输方式', mode, true),
-          departPlace,
-          transitWrap,
-          UI.formRow('到达地', arrivePlace, true),
-          UI.formRow('预计船到港时间', etaDate, true),
-          UI.formRow('计划发运日', departDate, true),
-          UI.formRow('计划到达日', arriveDate, true),
-          UI.formRow('计划量(吨)', planQty, true),
-          UI.formRow('运费(元)', freight, true),
-          UI.formRow('车船号', vehicleNo),
-          UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '偏差说明'), deviationReason))), [
+          UI.formRow('运输量(湿吨)', planQty, true),
+          UI.formRow('起始地', departPlace, true),
+          UI.formRow('目的地', arrivePlace, true))), [
         UI.h('button', { class: 'primary', onclick: async () => {
-          const qty = parseFloat(planQty.value);
-          if (!qty || qty <= 0) { UI.toast('请填写计划量（吨）', 'err'); return; }
-          if (!departDate.value || !arriveDate.value) { UI.toast('请选择计划发运/到达日期', 'err'); return; }
-          if (!etaDate.value) { UI.toast('请选择预计船到港时间', 'err'); return; }
-          if (!freight.value || parseFloat(freight.value) <= 0) { UI.toast('请填写运费（必填）', 'err'); return; }
-          if (mode.value === 'MULTIMODAL' && !transitInp.value.trim()) { UI.toast('公铁联运必须填写中转站', 'err'); return; }
+          const q = parseFloat(planQty.value);
+          if (!departPlace.value.trim()) { UI.toast('请填写起始地', 'err'); return; }
+          if (!arrivePlace.value.trim()) { UI.toast('请填写目的地', 'err'); return; }
+          if (!(q > 0)) { UI.toast('请填写运输量（必须大于 0）', 'err'); return; }
+          if (q > remain + 0.000001) { UI.toast('运输量 ' + q + ' 湿吨超过剩余可排 ' + remain + ' 湿吨', 'err'); return; }
           try {
-            const res = await API.post('/admin/logistics-plans/' + r.planId + '/waybills', {
+            await API.post('/admin/logistics-plans/' + r.planId + '/waybills', {
               segmentNo: parseInt(segNo.value, 10) || 1,
               transportMode: mode.value,
-              departPlace: departPlace.value,
-              transitStation: transitInp.value.trim() || undefined,
-              arrivePlace: arrivePlace.value.trim() || undefined,
-              etaDate: etaDate.value ? etaDate.value.replace('T', ' ') + (etaDate.value.length === 16 ? ':00' : '') : undefined,
-              planDepartDate: departDate.value,
-              planArriveDate: arriveDate.value,
-              planQty: qty,
-              freight: parseFloat(freight.value),
-              vehicleNo: vehicleNo.value.trim() || undefined,
-              deviationReason: deviationReason.value.trim() || undefined,
+              planQty: q,
+              departPlace: departPlace.value.trim(),
+              arrivePlace: arrivePlace.value.trim(),
             });
             m.close();
-            UI.toast('运单已创建（待发运）', 'ok');
-            loadOrders();
-          } catch (e) { /* toast 已提示 */ }
-        } }, '提 交'),
-      ]);
-      syncTransit();
-    }
-
-    async function loadWaybills() {
-      const d = await API.get('/admin/waybills-ops' + API.qs({ status: wbStatus, page: pageNo, size: SIZE }));
-      wbRows = d.list || [];
-      listBox.innerHTML = '';
-      listBox.appendChild(scrollWrap(UI.table([
-        { label: '序号', render: (w) => String((pageNo - 1) * SIZE + wbRows.indexOf(w) + 1) },
-        { key: 'waybillNo', label: '运单号' },
-        { key: 'orderNo', label: '订单号' },
-        { key: 'buyerName', label: '需方(钢厂)' },
-        { key: 'segmentNo', label: '分段' },
-        { label: '运输方式', render: (w) => MODE_LABEL[w.transportMode] || w.transportMode || '-' },
-        { label: '起讫', render: (w) => (w.departPlace || '-') + (w.transitStation ? '（经' + w.transitStation + '）' : '') + ' → ' + (w.arrivePlace || '-') },
-        { key: 'planQty', label: '计划量(吨)', num: true },
-        { label: '预计船到港', render: (w) => w.etaAt ? UI.fmtDateTime(w.etaAt) : '-' },
-        { key: 'carrierName', label: '承运商', render: (w) => w.carrierName || '-' },
-        { label: '计划发运', render: (w) => UI.fmtDate(w.planDepartDate) },
-        { label: '实际节点', render: (w) => w.actualArriveAt
-          ? '到达 ' + UI.fmtDateTime(w.actualArriveAt)
-          : (w.actualDepartAt ? '发运 ' + UI.fmtDateTime(w.actualDepartAt) : '-') },
-        { key: 'status', label: '状态', render: (w) => UI.statusTag('WAYBILL', w.status) },
-        { label: '操作', render: opCell },
-      ], wbRows, '暂无运单')));
-      UI.pager(pagerBox, pageNo, SIZE, d.total, (p) => { pageNo = p; loadWaybills(); });
-    }
-
-    function opCell(w) {
-      if (w.status === 'PENDING_DEPART' || w.status === 'IN_TRANSIT' || w.status === 'ARRIVED') {
-        const nodeBtn = UI.h('button', { class: 'sm', onclick: () => nodeEntryModal(w) }, '节点录入');
-        if (w.status === 'PENDING_DEPART') {
-          return UI.h('span', { class: 'inline-flex' }, nodeBtn,
-            UI.h('button', { class: 'sm primary', onclick: () => advanceModal(w, 'DEPART') }, '确认发运'));
-        }
-        if (w.status === 'IN_TRANSIT') {
-          return UI.h('span', { class: 'inline-flex' }, nodeBtn,
-            UI.h('button', { class: 'sm primary', onclick: () => advanceModal(w, 'ARRIVE') }, '确认到达'));
-        }
-        return UI.h('span', { class: 'inline-flex' }, nodeBtn,
-          UI.h('button', { class: 'sm primary', onclick: async () => {
-            if (!(await UI.confirmBox('确认代钢厂签收运单 ' + w.waybillNo + '？'))) return;
-            try {
-              await API.put('/admin/waybills/' + w.id + '/advance', { action: 'SIGN' });
-              UI.toast('已签收', 'ok');
-              loadWaybills();
-            } catch (e) { /* toast 已提示 */ }
-          } }, '代签收'));
-      }
-      return UI.h('button', { class: 'sm', onclick: () => detailModal(w) }, '详情');
-    }
-
-    function advanceModal(w, action) {
-      const isDepart = action === 'DEPART';
-      const occur = UI.h('input', { type: 'datetime-local' });
-      const actualQty = numInput({ value: String(w.planQty || ''), step: '0.001', style: 'width:100%' });
-      const m = UI.modal((isDepart ? '确认发运' : '确认到达') + ' · ' + w.waybillNo,
-        UI.h('form', { onsubmit: (e) => e.preventDefault() },
-          UI.kv([
-            ['运单号', w.waybillNo],
-            ['订单号', w.orderNo],
-            ['承运商', w.carrierName || '-'],
-            ['起讫', (w.departPlace || '-') + ' → ' + (w.arrivePlace || '-')],
-          ]),
-          UI.h('div', { class: 'form-grid' },
-            UI.formRow(isDepart ? '实际发运时间' : '实际到达时间', occur),
-            isDepart ? UI.formRow('实际发运量(吨)', actualQty) : null)), [
-        UI.h('button', { class: 'primary', onclick: async () => {
-          try {
-            await API.put('/admin/waybills/' + w.id + '/advance', {
-              action,
-              occurTime: occur.value ? occur.value.replace('T', ' ') + (occur.value.length === 16 ? ':00' : '') : undefined,
-              actualQty: isDepart && actualQty.value ? parseFloat(actualQty.value) : undefined,
-            });
-            m.close();
-            UI.toast(isDepart ? '已发运（钢厂端可见在途节点）' : '已到达', 'ok');
-            loadWaybills();
+            UI.toast('运单已创建（待发运），运输量 ' + q + ' 湿吨', 'ok');
+            if (afterSave) afterSave(); else loadOrders();
           } catch (e) { /* toast 已提示 */ }
         } }, '提 交'),
       ]);
     }
 
-    /* 95306 式节点录入：直接选择运单当前到达的节点，系统按序补齐前置节点，
-       钢厂端物流服务页节点跟踪自动刷新展示（免逐项登记） */
-    function nodeEntryModal(w) {
-      const multimodal = w.transportMode === 'MULTIMODAL' || !!w.transitStation;
-      const NODES = [
-        ['ETA', '船到港', w.actualEtaAt],
-        ['DEPART', '货物出港', w.actualDepartAt],
-      ];
-      if (multimodal) NODES.push(['TRANSIT', '到达中转站', w.actualTransitAt]);
-      NODES.push(['ARRIVE', '到达目的地', w.actualArriveAt]);
-      /* 状态自适应：仅提供当前运单状态下可登记/可流转的节点
-         （已到达运单仅可补录船到港；中转/发运/到达等流转类节点过时后不可回录） */
-      const ALLOWED = { PENDING_DEPART: null, IN_TRANSIT: ['ETA', 'TRANSIT', 'ARRIVE'], ARRIVED: ['ETA'] };
-      const allow = ALLOWED[w.status];
-      const open = NODES.filter((n) => !n[2] && (!allow || allow.indexOf(n[0]) >= 0));
-      const kvRows = NODES.map((n) => [n[1], n[2] ? UI.fmtDateTime(n[2]) : '未登记']);
-      const head = UI.h('div', {},
-        UI.kv([['运单号', w.waybillNo], ['订单号', w.orderNo],
-               ['起讫', (w.departPlace || '-') + ' → ' + (w.arrivePlace || '-')]]),
-        UI.h('div', { class: 'hint' }, '当前节点进度：'),
-        UI.kv(kvRows));
-      if (!open.length) {
-        UI.modal('节点录入 · ' + w.waybillNo, UI.h('div', {}, head,
-          UI.h('div', { class: 'empty', style: 'margin-top:10px' }, '当前状态无可录入的节点')));
-        return;
+    /* ---- 分段运单条 + 合并轨迹时间线 ----
+       供应商面板：分段运单条（段/方式/状态/节点录入）+ 合并时间线；
+       钢铁企业面板：仅合并时间线（不分段、不区分运输方式），传 { segBar: false } */
+    /* 轨迹事件收集：节点录入追加的轨迹日志（nodeLog）优先；无日志时按固定节点时间兜底（旧数据）；已生成始终保留 */
+    function traceEventsOf(w) {
+      const dot = (s) => (String(s || '').replace(/。*$/, '') + '。');
+      const evs = [];
+      const nl = Array.isArray(w.nodeLog) ? w.nodeLog : [];
+      if (nl.length) {
+        nl.forEach((e) => evs.push([e.occurTime, e.loc || '节点', dot(e.desc)]));
+      } else {
+        if (w.arriveAt) evs.push([w.arriveAt, w.arrivePlace || '目的地', '货物已到达目的地。']);
+        if (w.transitAt) evs.push([w.transitAt, w.transitStation || '中转站', '货物已到达中转站。']);
+        if (w.departAt) evs.push([w.departAt, w.departPlace || '起运地', '货物已出港发运。']);
+        if (w.etaActual) evs.push([w.etaActual, w.departPlace || '起运港', '船已到港，待发运。']);
       }
-      const sel = UI.selectField(open.map((n) => [n[0], n[1]]), open[0][0]);
-      const occur = UI.h('input', { type: 'datetime-local' });
-      const m = UI.modal('节点录入 · ' + w.waybillNo,
-        UI.h('form', { onsubmit: (e) => e.preventDefault() }, head,
+      evs.push([w.createdAt, w.departPlace || '起运地', '运单已生成，等待发运。']);
+      return evs;
+    }
+
+    /* ---- 订单详情独立页（#/logistics-order-detail?oid=）：页面内分两个框 ----
+       框一「钢铁企业」：成员钢厂与货物信息 + 物流节点轨迹（货物信息各厂独立，录入后钢厂端自动更新）；
+       框二「供应商」：运输说明（可编辑）+ 物流运输轨迹 + 推送供应商（供应商端物流服务自动更新） */
+    async function renderStandaloneDetail(oid) {
+      let d;
+      try {
+        d = await API.get('/admin/logistics-orders/' + oid);
+      } catch (e) { return; }
+      const r = { id: oid, orderNo: d.order.orderNo, supplierName: d.order.supplierName };
+      const memberBox = UI.h('div', {});
+      const traceSteel = UI.h('div', {});
+      const traceSup = UI.h('div', {});
+      /* 运输方案三个框：铁路直达 / 公铁联运 / 汽运直达（随方案推送供应商） */
+      const railTa = UI.h('textarea', { rows: 2, style: 'width:100%;height:64px;flex:1',
+        placeholder: '铁路直达运输方案（装卸/交接/注意事项等，不超过500字）' });
+      railTa.value = d.order.railRemark || d.order.remark || '';
+      const multiTa = UI.h('textarea', { rows: 2, style: 'width:100%;height:64px;flex:1',
+        placeholder: '公铁联运运输方案（装卸/交接/注意事项等，不超过500字）' });
+      multiTa.value = d.order.multimodalRemark || '';
+      const truckTa = UI.h('textarea', { rows: 2, style: 'width:100%;height:64px;flex:1',
+        placeholder: '汽运直达运输方案（装卸/交接/注意事项等，不超过500字）' });
+      truckTa.value = d.order.truckRemark || '';
+      const modeRow = (label, ta) => UI.h('div', { style: 'display:flex;gap:12px;align-items:flex-start' },
+        UI.h('span', { style: 'flex:none;width:72px;line-height:64px;color:var(--ink-2,#555)' }, label), ta);
+
+      function renderMembers() {
+        memberBox.replaceChildren(UI.table([
+          { key: 'companyName', label: '钢厂' },
+          { label: '份额(湿吨)', num: true, render: (x) => x.quantity != null ? UI.fmtQty(x.quantity) : '-' },
+          { label: '货物总量', num: true, render: (x) => x.totalQty != null ? UI.fmtQty(x.totalQty) : '-' },
+          { label: '出港', num: true, render: (x) => x.shippedQty != null ? UI.fmtQty(x.shippedQty) : '-' },
+          { label: '在途', num: true, render: (x) => x.transitQty != null ? UI.fmtQty(x.transitQty) : '-' },
+          { label: '到站', num: true, render: (x) => x.arrivedQty != null ? UI.fmtQty(x.arrivedQty) : '-' },
+          { label: '可提货', num: true, render: (x) => x.pickupQty != null ? UI.fmtQty(x.pickupQty) : '-' },
+          { label: '操作', render: (x) => UI.h('span', { class: 'inline-flex' },
+            UI.h('button', { class: 'sm', onclick: () => cargoModal(x) }, '录入货物信息'),
+            UI.h('button', { class: 'sm', onclick: async () => {
+              try {
+                const res = await API.post('/admin/logistics-orders/' + d.order.id + '/members/' + x.companyId + '/push');
+                UI.toast('已推送到 ' + (res.companyName || x.companyName), 'ok');
+              } catch (e) { /* toast 已提示 */ }
+            } }, '推送')) },
+        ], d.members, '暂无成员钢厂'));
+      }
+
+      function cargoModal(x) {
+        const FIELDS = [
+          ['totalQty', '货物总量(湿吨)'],
+          ['shippedQty', '出港(湿吨)'],
+          ['transitQty', '在途(湿吨)'],
+          ['arrivedQty', '到站(湿吨)'],
+          ['pickupQty', '可提货(湿吨)'],
+        ];
+        const inputs = FIELDS.map(([k, label]) => [
+          UI.h('input', { type: 'number', min: '0', step: '0.01', style: 'width:100%', value: x[k] != null ? Number(x[k]).toFixed(2) : '' }),
+          label, k,
+        ]);
+        const mm = UI.modal('录入货物信息 · ' + x.companyName, UI.h('form', { onsubmit: (e) => e.preventDefault() },
+          UI.kv([['所属订单', d.order.orderNo], ['份额(湿吨)', x.quantity != null ? UI.fmtQty(x.quantity) : '-']]),
           UI.h('div', { class: 'form-grid' },
-            UI.formRow('运单当前到达节点', sel, true),
-            UI.formRow('节点发生时间', occur, false, '留空默认当前时间；未登记的前置节点将按此时间一并补齐'))), [
+            inputs.map(([inp, label]) => UI.formRow(label, inp)))), [
           UI.h('button', { class: 'primary', onclick: async () => {
-            const target = NODES.findIndex((n) => n[0] === sel.value);
-            if (target < 0) { UI.toast('请选择节点', 'err'); return; }
-            const occurTime = occur.value ? occur.value.replace('T', ' ') + (occur.value.length === 16 ? ':00' : '') : undefined;
             try {
-              for (let i = 0; i <= target; i++) {
-                if (NODES[i][2]) continue; // 已登记的节点跳过
-                await API.put('/admin/waybills/' + w.id + '/advance',
-                  { action: NODES[i][0], occurTime });
-              }
-              m.close();
-              UI.toast('节点已录入，钢厂端物流服务将自动更新', 'ok');
-              loadWaybills();
+              const payload = {};
+              inputs.forEach(([inp, , k]) => { payload[k] = inp.value ? parseFloat(inp.value) : undefined; });
+              await API.put('/admin/logistics-orders/' + d.order.id + '/members/' + x.companyId + '/cargo', payload);
+              mm.close();
+              UI.toast('货物信息已保存（点击「推送」后钢厂端可见）', 'ok');
+              const fresh = await API.get('/admin/logistics-orders/' + d.order.id);
+              d.members = fresh.members;
+              renderMembers();
             } catch (e) { /* toast 已提示 */ }
-          } }, '提 交'),
+          } }, '保 存'),
+        ]);
+      }
+
+      /* 钢铁企业面板轨迹节点录入：单运单直接打开，多运单先选运单 */
+      function steelNodeEntry() {
+        const wbs = d.waybills || [];
+        if (!wbs.length) { UI.toast('该订单暂无运单，无法录入节点', 'err'); return; }
+        if (wbs.length === 1) { nodeEntryModal(wbs[0], refreshDetail); return; }
+        const m = UI.modal('选择运单', UI.h('div', { style: 'display:flex;flex-direction:column;gap:8px' },
+          wbs.map((w) => UI.h('span', { class: 'inline-flex', style: 'gap:6px;align-items:center' },
+            UI.h('span', { class: 'wb-v' }, w.waybillNo || ('运单 #' + w.id)),
+            UI.statusTag('WAYBILL', w.status),
+            UI.h('button', { class: 'sm', onclick: () => { m.close(); nodeEntryModal(w, refreshDetail); } }, '节点录入')))), []);
+      }
+
+      /* 钢铁企业面板：95306 式物流节点跟踪（左侧合并时间线 + 右侧货物信息），内容同钢厂端物流服务页 */
+      function renderTraceSteel() {
+        const wbs = d.waybills || [];
+        const line = UI.h('div', { class: 'trace-line', style: 'margin-top:4px' });
+        if (!wbs.length) {
+          line.appendChild(UI.h('div', { class: 'empty' }, '该订单暂无运单，请在供应商面板增加轨迹'));
+        } else {
+          const all = [];
+          wbs.forEach((w) => traceEventsOf(w).forEach((ev) => all.push(ev)));
+          all.sort((a, b) => new Date(String(b[0]).replace(' ', 'T')) - new Date(String(a[0]).replace(' ', 'T')));
+          all.forEach(([t, loc, txt], i) => {
+            const hm = String(t).split(' ')[1] || '';
+            line.appendChild(UI.h('div', { class: 'trace-item' + (i === 0 ? ' latest' : '') },
+              UI.h('div', { class: 'trace-time' }, UI.fmtDate(t) + (hm ? ' ' + hm.slice(0, 5) : '')),
+              UI.h('div', { class: 'trace-rail' },
+                UI.h('span', { class: 'trace-dot' }),
+                UI.h('span', { class: 'trace-seg' })),
+              UI.h('div', { class: 'trace-desc' },
+                UI.h('span', { class: 'trace-loc' }, '【' + loc + '】'), txt)));
+          });
+        }
+        /* 右侧货物信息：成员货物信息按厂汇总；平台未录入时按运单实时汇总（同钢厂端逻辑） */
+        const members = d.members || [];
+        const hasCargo = members.some((m) => m.totalQty != null || m.shippedQty != null
+          || m.transitQty != null || m.arrivedQty != null || m.pickupQty != null);
+        const sumOf = (k) => members.reduce((s, m) => s + (m[k] != null ? Number(m[k]) : 0), 0);
+        const qtyOf = (w) => (w.actualQty != null ? Number(w.actualQty) : (w.planQty != null ? Number(w.planQty) : 0));
+        const wbSum = (sts) => wbs.filter((w) => sts.indexOf(w.status) >= 0).reduce((s, w) => s + qtyOf(w), 0);
+        const rows = hasCargo
+          ? [['货物总量', sumOf('totalQty')], ['出港', sumOf('shippedQty')], ['在途', sumOf('transitQty')],
+             ['到站', sumOf('arrivedQty')], ['可提货', sumOf('pickupQty')]]
+          : [['货物总量', null], ['出港', wbSum(['IN_TRANSIT', 'ARRIVED', 'SIGNED'])], ['在途', wbSum(['IN_TRANSIT'])],
+             ['到站', wbSum(['ARRIVED', 'SIGNED'])], ['可提货', wbSum(['ARRIVED'])]];
+        /* 原位原子更新：整体构建后一次性替换，面板不闪动 */
+        traceSteel.replaceChildren(UI.h('div', { class: 'trace-body' },
+          UI.h('div', { class: 'trace-panel' }, line),
+          UI.h('div', { class: 'trace-side' },
+            UI.h('div', { class: 'trace-title' }, '货物信息'),
+            UI.h('div', { class: 'side-kv' },
+              rows.map(([k, v]) => UI.h('div', { class: 'side-kv-row' },
+                UI.h('span', { class: 'side-kv-k' }, k),
+                UI.h('span', { class: 'side-kv-v' }, v != null && v !== '' ? UI.fmtMoney(Number(v)) + ' 湿吨' : '-'))),
+              UI.h('div', { class: 'side-kv-row' },
+                UI.h('span', { class: 'side-kv-k' }, '信息来源'),
+                UI.h('span', { class: 'side-kv-v' }, hasCargo ? '平台录入汇总' : '运单实时汇总'))))));
+      }
+
+      /* 供应商面板：物流运输轨迹——分段筛选（按已新增分段运单生成：方式+列次）+ 节点录入（录入所选分段轨迹）+ 右侧货物信息 */
+      let segSel = null;
+      function renderTraceSup() {
+        const wbs = d.waybills || [];
+        /* 分段筛选框：选项来自新增的分段运单（如「铁路直达 第1列」），选择哪个显示哪个分段的轨迹 */
+        const prev = segSel ? segSel.value : null;
+        segSel = UI.selectField(wbs.map((w) => [
+          String(w.id),
+          (MODE_LABEL[w.transportMode] || w.transportMode || '-')
+            + (w.transportMode === 'ROAD' ? '（全程）' : ' 第' + w.segmentNo + '列'),
+        ]), prev && wbs.some((w) => String(w.id) === prev) ? prev : (wbs.length ? String(wbs[0].id) : ''));
+        segSel.addEventListener('change', () => renderTraceSup());
+        const cur = wbs.find((w) => String(w.id) === segSel.value) || wbs[0] || null;
+        /* 左侧：所选分段的物流轨迹时间线（倒序，最新一条高亮） */
+        const line = UI.h('div', { class: 'trace-line', style: 'margin-top:4px' });
+        if (!wbs.length) {
+          line.appendChild(UI.h('div', { class: 'empty' }, '该订单暂无运单，请先制定物流方案并新增分段运单'));
+        } else {
+          traceEventsOf(cur).forEach(([t, loc, txt], i) => {
+            const hm = String(t).split(' ')[1] || '';
+            line.appendChild(UI.h('div', { class: 'trace-item' + (i === 0 ? ' latest' : '') },
+              UI.h('div', { class: 'trace-time' }, UI.fmtDate(t) + (hm ? ' ' + hm.slice(0, 5) : '')),
+              UI.h('div', { class: 'trace-rail' },
+                UI.h('span', { class: 'trace-dot' }),
+                UI.h('span', { class: 'trace-seg' })),
+              UI.h('div', { class: 'trace-desc' },
+                UI.h('span', { class: 'trace-loc' }, '【' + loc + '】'), txt)));
+          });
+        }
+        /* 右侧货物信息：优先运营端录入的供应商货物信息；未录入时按运单实时汇总 */
+        const sc = d.order.suppCargo || null;
+        const qtyOf = (w) => (w.actualQty != null ? Number(w.actualQty) : (w.planQty != null ? Number(w.planQty) : 0));
+        const wbSum = (sts) => wbs.filter((w) => sts.indexOf(w.status) >= 0).reduce((s, w) => s + qtyOf(w), 0);
+        const hasSupp = sc && sc.updatedAt;
+        const rows = hasSupp
+          ? [['货物总量', sc.totalQty], ['出港', sc.shippedQty], ['在途', sc.transitQty],
+             ['到站', sc.arrivedQty], ['可提货', sc.pickupQty]]
+          : [['货物总量', null], ['出港', wbSum(['IN_TRANSIT', 'ARRIVED', 'SIGNED'])], ['在途', wbSum(['IN_TRANSIT'])],
+             ['到站', wbSum(['ARRIVED', 'SIGNED'])], ['可提货', wbSum(['ARRIVED'])]];
+        /* 分段筛选 + 节点录入（录入所选分段轨迹），置于轨迹内容上方 */
+        traceSup.replaceChildren(
+          UI.h('div', { style: 'display:flex;gap:8px;align-items:center;margin:8px 0' },
+            segSel,
+            UI.h('button', { class: 'sm', onclick: () => { if (cur) nodeEntryModal(cur, refreshDetail); } }, '节点录入')),
+          UI.h('div', { class: 'trace-body' },
+            UI.h('div', { class: 'trace-panel' }, line),
+            UI.h('div', { class: 'trace-side' },
+              UI.h('div', { class: 'trace-title' }, '货物信息'),
+              UI.h('div', { class: 'side-kv' },
+                rows.map(([k, v]) => UI.h('div', { class: 'side-kv-row' },
+                  UI.h('span', { class: 'side-kv-k' }, k),
+                  UI.h('span', { class: 'side-kv-v' }, v != null && v !== '' ? UI.fmtMoney(Number(v)) + ' 湿吨' : '-'))),
+                UI.h('div', { class: 'side-kv-row' },
+                  UI.h('span', { class: 'side-kv-k' }, '信息来源'),
+                  UI.h('span', { class: 'side-kv-v' }, hasSupp ? '平台 ' + UI.fmtDateTime(sc.updatedAt) : '运单实时汇总')),
+                UI.h('div', { style: 'margin-top:8px' },
+                  UI.h('button', { class: 'sm primary', onclick: suppCargoModal }, '录入货物信息'))))));
+      }
+
+      /* 供应商货物信息录入：货物总量/出港/在途/到站/可提货（每保存一次供应商端物流服务自动更新） */
+      function suppCargoModal() {
+        const FIELDS = [
+          ['totalQty', '货物总量(湿吨)'],
+          ['shippedQty', '出港(湿吨)'],
+          ['transitQty', '在途(湿吨)'],
+          ['arrivedQty', '到站(湿吨)'],
+          ['pickupQty', '可提货(湿吨)'],
+        ];
+        const sc = d.order.suppCargo || {};
+        const inputs = FIELDS.map(([k, label]) => [
+          UI.h('input', { type: 'number', min: '0', step: '0.01', style: 'width:100%', value: sc[k] != null ? Number(sc[k]).toFixed(2) : '' }),
+          label, k,
+        ]);
+        const mm = UI.modal('录入货物信息 · ' + (d.order.supplierName || '供应商'),
+          UI.h('form', { onsubmit: (e) => e.preventDefault() },
+            UI.kv([['所属订单', d.order.orderNo]]),
+            UI.h('div', { class: 'form-grid' },
+              inputs.map(([inp, label]) => UI.formRow(label, inp)))), [
+          UI.h('button', { class: 'primary', onclick: async () => {
+            try {
+              const payload = {};
+              inputs.forEach(([inp, , k]) => { payload[k] = inp.value ? parseFloat(inp.value) : undefined; });
+              await API.put('/admin/logistics-orders/' + d.order.id + '/supplier-cargo', payload);
+              mm.close();
+              UI.toast('供应商货物信息已保存，供应商端物流服务将自动更新', 'ok');
+              await refreshDetail();
+            } catch (e) { /* toast 已提示 */ }
+          } }, '保 存'),
+        ]);
+      }
+
+      function renderTraces() {
+        /* 钢铁企业面板 / 供应商面板：均 95306 式（左侧时间线 + 右侧货物信息），内容不闪动原位更新 */
+        renderTraceSteel();
+        renderTraceSup();
+      }
+
+      async function refreshDetail() {
+        try {
+          const fresh = await API.get('/admin/logistics-orders/' + oid);
+          d = fresh;
+          railTa.value = d.order.railRemark || d.order.remark || '';
+          multiTa.value = d.order.multimodalRemark || '';
+          truckTa.value = d.order.truckRemark || '';
+          renderMembers();
+          renderTraces();
+        } catch (e) { /* 静默 */ }
+      }
+
+      /* 运输方案板块独立推送：仅推送三个运输方案文本（供应商端推送后才更新方案内容） */
+      async function pushPlanOnly() {
+        if (!d.order.planId) { UI.toast('该订单尚未制定物流方案，无法推送', 'err'); return; }
+        try {
+          await API.post('/admin/logistics-plans/' + d.order.planId + '/push',
+            { railRemark: railTa.value.trim() || undefined,
+              multimodalRemark: multiTa.value.trim() || undefined,
+              truckRemark: truckTa.value.trim() || undefined });
+          UI.toast('运输方案已推送供应商', 'ok');
+        } catch (e) { /* toast 已提示 */ }
+      }
+
+      renderMembers();
+      renderTraces();
+      /* 顶部：页面标题 + 返回列表 / 保税库存分析表（跳回列表页并直接打开分析表） */
+      page.appendChild(UI.h('div', { class: 'card', style: 'margin-bottom:12px' },
+        UI.h('div', { class: 'toolbar' },
+          UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '运输调度 · ' + d.order.orderNo),
+          UI.h('div', { class: 'spacer' }),
+          UI.h('button', { onclick: () => { location.hash = '#/logistics-dispatch'; } }, '返回列表'),
+          UI.h('button', { class: 'sm', onclick: () => {
+            pendingGridOrder = { id: d.order.id, orderNo: d.order.orderNo };
+            location.hash = '#/logistics-dispatch';
+          } }, '保税库存分析表'))));
+      /* 页签切换：钢铁企业 / 供应商（分别对应下方两个面板） */
+      const steelCard = UI.h('div', { class: 'card dispatch-card', style: 'margin-bottom:12px' },
+        UI.h('div', { class: 'toolbar' },
+          UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '钢铁企业')),
+        UI.h('div', { style: 'margin:2px 0 8px' }, UI.kv([
+          ['订单号', d.order.orderNo],
+          ['品种', (d.order.varietyName || '-') + (d.order.grade ? ' ' + d.order.grade + '%' : '')],
+          ['订单量', UI.fmtMoney(d.order.quantity) + ' 湿吨'],
+          ['供方', d.order.supplierName || '-'],
+          ['物流方案', d.order.planNo ? d.order.planNo + '（' + (ORG_LABEL[d.order.orgMode] || d.order.orgMode || '-') + '）' : '未制定'],
+        ])),
+        UI.h('div', { class: 'sec-title' }, '成员钢厂与货物信息'),
+        memberBox);
+      /* 物流节点轨迹：独立整框卡片（与钢厂端物流节点跟踪同款布局，外框线）；
+         「推送至钢厂」置于卡片右下角——推送的正是这里的轨迹 */
+      const steelTraceCard = UI.h('div', { class: 'card', style: 'margin-bottom:12px' },
+        UI.h('h3', { class: 'bar-title' }, '物流节点轨迹',
+          UI.h('button', { class: 'sm', style: 'margin-left:auto', onclick: steelNodeEntry }, '节点录入')),
+        UI.h('div', { class: 'trace-box' }, traceSteel),
+        UI.h('div', { style: 'display:flex;justify-content:flex-end;margin-top:10px' },
+          UI.h('button', { class: 'primary', onclick: async () => {
+            try {
+              const res = await API.post('/admin/logistics-orders/' + d.order.id + '/push-mills');
+              UI.toast('物流节点轨迹已推送至 ' + (res.pushed || 0) + ' 家钢厂，钢厂端「物流服务」将自动更新', 'ok');
+            } catch (e) { /* toast 已提示 */ }
+          } }, '推送至钢厂')));
+      /* 供应商面板：需方（参与本单集采的钢铁企业）+ 运输方案三框 + 分段轨迹 + 推送 */
+      /* 新增分段运单弹窗所需行数据（从详情数据构造：已排量/段数按运单汇总；带运单明细与起讫地预填） */
+      const rWb = {
+        id: d.order.id, orderNo: d.order.orderNo, planId: d.order.planId,
+        planNo: d.order.planNo, orgMode: d.order.orgMode,
+        quantity: Number(d.order.quantity) || 0,
+        plannedQty: (d.waybills || []).reduce((s, w) => s + (Number(w.planQty) || 0), 0),
+        waybillCount: (d.waybills || []).length,
+        waybills: d.waybills || [],
+        startPlace: d.order.startPlace || '',
+        destPlace: d.order.destPlace || '',
+      };
+      const supCard = UI.h('div', { class: 'card dispatch-card', style: 'margin-bottom:12px' },
+        UI.h('div', { class: 'toolbar' },
+          UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '供应商')),
+        UI.h('div', { style: 'margin:2px 0 8px' }, UI.kv([
+          ['订单号', d.order.orderNo],
+          ['订单量', UI.fmtMoney(d.order.quantity) + ' 湿吨'],
+          ['供方', d.order.supplierName || '-'],
+          ['需方', d.order.buyerName || '平台集采'],
+          ['物流方案', d.order.planNo ? d.order.planNo + '（' + (ORG_LABEL[d.order.orgMode] || d.order.orgMode || '-') + '）' : '未制定'],
+          ['起始地', d.order.startPlace || '-'],
+          ['目的地', d.order.destPlace || '-'],
+        ])),
+        UI.h('div', { class: 'sec-title', style: 'display:flex;align-items:center;justify-content:space-between' },
+          UI.h('span', {}, '运输方案'),
+          UI.h('button', { class: 'sm primary', onclick: pushPlanOnly }, '推送供应商')),
+        UI.h('div', { style: 'margin:4px 0 2px;display:flex;flex-direction:column;gap:10px' },
+          modeRow('铁路直达', railTa),
+          modeRow('公铁联运', multiTa),
+          modeRow('汽运直达', truckTa)));
+      /* 物流运输轨迹：独立整框卡片（增加分段运单 + 分段筛选 + 节点录入，外框线）；
+         「推送轨迹 / 推送货物信息」置于卡片右下角——推送的正是这里的轨迹与货物信息 */
+      const supTraceCard = UI.h('div', { class: 'card', style: 'margin-bottom:12px' },
+        UI.h('h3', { class: 'bar-title' }, '物流运输轨迹',
+          UI.h('button', { class: 'sm primary', style: 'margin-left:auto', onclick: () => waybillCreateModal(rWb, refreshDetail) }, '增加')),
+        UI.h('div', { class: 'trace-box' }, traceSup),
+        UI.h('div', { style: 'display:flex;justify-content:flex-end;gap:8px;margin-top:10px' },
+          UI.h('button', { class: 'primary', onclick: async () => {
+            try {
+              await API.post('/admin/logistics-orders/' + d.order.id + '/push-supplier', { scope: 'TRACE' });
+              UI.toast('物流运输轨迹已推送，供应商端「物流服务」将自动更新', 'ok');
+            } catch (e) { /* toast 已提示 */ }
+          } }, '推送轨迹'),
+          UI.h('button', { class: 'primary', onclick: async () => {
+            try {
+              await API.post('/admin/logistics-orders/' + d.order.id + '/push-supplier', { scope: 'CARGO' });
+              UI.toast('货物信息已推送，供应商端「物流服务」将自动更新', 'ok');
+            } catch (e) { /* toast 已提示 */ }
+          } }, '推送货物信息')));
+      const tabRow = UI.h('div', { style: 'display:flex;gap:8px;margin-bottom:12px' },
+        UI.h('button', { class: 'primary', onclick: () => switchTab('steel') }, '钢铁企业'),
+        UI.h('button', { onclick: () => switchTab('supplier') }, '供应商'));
+      page.appendChild(tabRow);
+      page.appendChild(steelCard);
+      page.appendChild(steelTraceCard);
+      page.appendChild(supCard);
+      page.appendChild(supTraceCard);
+      function switchTab(t) {
+        const btns = tabRow.querySelectorAll('button');
+        btns[0].className = t === 'steel' ? 'primary' : '';
+        btns[1].className = t === 'supplier' ? 'primary' : '';
+        steelCard.style.display = t === 'steel' ? '' : 'none';
+        steelTraceCard.style.display = t === 'steel' ? '' : 'none';
+        supCard.style.display = t === 'supplier' ? '' : 'none';
+        supTraceCard.style.display = t === 'supplier' ? '' : 'none';
+      }
+      switchTab('steel');
+    }
+
+    /* 95306 式节点录入：起运地/到达地首次录入后固定（只读展示）；
+       「运单当前到达节点（可选可编辑）+ 节点发生时间」每提交一次向物流轨迹新增一条，
+       同一节点再次录入（时间不同）覆盖原记录（覆盖前提示确认）；
+       onDone：录入成功后的刷新回调（订单详情弹窗传入轨迹刷新） */
+    function nodeEntryModal(w, onDone) {
+      const SUGGEST = ['船已到港，待发运', '货物已出港发运', '货物已到达中转站', '货物已到达目的地'];
+      const textRow = (v) => UI.h('div', { style: 'line-height:32px;color:var(--ink-3,#888)' }, v);
+      /* 起讫：首次录入后固定（已有值只读展示） */
+      const departInp = w.departPlace ? null : UI.h('input', { style: 'width:100%;height:32px', placeholder: '如：黄骅港' });
+      const arriveInp = w.arrivePlace ? null : UI.h('input', { style: 'width:100%;height:32px', placeholder: '如：邯郸南站 / 钢厂场区' });
+      const placeVal = (inp, fixed) => (inp ? inp.value.trim() : (fixed || ''));
+      const placesPayload = () => ({
+        departPlace: placeVal(departInp, w.departPlace) || undefined,
+        arrivePlace: placeVal(arriveInp, w.arrivePlace) || undefined,
+      });
+      const placesChanged = () => (departInp && departInp.value.trim() !== (w.departPlace || ''))
+        || (arriveInp && arriveInp.value.trim() !== (w.arrivePlace || ''));
+      /* 运单当前到达节点：文本框 + 建议列表（可自行编辑任意节点描述） */
+      const nodeInp = UI.h('input', {
+        type: 'text', list: 'node-suggest-' + w.id,
+        style: 'width:100%;height:32px',
+        placeholder: '选择或自行录入节点，如：船已到港，待发运',
+      });
+      const occur = UI.h('input', { type: 'datetime-local', style: 'height:32px' });
+      const fmtT = (v) => v.replace('T', ' ') + (v.length === 16 ? ':00' : '');
+      const norm = (s) => String(s || '').replace(/。*$/, '');
+      /* 同节点重复录入检测：时间不同 → 覆盖原记录（前端提示确认） */
+      const hasSameNode = (txt) => (Array.isArray(w.nodeLog) ? w.nodeLog : [])
+        .some((e) => norm(e.desc) === norm(txt));
+      /* 保存：起讫信息一并保存；轨迹节点 + 发生时间新增/覆盖一条物流轨迹 */
+      const save = async () => {
+        const txt = (nodeInp.value || '').trim();
+        if (!txt) { UI.toast('请填写运单当前到达节点', 'err'); return; }
+        if (!occur.value) { UI.toast('请填写节点发生时间', 'err'); return; }
+        if (txt.length > 100) { UI.toast('节点描述不能超过 100 字', 'err'); return; }
+        const dup = hasSameNode(txt);
+        if (dup && !(await UI.confirmBox('节点「' + txt + '」已录入过，再次录入将覆盖原记录，是否继续？'))) return;
+        const dp = placeVal(departInp, w.departPlace);
+        const ap = placeVal(arriveInp, w.arrivePlace);
+        const locOf = {
+          '船已到港，待发运': dp || '起运港',
+          '货物已出港发运': dp || '起运地',
+          '货物已到达中转站': w.transitStation || '中转站',
+          '货物已到达目的地': ap || '目的地',
+        };
+        try {
+          if (placesChanged()) {
+            await API.put('/admin/waybills/' + w.id + '/advance',
+              Object.assign({ action: 'PLACES' }, placesPayload()));
+          }
+          await API.post('/admin/waybills/' + w.id + '/trace-log',
+            { desc: txt, loc: locOf[txt] || '节点', occurTime: fmtT(occur.value) });
+          m.close();
+          UI.toast(dup ? '节点「' + txt + '」已覆盖更新，物流轨迹已同步' : '节点已录入，物流轨迹已新增一条', 'ok');
+          if (onDone) onDone();
+        } catch (e) { /* toast 已提示 */ }
+      };
+      const m = UI.modal('节点录入 · ' + w.waybillNo,
+        UI.h('form', { onsubmit: (e) => e.preventDefault() },
+          UI.h('div', { class: 'form-grid' },
+            UI.formRow('运单号', textRow(w.waybillNo)),
+            UI.formRow('订单号', textRow(w.orderNo || '-')),
+            w.departPlace ? UI.formRow('起运地', textRow(w.departPlace)) : UI.formRow('起运地', departInp),
+            w.arrivePlace ? UI.formRow('到达地', textRow(w.arrivePlace)) : UI.formRow('到达地', arriveInp),
+            /* 整行：运单当前到达节点（可选可编辑）+ 节点发生时间 */
+            UI.h('div', { class: 'form-row full' },
+              UI.h('label', {}, '运单当前到达节点'), nodeInp,
+              UI.h('datalist', { id: 'node-suggest-' + w.id },
+                SUGGEST.map((t) => UI.h('option', { value: t })))),
+            UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '节点发生时间'), occur))), [
+          UI.h('button', { class: 'primary', onclick: save }, '保 存'),
         ]);
     }
-
-    function detailModal(w) {
-      UI.modal('运单详情 · ' + w.waybillNo, UI.h('div', {},
-        UI.kv([
-          ['运单号', w.waybillNo],
-          ['订单号', w.orderNo],
-          ['需方(钢厂)', w.buyerName],
-          ['供方', w.supplierName],
-          ['分段', '第 ' + w.segmentNo + ' 段'],
-          ['运输方式', MODE_LABEL[w.transportMode] || w.transportMode || '-'],
-          ['起讫', (w.departPlace || '-') + (w.transitStation ? '（经' + w.transitStation + '）' : '') + ' → ' + (w.arrivePlace || '-')],
-          ['计划量', w.planQty + ' 吨'],
-          ['预计船到港', w.etaAt ? UI.fmtDateTime(w.etaAt) : '-'],
-          ['承运商', w.carrierName || '-'],
-          ['计划发运', UI.fmtDate(w.planDepartDate)],
-          ['计划到达', UI.fmtDate(w.planArriveDate)],
-          ['实际发运', w.actualDepartAt ? UI.fmtDateTime(w.actualDepartAt) : '-'],
-          ['实际到达', w.actualArriveAt ? UI.fmtDateTime(w.actualArriveAt) : '-'],
-          ['状态', UI.statusTag('WAYBILL', w.status)],
-        ])));
-    }
-  };
+  }
+  Pages.logistics_dispatch = function (page) { return logisticsPage(page); };
+  Pages.logistics_order_detail = function (page, user, query) { return logisticsPage(page, { oid: query && Number(query.oid) }); };
 })();

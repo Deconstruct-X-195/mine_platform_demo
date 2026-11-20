@@ -38,7 +38,7 @@ def _ensure_varieties(conn):
             continue
         vid = execute(conn, """
             INSERT INTO base_variety (variety_code, variety_name, default_grade, unit, sort_no)
-            VALUES (%s, %s, %s, '吨', %s)
+            VALUES (%s, %s, %s, '湿吨', %s)
             RETURNING id
         """, (code, vname, grade, len(code)), returning_id=True)
         execute(conn, """
@@ -48,12 +48,12 @@ def _ensure_varieties(conn):
 
 
 def _pb_variety(conn):
-    """取 PB粉 品种（兼容新旧编码，按名称查找）。"""
-    return q1(conn, "SELECT id FROM base_variety WHERE variety_name='PB粉' ORDER BY id LIMIT 1")
+    """取品种 id（按名称查找）。"""
+    return q1(conn, "SELECT id FROM base_variety WHERE variety_name=%s ORDER BY id LIMIT 1", ('PB粉',))
 
 
 def _ensure_port_prices(conn):
-    """港口现货价演示数据（幂等：表为空时写入近 14 日 黄骅港/日照港 PB粉 价格）。
+    """港口现货价演示数据（幂等：表为空时写入近 14 日 黄骅港/日照港 PB粉、黄骅港 中华混一号 价格）。
     PB粉 双品位：61.5%（主）与 60.8%（低品位，价格约低 5 元/湿吨）。"""
     if q1(conn, "SELECT id FROM base_port_price LIMIT 1"):
         return
@@ -67,25 +67,30 @@ def _ensure_port_prices(conn):
         execute(conn, """
             INSERT INTO base_port_price (variety_id, port_name, price_date, price, grade)
             VALUES (%s, '黄骅港', current_date - %s, %s, 61.5)
-            ON CONFLICT (variety_id, port_name, price_date, grade) DO NOTHING
         """, (vid, offset, hi))
         execute(conn, """
             INSERT INTO base_port_price (variety_id, port_name, price_date, price, grade)
             VALUES (%s, '黄骅港', current_date - %s, %s, 60.8)
-            ON CONFLICT (variety_id, port_name, price_date, grade) DO NOTHING
         """, (vid, offset, hi - 5))
         step2 = (13 - offset) % 4
         lo = 775 + step2 * 2
         execute(conn, """
             INSERT INTO base_port_price (variety_id, port_name, price_date, price, grade)
             VALUES (%s, '日照港', current_date - %s, %s, 61.5)
-            ON CONFLICT (variety_id, port_name, price_date, grade) DO NOTHING
         """, (vid, offset, lo))
         execute(conn, """
             INSERT INTO base_port_price (variety_id, port_name, price_date, price, grade)
             VALUES (%s, '日照港', current_date - %s, %s, 60.8)
-            ON CONFLICT (variety_id, port_name, price_date, grade) DO NOTHING
         """, (vid, offset, lo - 5))
+    # 中华混一号：黄骅港 61.5% 单品位（密封报价「港口现货价格±上下浮」模式的基准）
+    v2 = q1(conn, "SELECT id FROM base_variety WHERE variety_name='中华混一号' ORDER BY id LIMIT 1")
+    if v2:
+        for offset in range(13, -1, -1):
+            step = (13 - offset) % 5 - 2
+            execute(conn, """
+                INSERT INTO base_port_price (variety_id, port_name, price_date, price, grade)
+                VALUES (%s, '黄骅港', current_date - %s, %s, 61.5)
+            """, (v2['id'], offset, 660 + step * 3))
 
 
 def _demo_pdf():
@@ -186,7 +191,7 @@ def _ensure_demo_contracts(conn):
         INSERT INTO biz_waybill (waybill_no, order_id, plan_id, segment_no, carrier_id, transport_mode,
             depart_place, arrive_place, plan_depart_date, plan_arrive_date, plan_qty, freight,
             vehicle_no, actual_qty, actual_depart_at, status, created_at)
-        VALUES ('YD-20261109-9001', %s, %s, 1, %s, 'ROAD', '日照港', '钢厂厂区',
+        VALUES ('YD-20261109-9001', %s, %s, 1, %s, 'ROAD', '日照港', '钢厂场区',
             current_date - 1, current_date + 1, 6000, 132000.00, '冀A88888', 6000,
             now() - make_interval(hours => 20), 'IN_TRANSIT', now() - make_interval(days => 1))
     """, (o2, plan_id, car_id))
@@ -226,7 +231,7 @@ def _ensure_demo_messages(conn):
         comp_msgs = [
             ('合同签署提醒', '您有合同待签署，请及时进入合同模块处理。', 'NOTICE', 'CONTRACT'),
             ('运单时效预警', '您名下有运单即将超出计划发运时间，请尽快安排。', 'WARN', 'WAYBILL'),
-            ('新询价邀请', '您收到新的询价邀请，报价截止前请及时响应。', 'NOTICE', 'INQUIRY'),
+            ('新询价邀请', '您收到新的询价邀请，请及时响应。', 'NOTICE', 'INQUIRY'),
         ]
         for c in comps:
             for title, content, cat, bt in comp_msgs:
@@ -257,6 +262,8 @@ def _ensure_grade_608(conn):
 def seed(conn):
     """幂等：品种档案/港口价格/演示合同单据/演示消息按幂等补齐；已存在平台管理员则跳过账号/企业。"""
     _ensure_varieties(conn)
+    # 数量单位全系统统一为湿吨：存量品种单位幂等升级
+    execute(conn, "UPDATE base_variety SET unit='湿吨' WHERE unit IS NULL OR unit='' OR unit='吨'")
     _ensure_port_prices(conn)
     _ensure_grade_608(conn)
     _ensure_demo_contracts(conn)

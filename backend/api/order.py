@@ -91,18 +91,41 @@ def award(iid):
     execute(g.conn, "UPDATE biz_bargain SET status='EXPIRED', updated_at=now() WHERE inquiry_id=%s AND status='PENDING'", (iid,))
     transition(g.conn, g.ctx, 'biz_inquiry', '询价单', 'biz_inquiry', iid, 'AWARDED',
                node_biz_type='ORDER', node_code='ORDER_CREATED', node_biz_id=oid)
-    # 成交回填明细
+    # 成交回填明细：成交吨数计入 deal_qty，并释放该询价占用的可询锁定量
     if item:
         execute(g.conn, "UPDATE biz_demand_item SET deal_qty = deal_qty + %s, updated_at=now() WHERE id=%s",
                 (qty, item['id']))
+        execute(g.conn, """
+            UPDATE biz_demand_item SET inquired_qty = GREATEST(inquired_qty - %s, 0), updated_at=now() WHERE id=%s
+            """, (inq['quantity'], item['id']))
     # 通知供应商
     send_msg(g.conn, quote['supplier_id'], '订单待确认',
              '询价单 %s 已定标，生成订单，请在 48 小时内确认（%s 前）。' %
              (inq['inquiry_no'], (datetime.now() + timedelta(hours=48)).strftime('%Y-%m-%d %H:%M:%S')),
-             'ORDER', oid)
+             'ORDER', oid, need_action=True)
     op_log(g.conn, g.ctx, 'biz_order', oid, 'AWARD', None,
            {'quoteId': quote['id'], 'price': str(price), 'quantity': str(qty)})
     return ok({'orderId': oid, 'confirmDeadline': (datetime.now() + timedelta(hours=48)).strftime('%Y-%m-%d %H:%M:%S')})
+
+
+@bp.post('/orders/<int:oid>/confirm-buyer')
+@roles_required(ROLE_STEEL)
+def confirm_order_buyer(oid):
+    """钢厂确认中标订单：记录本钢厂成员行确认时间（前端按钮转「已确认」），不改订单状态。"""
+    row = _own(oid, ROLE_STEEL)
+    if row['status'] != 'PENDING_CONFIRM':
+        raise ApiError(40901, '订单状态为 %s，不可确认' % row['status'])
+    member = q1(g.conn, """
+        SELECT id, buyer_confirm_at FROM biz_order_member
+        WHERE order_id=%s AND company_id=%s AND is_deleted=0 LIMIT 1
+        """, (oid, g.ctx.company['id']))
+    if not member:
+        raise ApiError(40401, '贵司不在该订单的参与钢厂中')
+    if member['buyer_confirm_at']:
+        return ok({'id': oid, 'buyerConfirmAt': member['buyer_confirm_at'].strftime('%Y-%m-%d %H:%M:%S')})
+    execute(g.conn, "UPDATE biz_order_member SET buyer_confirm_at=now() WHERE id=%s", (member['id'],))
+    op_log(g.conn, g.ctx, 'biz_order', oid, 'BUYER CONFIRM', None, None)
+    return ok({'id': oid, 'buyerConfirmAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S')})
 
 
 @bp.put('/orders/<int:oid>/confirm')
@@ -125,11 +148,12 @@ def confirm_order(oid):
             """, (oid,))
         for m in members:
             send_msg(g.conn, m['company_id'], '订单已确认，请提交提货计划',
-                     '订单 %s 供应商已确认，贵司份额 %s 吨，请在「订单」页提交提货计划（开始提货日期、日提货吨数）。'
-                     % (row['order_no'], format(m['quantity'], '.3f')), 'ORDER', oid)
+                     '订单 %s 供应商已确认，贵司份额 %s 湿吨，请在「订单」页提交提货计划（开始提货日期、日提货吨数）。'
+                     % (row['order_no'], format(m['quantity'], '.3f')), 'ORDER', oid,
+                     need_action=True)
     else:
         send_msg(g.conn, row['buyer_id'], '订单已确认', '订单 %s 供应商已确认，请生成并签署合同。' % row['order_no'],
-                 'ORDER', oid)
+                 'ORDER', oid, need_action=True)
     return ok({'id': oid, 'status': to})
 
 
@@ -169,16 +193,43 @@ def list_orders():
     rows = qall(g.conn, """
         SELECT o.*, v.variety_name AS "varietyName",
                b.company_name AS "buyerName", s.company_name AS "supplierName",
+               o.supplier_confirm_at AS "supplierConfirmAt",
+               o.demand_confirm_at AS "demandConfirmAt",
+               o.supplier_finish_confirm_at AS "supplierFinishConfirmAt",
+               o.buyer_finish_confirm_at AS "buyerFinishConfirmAt",
+               (SELECT count(*) FROM biz_waybill w
+                 WHERE w.order_id=o.id AND w.is_deleted=0) AS "waybillTotal",
+               (SELECT count(*) FROM biz_waybill w
+                 WHERE w.order_id=o.id AND w.is_deleted=0 AND w.status='SIGNED') AS "waybillSigned",
                (SELECT m.quantity FROM biz_order_member m
                  WHERE m.order_id=o.id AND m.company_id=%%s AND m.is_deleted=0 LIMIT 1) AS "myQty",
                (SELECT m.pickup_status FROM biz_order_member m
-                 WHERE m.order_id=o.id AND m.company_id=%%s AND m.is_deleted=0 LIMIT 1) AS "myPickupStatus"
+                 WHERE m.order_id=o.id AND m.company_id=%%s AND m.is_deleted=0 LIMIT 1) AS "myPickupStatus",
+               (SELECT m.confirm_at FROM biz_order_member m
+                 WHERE m.order_id=o.id AND m.company_id=%%s AND m.is_deleted=0 LIMIT 1) AS "myConfirmAt",
+               (SELECT m.buyer_confirm_at FROM biz_order_member m
+                 WHERE m.order_id=o.id AND m.company_id=%%s AND m.is_deleted=0 LIMIT 1) AS "myBuyerConfirmAt",
+               (SELECT m.finish_confirm_at FROM biz_order_member m
+                 WHERE m.order_id=o.id AND m.company_id=%%s AND m.is_deleted=0 LIMIT 1) AS "myFinishConfirmAt",
+               CASE WHEN o.supplier_id=%%s THEN EXISTS (
+                        SELECT 1 FROM biz_logistics_publish lp WHERE lp.order_id=o.id
+                          AND lp.target='SUPPLIER' AND lp.trace_json IS NOT NULL)
+                    ELSE EXISTS (
+                        SELECT 1 FROM biz_logistics_publish lp WHERE lp.order_id=o.id
+                          AND lp.target='MILL' AND lp.trace_json IS NOT NULL) END AS "logiPublished",
+               (SELECT q.freight_price FROM biz_quote q
+                 WHERE q.id=o.quote_id AND q.is_deleted=0 LIMIT 1) AS "freight_price",
+               (SELECT q.tax_type FROM biz_quote q
+                 WHERE q.id=o.quote_id AND q.is_deleted=0 LIMIT 1) AS "tax_type",
+               (SELECT string_agg(c2.company_name, '、') FROM biz_order_member m2
+                 JOIN ent_company c2 ON c2.id=m2.company_id
+                 WHERE m2.order_id=o.id AND m2.is_deleted=0) AS "buyerNames"
         FROM biz_order o
         JOIN base_variety v ON v.id=o.variety_id
         LEFT JOIN ent_company b ON b.id=o.buyer_id
         LEFT JOIN ent_company s ON s.id=o.supplier_id
         %s ORDER BY o.id DESC LIMIT %%s OFFSET %%s
-        """ % where, [cid, cid] + args + [size, (page - 1) * size])
+        """ % where, [cid, cid, cid, cid, cid, cid] + args + [size, (page - 1) * size])
     return ok(page_data(rows, total, page, size))
 
 
@@ -190,6 +241,27 @@ def order_detail(oid):
     data['varietyName'] = (q1(g.conn, "SELECT variety_name AS n FROM base_variety WHERE id=%s", (row['variety_id'],)) or {}).get('n')
     data['buyerName'] = (q1(g.conn, "SELECT company_name AS n FROM ent_company WHERE id=%s", (row['buyer_id'],)) or {}).get('n')
     data['supplierName'] = (q1(g.conn, "SELECT company_name AS n FROM ent_company WHERE id=%s", (row['supplier_id'],)) or {}).get('n')
+    # 成交报价运费/含税标志 + 参与本单集采的全部钢厂（聚合订单需方为平台）
+    qrow = q1(g.conn, "SELECT freight_price, tax_type FROM biz_quote WHERE id=%s AND is_deleted=0",
+              (row['quote_id'],)) if row['quote_id'] else None
+    data['freight_price'] = qrow['freight_price'] if qrow else None
+    data['tax_type'] = qrow['tax_type'] if qrow else None
+    data['buyerNames'] = (q1(g.conn, """
+        SELECT string_agg(c.company_name, '、') AS n FROM biz_order_member m
+        JOIN ent_company c ON c.id=m.company_id
+        WHERE m.order_id=%s AND m.is_deleted=0""", (oid,)) or {}).get('n')
+    # 本厂提货计划（集采聚合订单按成员行存储；普通订单无成员行返回 None）
+    data['myPickupPlan'] = json_payload(q1(g.conn, """
+        SELECT pickup_start_date AS "startDate", daily_qty AS "dailyQty",
+               pickup_remark AS "remark", pickup_status AS "status", submitted_at AS "submittedAt"
+        FROM biz_order_member
+        WHERE order_id=%s AND company_id=%s AND is_deleted=0
+        """, (oid, g.ctx.company['id']))) if g.ctx.company else None
+    # 本厂份额数量（集采聚合订单成员行数量；普通订单为 None）
+    data['myQty'] = (q1(g.conn, """
+        SELECT quantity FROM biz_order_member
+        WHERE order_id=%s AND company_id=%s AND is_deleted=0 LIMIT 1
+        """, (oid, g.ctx.company['id'])) or {}).get('quantity') if g.ctx.company else None
     contracts = qall(g.conn, """
         SELECT id, contract_no AS "contractNo", version, status, file_url AS "fileUrl",
                file_hash AS "fileHash", buyer_sign_at AS "buyerSignAt", supplier_sign_at AS "supplierSignAt",
@@ -197,6 +269,60 @@ def order_detail(oid):
         FROM biz_contract WHERE order_id=%s AND is_deleted=0 ORDER BY version DESC
         """, (oid,))
     data['contracts'] = json_payload(contracts)
+    return ok(data)
+
+
+@bp.get('/orders/<int:oid>/fulfillment')
+@auth_required
+def order_fulfillment(oid):
+    """钢厂端履约跟踪：全链信息一次取数（询价/议价反馈/订单/提货计划/物流/交付验收/结算）。
+
+    钢厂对归集询价的认可反馈存于 biz_agg_inquiry_feedback；提货计划取本厂 biz_order_member 成员行
+    （普通订单无成员行，pickup 为空，前端展示「不适用」）。
+    """
+    row = _own(oid)
+    cid = g.ctx.company['id'] if g.ctx.company else -1
+    data = json_payload(dict(row))
+    data['varietyName'] = (q1(g.conn, "SELECT variety_name AS n FROM base_variety WHERE id=%s", (row['variety_id'],)) or {}).get('n')
+    data['buyerName'] = (q1(g.conn, "SELECT company_name AS n FROM ent_company WHERE id=%s", (row['buyer_id'],)) or {}).get('n') if row['buyer_id'] else None
+    data['supplierName'] = (q1(g.conn, "SELECT company_name AS n FROM ent_company WHERE id=%s", (row['supplier_id'],)) or {}).get('n') if row['supplier_id'] else None
+    # 询价信息（成交来源）：钢厂端履约跟踪展示 品类/吨数/中标报价总价（WIN 报价 单价×数量）
+    inq = q1(g.conn, """
+        SELECT i.inquiry_no, i.status, i.quantity, i.deadline, i.created_at,
+               v.variety_name AS "varietyName", wq.price AS "winPrice", wq.quantity AS "winQty"
+        FROM biz_inquiry i
+        JOIN base_variety v ON v.id = i.variety_id
+        LEFT JOIN LATERAL (
+            SELECT q.price, q.quantity FROM biz_quote q
+            WHERE q.inquiry_id = i.id AND q.status = 'WIN' AND q.is_deleted = 0
+            ORDER BY q.price ASC, q.id ASC LIMIT 1) wq ON TRUE
+        WHERE i.id = %s AND i.is_deleted = 0""", (row['inquiry_id'],)) if row['inquiry_id'] else None
+    data['inquiry'] = json_payload(inq)
+    # 本厂对归集询价的评审反馈（认可/不认可）
+    data['feedback'] = json_payload(q1(g.conn, """
+        SELECT decision, reason, created_at FROM biz_agg_inquiry_feedback
+        WHERE inquiry_id = %s AND company_id = %s AND is_deleted = 0""", (row['inquiry_id'], cid))) if row['inquiry_id'] else None
+    # 提货计划（本厂成员行）
+    data['pickup'] = json_payload(q1(g.conn, """
+        SELECT pickup_start_date, daily_qty, pickup_remark, pickup_status, submitted_at
+        FROM biz_order_member WHERE order_id = %s AND company_id = %s AND is_deleted = 0""", (oid, cid)))
+    # 物流方案
+    data['plan'] = json_payload(q1(g.conn, """
+        SELECT plan_no, org_mode, created_at FROM biz_logistics_plan
+        WHERE order_id = %s AND is_deleted = 0""", (oid,)))
+    # 运单（物流信息）：含起运/到达轨迹要素（钢厂端履约跟踪运单行展示物流运输轨迹）
+    data['waybills'] = json_payload(qall(g.conn, """
+        SELECT id, waybill_no, transport_mode, segment_no, plan_qty, actual_qty, status, created_at,
+               depart_place, arrive_place, actual_depart_at, actual_arrive_at
+        FROM biz_waybill WHERE order_id = %s AND is_deleted = 0 ORDER BY id""", (oid,)))
+    # 交付验收：质检记录（签收情况由运单状态聚合）
+    data['qualityChecks'] = json_payload(qall(g.conn, """
+        SELECT check_no, arrived_qty, conclusion, created_at FROM biz_quality_check
+        WHERE order_id = %s AND is_deleted = 0 ORDER BY id DESC""", (oid,)))
+    # 结算
+    data['settlement'] = json_payload(q1(g.conn, """
+        SELECT settle_no, settle_qty, unit_price, adjust_amount, status, created_at
+        FROM biz_settlement WHERE order_id = %s AND is_deleted = 0 ORDER BY id DESC""", (oid,)))
     return ok(data)
 
 
@@ -244,7 +370,7 @@ def submit_pickup_plan(oid):
         transition(g.conn, g.ctx, 'biz_order', '订单', 'biz_order', oid, 'PENDING_TRANSPORT')
         status = 'PENDING_TRANSPORT'
     send_msg(g.conn, None, '钢厂已提交提货计划',
-             '订单 %s：%s 已提交提货计划（%s 起，日提货 %s 吨）。'
+             '订单 %s：%s 已提交提货计划（%s 起，日提货 %s 湿吨）。'
              % (row['order_no'], g.ctx.company['company_name'],
                 start.strftime('%Y-%m-%d'), format(daily, 'f')), 'ORDER', oid)
     op_log(g.conn, g.ctx, 'biz_order', oid, 'PICKUP_PLAN', None,
@@ -359,7 +485,7 @@ def supplier_overview():
               AND NOT EXISTS (SELECT 1 FROM biz_quote q WHERE q.inquiry_id=i.id
                           AND q.supplier_id=%s AND q.is_deleted=0)
             ORDER BY i.deadline LIMIT 20""", (cid, cid)):
-        todos.append({'kind': 'QUOTE', 'main': '询价单 %s 待报价（%s，%s 吨，%s 截止）' % (
+        todos.append({'kind': 'QUOTE', 'main': '询价单 %s 待报价（%s，%s 湿吨，%s 截止）' % (
             r['inquiry_no'], r['varietyName'], r['quantity'],
             r['deadline'].strftime('%m-%d %H:%M') if r['deadline'] else '-')})
     for r in qall(g.conn, """
@@ -369,9 +495,11 @@ def supplier_overview():
         todos.append({'kind': 'CONFIRM', 'main': '订单 %s 待确认（48 小时期限内）' % r['order_no'],
                       'time': r['created_at']})
 
-    # 近期动态：本企业站内消息最近 10 条
+    # 近期动态：仅显示运营端（平台）发布的信息，最近 10 条；needAction=需要供应商后续操作（任务）
     recent = qall(g.conn, """
         SELECT id, title, content, biz_type AS "bizType", biz_id AS "bizId",
-               msg_category AS "category", created_at
-        FROM sys_message WHERE receiver_company_id=%s ORDER BY id DESC LIMIT 10""", (cid,))
+               msg_category AS "category", need_action AS "needAction", created_at
+        FROM sys_message
+        WHERE receiver_company_id=%s AND sender_company_id IS NULL
+        ORDER BY id DESC LIMIT 10""", (cid,))
     return ok({'kpi': kpi, 'todos': todos, 'recent': recent})
