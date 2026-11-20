@@ -149,6 +149,16 @@ def _tick(conn):
         print('[mine-jobs] reveal=%s expire=%s alerts=%s' % (revealed, expired, alerts))
 
 
+def run_once():
+    """单轮执行（C4，部署适配方案 §5）：执行一轮任务后立即返回。
+
+    供独立任务进程调用（run.py --jobs / systemd timer），与 Web 进程解耦，
+    避免多进程/多实例下定时任务重复执行。
+    """
+    with with_db() as conn:
+        _tick(conn)
+
+
 def run_loop():
     interval = int(os.environ.get('MINE_JOBS_INTERVAL', 3600))
     while True:

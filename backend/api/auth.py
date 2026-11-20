@@ -1,6 +1,8 @@
 """认证模块（PRD T02）：企业注册、登录、当前用户与菜单权限码。"""
 import hashlib
 import os
+import threading
+import time
 import uuid
 
 from flask import g, request
@@ -16,6 +18,42 @@ from . import bp
 
 ALLOWED_LICENSE_EXT = {'pdf', 'jpg', 'jpeg', 'png'}
 LICENSE_MAX_SIZE = 20 * 1024 * 1024
+
+# ---- C7（部署适配方案 §5）：登录失败限流（进程内滑动窗口）----
+# 同一 IP+用户名 60 秒内失败 5 次 → 锁定 10 分钟；登录成功即清零。
+# 仅拦截暴力破解，不改变登录业务语义（密码校验/账号状态判断逻辑不变）。
+_LOGIN_WINDOW = 60.0
+_LOGIN_MAX_FAILS = 5
+_LOGIN_LOCK_SECONDS = 600.0
+_login_fails = {}      # (ip, username) -> [失败时间戳]
+_login_locks = {}      # (ip, username) -> 锁定截止时间戳
+_login_mutex = threading.Lock()
+
+
+def _login_locked(key):
+    with _login_mutex:
+        now = time.monotonic()
+        _login_fails[key] = [t for t in _login_fails.get(key, []) if now - t < _LOGIN_WINDOW]
+        locked_until = _login_locks.get(key)
+        return bool(locked_until and now < locked_until)
+
+
+def _login_record_fail(key):
+    with _login_mutex:
+        now = time.monotonic()
+        fails = [t for t in _login_fails.get(key, []) if now - t < _LOGIN_WINDOW]
+        fails.append(now)
+        if len(fails) >= _LOGIN_MAX_FAILS:
+            _login_locks[key] = now + _LOGIN_LOCK_SECONDS
+            _login_fails.pop(key, None)  # 锁定后清空计数，锁定解除后重新计窗
+        else:
+            _login_fails[key] = fails
+
+
+def _login_clear(key):
+    with _login_mutex:
+        _login_fails.pop(key, None)
+        _login_locks.pop(key, None)
 
 
 @bp.post('/auth/license')
@@ -109,8 +147,12 @@ def register():
 def login():
     p = get_params()
     require_fields(p, 'username', 'password')
+    key = (request.remote_addr or '-', p['username'])
+    if _login_locked(key):
+        raise ApiError(40001, '登录尝试过于频繁，请 10 分钟后再试')
     user = q1(g.conn, "SELECT * FROM sys_user WHERE username=%s AND is_deleted=0", (p['username'],))
     if not user or not verify_password(p['password'], user['password_hash']):
+        _login_record_fail(key)
         raise ApiError(40001, '用户名或密码错误')
     if user['status'] != 'ENABLED':
         raise ApiError(40301, '账号已被禁用')
@@ -123,6 +165,7 @@ def login():
     # 承运商端已下线：仅承运商角色的账号不可登录本平台
     if roles and all(r == 'LOGISTICS_CARRIER' for r in roles):
         raise ApiError(40301, '本平台暂不开放承运商端登录')
+    _login_clear(key)  # 登录成功清零失败计数（C7）
     token = issue_token(user, company, roles)
     op_log(g.conn, None, 'sys_user', user['id'], 'LOGIN', None, None)
     return ok({'token': token, 'user': _user_view(user, company, roles)})

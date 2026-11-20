@@ -7,18 +7,18 @@ import os
 import threading
 from datetime import date, datetime
 
-import psycopg
-from psycopg.rows import dict_row
 from flask import Flask, g, jsonify, request, send_from_directory
 from flask.json.provider import DefaultJSONProvider
 from werkzeug.exceptions import HTTPException
 
 from .common import ApiError
-from .db import BUSINESS_TZ, dsn
+from .db import pool
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = os.path.join(_ROOT, 'frontend')
-UPLOAD_DIR = os.path.join(_ROOT, 'uploads')
+# C11（部署适配方案 §5）：上传目录支持 MINE_UPLOAD_DIR 环境变量覆盖
+# （服务器侧分离挂载盘 /data/mine/uploads，默认保持本地仓库相对路径不变）
+UPLOAD_DIR = os.environ.get('MINE_UPLOAD_DIR') or os.path.join(_ROOT, 'uploads')
 
 # 错误码 → HTTPException 映射（业务失败统一 HTTP 200；鉴权失败 401）
 _HTTP_CODE_MAP = {400: 40001, 401: 40101, 403: 40301, 404: 40401, 405: 40001, 409: 40901, 413: 40001}
@@ -42,10 +42,12 @@ def create_app():
     os.makedirs(UPLOAD_DIR, exist_ok=True)
 
     # ---- 数据库连接（请求级事务，会话时区=业务时区，BUG-06 修复）----
+    # C5（部署适配方案 §5）：物理连接改由进程级连接池获取/归还，
+    # 事务边界（请求成功 commit、异常 rollback）与全部 SQL 零改动
     @app.before_request
     def _open_conn():
         if request.path.startswith('/api/'):
-            g.conn = psycopg.connect(dsn(), row_factory=dict_row, options='-c timezone=' + BUSINESS_TZ)
+            g.conn = pool().getconn()
 
     @app.teardown_request
     def _close_conn(exc):
@@ -57,7 +59,7 @@ def create_app():
                 else:
                     conn.rollback()
             finally:
-                conn.close()
+                pool().putconn(conn)
 
     # ---- 错误拦截（PRD 6.3）----
     @app.errorhandler(ApiError)
@@ -97,9 +99,9 @@ def create_app():
             return send_from_directory(FRONTEND_DIR, 'index.html')  # SPA 回退
         return send_from_directory(FRONTEND_DIR, filename)
 
-    @app.route('/uploads/<path:filename>')
-    def _uploads(filename):
-        return send_from_directory(UPLOAD_DIR, filename)
+    # C6（部署适配方案 §5）：匿名 /uploads/<filename> 直链已删除——
+    # 附件统一走鉴权接口 /api/v1/files/<file_id>（auth_required）下载，
+    # 该路径经 _static 的 uploads/ 前缀拦截返回 404，避免未登录枚举/爬取落盘文件。
 
     # ---- 定时任务 ----
     if os.environ.get('MINE_DISABLE_JOBS') != '1':

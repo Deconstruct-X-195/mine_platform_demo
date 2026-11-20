@@ -7,14 +7,16 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: Langchain2026
+      # C9（部署适配方案 §5）：密码不再硬编码，必须经同目录 .env 注入（POSTGRES_PASSWORD=...）
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
       POSTGRES_DB: mine_platform
       # 业务时区（BUG-06 修复）：与后端会话时区（backend/db.py BUSINESS_TZ）保持一致，
       # 保证容器内 now() 日志与数据库时间函数均为北京时间
       TZ: Asia/Shanghai
       PGTZ: Asia/Shanghai
     ports:
-      - "5432:5432"
+      # C9（部署适配方案 §5）：仅绑定本机回环，禁止公网/局域网直连 5432
+      - "127.0.0.1:5432:5432"
     volumes:
       - mine_pg_data:/var/lib/postgresql/data
     healthcheck:

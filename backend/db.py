@@ -1,12 +1,13 @@
 """数据库访问层：基于 psycopg 3 的轻量封装（PostgreSQL 14）。"""
 import os
+import threading
 from contextlib import contextmanager
 
 import psycopg
 from psycopg.rows import dict_row
 
-# TODO(PRD待确认): 一期演示环境将 DSN 写为默认值，生产环境必须通过环境变量注入。
-DEFAULT_DSN = 'postgresql://postgres:Langchain2026@127.0.0.1:5432/mine_platform'
+# C2（部署适配方案 §5）：生产/本地凭据一律经环境变量 MINE_PG_DSN 注入，
+# 不再提供代码默认值（原演示默认串含明文密码，已随 C2 移除；生产库须使用全新强密码）。
 
 # 业务时区（BUG-06 修复）：平台业务时间（报价截止/校验基准/页面展示）统一按
 # Asia/Shanghai 语义。PG 容器默认时区为 Etc/UTC，若不设定会话时区，
@@ -18,17 +19,44 @@ _SCHEMA_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 
 
 def dsn() -> str:
-    return os.environ.get('MINE_PG_DSN', DEFAULT_DSN)
+    value = os.environ.get('MINE_PG_DSN', '')
+    if not value:
+        raise RuntimeError(
+            '环境变量 MINE_PG_DSN 未设置：请注入 PostgreSQL 连接串'
+            '（示例 postgresql://postgres:PASSWORD@127.0.0.1:5432/mine_platform，'
+            '本地开发参见 .env.example）')
+    return value
+
+
+# C5（部署适配方案 §5）：进程级连接池（懒初始化）。仅替换物理连接的获取/归还方式，
+# 事务边界（commit/rollback 时机）与 q1/qall/execute 及全部 SQL 零改动。
+_pool = None
+_pool_lock = threading.Lock()
+
+
+def pool():
+    """进程级 psycopg 连接池：min 2 / max 10，连接携带会话时区（BUG-06 语义不变）。"""
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                from psycopg_pool import ConnectionPool
+                _pool = ConnectionPool(
+                    conninfo=dsn(), min_size=2, max_size=10, timeout=30, open=True,
+                    name='mine-pool',
+                    kwargs={'row_factory': dict_row,
+                            'options': '-c timezone=' + BUSINESS_TZ})
+    return _pool
 
 
 @contextmanager
 def with_db():
-    """请求级连接：进入开启事务，正常退出提交，异常回滚。
+    """请求级连接：进入开启事务，正常退出提交，异常回滚（连接自池获取/归还）。
 
     会话时区固定为业务时区（BUG-06 修复）：保证 now()/current_date 与
     应用侧 datetime.now()、用户本地输入使用同一时间语义。
     """
-    conn = psycopg.connect(dsn(), row_factory=dict_row, options='-c timezone=' + BUSINESS_TZ)
+    conn = pool().getconn()
     try:
         yield conn
         conn.commit()
@@ -36,7 +64,7 @@ def with_db():
         conn.rollback()
         raise
     finally:
-        conn.close()
+        pool().putconn(conn)
 
 
 def q1(conn, sql, args=None):

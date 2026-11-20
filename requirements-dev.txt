@@ -1,0 +1,4 @@
+# C8（部署适配方案 §5）：测试/开发依赖（含运行时依赖）。
+-r requirements.txt
+pytest==9.2.0
+requests==2.34.2
