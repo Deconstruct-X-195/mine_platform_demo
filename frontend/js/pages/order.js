@@ -1,59 +1,32 @@
 /* 订单合同物流（PRD 4.5-4.7/T12-T16）：订单确认/合同签署/物流方案/运单作业/履约跟踪 */
 (function () {
   window.Pages = window.Pages || {};
-  const DELIVERY = { PORT_FOB: '港口FOB', PORT_TRUCK: '港口汽运', PLANT: '厂内自提' };
-  const SETTLE = { PREPAY: '预付款', COD: '货到付款', CREDIT: '账期' };
-  const MODES = { ROAD: '公路', RAIL: '铁路', SEA: '海运', MULTIMODAL: '多式联运' };
+  const DELIVERY = { PORT_FOB: '港口FOB', PORT_TRUCK: '港口自提', PLANT: '场内自提' };
+  const SETTLE = { PREPAY: '预付款', COD: '货到付款', CREDIT: '账期结算', INSTALLMENT: '分期付款' };
+  const MODES = { RAIL: '铁路直达', MULTIMODAL: '公铁联运', ROAD: '汽运直达', SEA: '海运' };
+  /* 分段语义：铁路直达/公铁联运按列车拆分（第 N 列，每列独立轨迹动态）；
+     汽运直达为持续运输过程——从开始发运到该订单全部吨数到站结束，全程一张运单 */
+  function segLabel(mode, seg, short) {
+    return mode === 'ROAD' ? (short ? '全程' : '全程持续运输') : '第 ' + seg + ' 列';
+  }
+
+  /* 金额 = 总价 × 数量（总价 = 单价 + 运费；钢厂端按本厂份额 myQty，供应商/运营端按订单总量） */
+  function amountOf(r) {
+    return (Number(r.unit_price) + Number(r.freight_price || 0))
+      * Number(r.myQty != null ? r.myQty : (r.quantity != null ? r.quantity : 0));
+  }
 
   /* -------- 共享：运单列 -------- */
   function waybillCols(mode, onChanged, carriers) {
     return [
-      { key: 'segment_no', label: '分段号' },
-      { key: 'order_no', label: '订单号' },
+      { key: 'segment_no', label: '列次', render: (r) => segLabel(r.transport_mode, r.segment_no, true) },
+      { key: 'orderNo', label: '订单号' },
       { key: 'transport_mode', label: '运输方式', render: (r) => MODES[r.transport_mode] || r.transport_mode || '-' },
-      { key: 'plan_qty', label: '计划量', num: true, render: (r) => UI.fmtMoney(r.plan_qty) },
       { key: 'actual_qty', label: '实发/实收', num: true, render: (r) => r.actual_qty != null ? UI.fmtMoney(r.actual_qty) : '-' },
-      { key: 'plan_depart_date', label: '计划发运', render: (r) => UI.fmtDate(r.plan_depart_date) },
-      { key: 'plan_arrive_date', label: '计划到达', render: (r) => UI.fmtDate(r.plan_arrive_date) },
-      { key: 'actual_depart_at', label: '实发运', render: (r) => UI.fmtDateTime(r.actual_depart_at) },
-      { key: 'actual_arrive_at', label: '实到达', render: (r) => UI.fmtDateTime(r.actual_arrive_at) },
-      { key: 'freight', label: '运费', num: true, render: (r) => r.freight != null ? UI.fmtMoney(r.freight) : '-' },
-      { key: 'vehicle_no', label: '车船号' },
-      { key: 'carrier_name', label: '承运商' },
+      { key: 'actual_depart_at', label: '发运时间', render: (r) => UI.fmtDateTime(r.actual_depart_at) },
+      { key: 'actual_arrive_at', label: '到达时间', render: (r) => UI.fmtDateTime(r.actual_arrive_at) },
       { key: 'status', label: '状态', render: (r) => UI.statusTag('WAYBILL', r.status) },
-      { label: '操作', render: (r) => waybillActs(r, mode, onChanged, carriers) },
     ];
-  }
-
-  function waybillActs(r, mode, onChanged, carriers) {
-    const btns = [];
-    if (mode === 'STEEL') {
-      if (r.status === 'ARRIVED') {
-        btns.push(UI.h('button', { class: 'sm success', onclick: async () => {
-          if (!(await UI.confirmBox('确认签收运单 ' + r.segment_no + '？'))) return;
-          await API.post('/waybills/' + r.id + '/sign');
-          UI.toast('已签收', 'ok'); onChanged();
-        } }, '签收'));
-      }
-    }
-    return btns.length ? UI.h('span', { class: 'inline-flex' }, ...btns) : '-';
-  }
-
-  function nodeModal(r, node, onChanged) {
-    const occur = UI.h('input', { type: 'datetime-local', placeholder: '发生时间' });
-    const qty = UI.input('number', '', { placeholder: '实际数量（吨，选填）' });
-    const m = UI.modal((node === 'DEPART' ? '回填发运' : '回填到达') + ' · ' + r.segment_no,
-      UI.h('div', { class: 'form-grid' },
-        UI.formRow('发生时间', occur, false, '留空默认当前时间'),
-        UI.formRow('实际数量', qty)), [
-      UI.h('button', { class: 'primary', onclick: async () => {
-        const body = { node };
-        if (occur.value) body.occurTime = occur.value.replace('T', ' ') + ':00';
-        if (qty.value !== '') body.actualQty = qty.value;
-        await API.put('/waybills/' + r.id + '/node', body);
-        m.close(); UI.toast('节点已回填', 'ok'); onChanged();
-      } }, '提 交'),
-    ]);
   }
 
   /* -------- 订单 -------- */
@@ -64,25 +37,50 @@
     if (isSupplier) return supplierOrderView();
     let pageNo = 1;
     const SIZE = 10;
+    const selected = new Set();   // 勾选的订单 id（供导出）
+    const rowCache = new Map();   // id -> 行数据
+    let pageRows = [];            // 当前页行
     const listCard = UI.h('div', { class: 'card' });
+    const listBox = UI.h('div', { class: 'list-fixed' });   // 定高列表区（同运营端）：表头39px+10行，超出滚动
     const pagerBox = UI.h('div', {});
-    page.appendChild(UI.h('div', { class: 'card' }, UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '订单')));
+    /* 「订单」标题后紧跟导出按钮 */
+    page.appendChild(UI.h('div', { class: 'card' },
+      UI.h('div', { class: 'toolbar' },
+        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '订单'),
+        UI.h('button', { onclick: batchExport }, '导 出'))));
     page.appendChild(listCard);
-    page.appendChild(pagerBox);
+    listCard.appendChild(listBox);    // 定高列表区：纵向超出滚动，横向滚动条固定在分页行上方
+    listCard.appendChild(pagerBox);   // 分页条固定在面板右下角
 
     async function load() {
       const d = await API.get('/orders' + API.qs({ page: pageNo, size: SIZE }));
-      listCard.innerHTML = '';
-      listCard.appendChild(UI.table([
+      pageRows = d.list || [];
+      pageRows.forEach((r) => rowCache.set(r.id, r));
+      listBox.innerHTML = '';
+      const headBox = UI.h('input', {
+        type: 'checkbox',
+        checked: pageRows.length > 0 && pageRows.every((r) => selected.has(r.id)),
+      });
+      headBox.addEventListener('change', () => {
+        pageRows.forEach((r) => { if (headBox.checked) selected.add(r.id); else selected.delete(r.id); });
+        load();
+      });
+      listBox.appendChild(UI.table([
+        {
+          cls: 'sel-col', label: headBox,
+          render: (r) => UI.h('input', {
+            type: 'checkbox', checked: selected.has(r.id),
+            onchange: (e) => { if (e.target.checked) selected.add(r.id); else selected.delete(r.id); syncHead(); },
+          }),
+        },
         { key: 'order_no', label: '订单号' },
         { key: 'varietyName', label: '品种' },
         { key: 'grade', label: '品位(%)' },
-        { key: 'quantity', label: '数量', num: true, render: (r) => UI.fmtMoney(r.myQty != null ? r.myQty : r.quantity) },
-        { key: 'unit_price', label: '单价', num: true, render: (r) => UI.fmtMoney(r.unit_price) },
-        { key: 'amount', label: '金额', num: true, render: (r) => UI.fmtMoney(r.amount) },
-        { key: 'delivery_date', label: '交货日', render: (r) => UI.fmtDate(r.delivery_date) },
+        { key: 'quantity', label: '数量(湿吨)', num: true, render: (r) => UI.fmtMoney(r.myQty != null ? r.myQty : r.quantity) },
+        { label: '总价(元/湿吨)', num: true, render: (r) => UI.fmtMoney(Number(r.unit_price) + Number(r.freight_price || 0)) },
+        { key: 'amount', label: '金额', num: true, render: (r) => UI.fmtMoney(amountOf(r)) },
+        { key: 'delivery_date', label: '预计交货日', render: (r) => UI.fmtDate(r.delivery_date) },
         { key: 'status', label: '状态', render: (r) => UI.statusTag('ORDER', r.status) },
-        { key: 'buyerName', label: '需方' },
         { key: 'supplierName', label: '供方' },
         { key: 'confirm_deadline', label: '确认截止', render: (r) => UI.fmtDateTime(r.confirm_deadline) },
         { label: '操作', render: (r) => acts(r) },
@@ -91,8 +89,50 @@
       UI.pager(pagerBox, pageNo, SIZE, d.total, (p) => { pageNo = p; load(); });
     }
 
+    function selRows() {
+      return [...selected].map((id) => rowCache.get(id)).filter(Boolean);
+    }
+    function syncHead() {
+      const hb = listCard.querySelector('thead input[type=checkbox]');
+      if (hb) hb.checked = pageRows.length > 0 && pageRows.every((r) => selected.has(r.id));
+    }
+    function batchExport() {
+      const rows = selRows();
+      if (!rows.length) { UI.toast('请先勾选订单', 'err'); return; }
+      const ORDER_TXT = { PENDING_PICKUP: '待收集提货计划', PENDING_TRANSPORT: '待制定运输方案', PENDING_CONFIRM: '待确认', PENDING_CONTRACT: '待签合同', PENDING_EFFECT: '待合同生效', PERFORMING: '履约中', COMPLETED: '已完成', CANCELLED: '已失效' };
+      const esc = (s) => '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"';
+      const lines = [['订单号', '品种', '品位(%)', '数量(湿吨)', '总价(元/湿吨)', '金额', '预计交货日', '状态', '供方', '确认截止'].map(esc)]
+        .concat(rows.map((r) => [
+          r.order_no,
+          r.varietyName,
+          r.grade,
+          UI.fmtMoney(r.myQty != null ? r.myQty : r.quantity),
+          UI.fmtMoney(Number(r.unit_price) + Number(r.freight_price || 0)),
+          UI.fmtMoney(amountOf(r)),
+          UI.fmtDate(r.delivery_date),
+          ORDER_TXT[r.status] || r.status,
+          r.supplierName,
+          UI.fmtDateTime(r.confirm_deadline),
+        ].map(esc).join(',')));
+      const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      const a = UI.h('a', { href: URL.createObjectURL(blob), download: '订单导出_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv' });
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+
     function acts(r) {
       const btns = [UI.h('button', { class: 'sm', onclick: () => detail(r.id) }, '详情')];
+      // 钢厂确认中标订单（待确认状态）：确认后按钮转为「已确认」
+      if (isSteel && r.status === 'PENDING_CONFIRM') {
+        btns.push(r.myBuyerConfirmAt
+          ? UI.h('button', { class: 'sm success', disabled: true }, '已确认')
+          : UI.h('button', { class: 'sm success', onclick: async () => {
+              if (!(await UI.confirmBox('确认接受订单 ' + r.order_no + '？'))) return;
+              await API.post('/orders/' + r.id + '/confirm-buyer');
+              UI.toast('订单已确认', 'ok'); load();
+            } }, '确认订单'));
+      }
       // 集采聚合订单：参与钢厂提交/修改提货计划（仅「待收集提货计划」状态可填写）
       if (isSteel && r.status === 'PENDING_PICKUP' && r.myQty != null) {
         btns.push(UI.h('button', { class: 'sm primary', onclick: () => pickupPlanModal(r) },
@@ -104,6 +144,18 @@
           UI.toast('合同已生成（新版本）', 'ok'); load();
         } }, '生成合同'));
       }
+      // 订单完成确认（履约中）：物流服务推送过轨迹后可点；各方确认齐备订单自动完成
+      if (isSteel && r.status === 'PERFORMING') {
+        if (r.myFinishConfirmAt || (!r.myQty && r.buyerFinishConfirmAt)) {
+          btns.push(UI.h('button', { class: 'sm success', disabled: true }, '已完成确认'));
+        } else {
+          btns.push(UI.h('button', {
+            class: 'sm primary', disabled: !r.logiPublished,
+            title: r.logiPublished ? '' : '待运营端推送物流轨迹后可确认',
+            onclick: () => finishConfirm(r),
+          }, '订单完成'));
+        }
+      }
       if (isSteel && r.status === 'COMPLETED') {
         btns.push(UI.h('button', { class: 'sm', onclick: () =>
           API.download('/orders/' + r.id + '/archive/export', 'archive-' + r.order_no + '.zip') }, '导出档案'));
@@ -111,42 +163,57 @@
       return UI.h('span', { class: 'inline-flex' }, ...btns);
     }
 
+    /* 订单完成确认：请确认已完成提货验收及所有结算；全部钢厂成员 + 供应商确认齐备后订单自动完成 */
+    async function finishConfirm(r) {
+      if (!(await UI.confirmBox('请确认已完成提货验收及所有结算。\n确认后待各方确认齐备，订单将自动完成。'))) return;
+      const d = await API.post('/orders/' + r.id + '/finish-confirm');
+      UI.toast(d.completed ? '各方确认齐备，订单已完成' : '订单完成确认成功，待各方确认齐备后自动完成', 'ok');
+      load();
+    }
+
     async function detail(oid) {
       const d = await API.get('/orders/' + oid);
+      const pk = d.myPickupPlan;
       const body = UI.h('div', {},
         UI.kv([
           ['订单号', d.order_no], ['状态', UI.statusTag('ORDER', d.status)],
           ['品种', d.varietyName], ['品位(%)', d.grade],
-          ['数量', UI.fmtMoney(d.quantity) + ' 吨'], ['单价', UI.fmtMoney(d.unit_price)],
-          ['金额', UI.fmtMoney(d.amount)], ['溢短装', d.more_less_rate != null ? d.more_less_rate + '%' : '-'],
+          ['数量', UI.fmtMoney(d.myQty != null ? d.myQty : d.quantity) + ' 湿吨'],
+          ['总价(元/湿吨)', UI.fmtMoney(Number(d.unit_price) + Number(d.freight_price || 0))],
+          ['是否含税', ({ INC_TAX: '含税', EX_TAX: '不含税' }[d.tax_type]) || '-'],
+          ['金额', UI.fmtMoney(amountOf(d))],
           ['交货方式', DELIVERY[d.delivery_type] || d.delivery_type], ['交货地点', d.delivery_place],
           ['交货日', UI.fmtDate(d.delivery_date)],
           ['结算', (SETTLE[d.settle_type] || d.settle_type || '-') + (d.settle_days ? ' ' + d.settle_days + '天' : '')],
-          ['需方', d.buyerName], ['供方', d.supplierName],
+          ['供方', d.supplierName],
           ['确认截止', UI.fmtDateTime(d.confirm_deadline)],
         ]),
-        UI.h('h3', { style: 'margin-top:14px' }, '关联合同'),
-        UI.table([
-          { key: 'version', label: '版本', num: true },
-          { key: 'status', label: '状态', render: (r) => UI.statusTag('CONTRACT', r.status) },
-          { key: 'buyer_sign_at', label: '需方签署', render: (r) => UI.fmtDateTime(r.buyer_sign_at) },
-          { key: 'supplier_sign_at', label: '供方签署', render: (r) => UI.fmtDateTime(r.supplier_sign_at) },
-        ], d.contracts || []));
+        UI.h('h3', { style: 'margin-top:14px' }, '本厂提货计划'),
+        pk && pk.status === 'SUBMITTED'
+          ? UI.kv([
+              ['提货开始日期', UI.fmtDate(pk.startDate)],
+              ['日提货吨数', UI.fmtMoney(pk.dailyQty) + ' 湿吨'],
+              ['备注', pk.remark || '-'],
+              ['提交时间', UI.fmtDateTime(pk.submittedAt)],
+            ])
+          : UI.h('div', { class: 'empty' },
+              pk ? '本厂提货计划尚未提交，请在订单列表点击「提货计划」提交'
+                 : '该订单无提货计划（按合同约定交付）'));
       UI.modal('订单详情', body, [], { wide: true });
     }
 
     /* 提货计划：开始提货日期 + 日提货吨数 + 备注；全部钢厂提交后订单进入待制定运输方案 */
     function pickupPlanModal(r) {
       const start = UI.input('date', '', {});
-      const daily = UI.input('number', '', { min: '0', step: '0.001', placeholder: '吨/天' });
+      const daily = UI.input('number', '', { min: '0', step: '0.01', placeholder: '湿吨/天' });
       const remark = UI.input('text', '', { placeholder: '备注（可选，200 字以内）' });
       const m = UI.modal((r.myPickupStatus === 'SUBMITTED' ? '修改' : '提交') + '提货计划 · ' + r.order_no,
         UI.h('div', {},
           UI.h('div', { class: 'hint', style: 'margin-bottom:8px' },
-            '集采订单由多家钢厂共同供货，贵司份额 ' + UI.fmtMoney(r.myQty) + ' 吨'),
+            '集采订单由多家钢厂共同供货，贵司份额 ' + UI.fmtMoney(r.myQty) + ' 湿吨'),
           UI.h('div', { class: 'form-grid' },
             UI.formRow('开始提货日期', start, true),
-            UI.formRow('日提货吨数(吨)', daily, true),
+            UI.formRow('日提货吨数(湿吨)', daily, true),
             UI.formRow('备注', remark))), [
           UI.h('button', { class: 'primary', onclick: async () => {
             if (!start.value) { UI.toast('请选择开始提货日期', 'err'); return; }
@@ -162,22 +229,19 @@
         ]);
     }
 
-    /* 供应商端订单管理：订单列表 + 订单详情 + 订单确认（48h 期限） */
+    /* 供应商端订单管理：订单列表（待确认订单直接在列表中确认，48h 期限）+ 订单详情 */
     async function supplierOrderView() {
       let pageNo = 1;
       const SIZE = 10;
       const listCard = UI.h('div', { class: 'card' });
+      const listBox = UI.h('div', { class: 'list-fixed' });   // 定高列表区（同运营端）：表头39px+10行，超出滚动
       const pagerBox = UI.h('div', {});
-      const confirmCard = UI.h('div', { class: 'card' });
       page.appendChild(UI.h('div', { class: 'card' },
         UI.h('h3', { class: 'bar-title' }, '订单列表',
-          UI.h('span', { class: 'hint', style: 'margin-left:auto' }, '点击「详情」查看订单明细与关联合同'))));
+          UI.h('span', { class: 'hint', style: 'margin-left:auto' }, '点击「详情」查看订单明细'))));
       page.appendChild(listCard);
-      page.appendChild(pagerBox);
-      page.appendChild(UI.h('div', { class: 'card' },
-        UI.h('h3', { class: 'bar-title' }, '订单确认',
-          UI.h('span', { class: 'hint', style: 'margin-left:auto' }, '中标订单须在确认截止前确认，超期将自动取消'))));
-      page.appendChild(confirmCard);
+      listCard.appendChild(listBox);    // 定高列表区：纵向超出滚动，横向滚动条固定在分页行上方
+      listCard.appendChild(pagerBox);   // 分页条固定在面板右下角
 
       function confirmBtn(r) {
         return UI.h('button', { class: 'sm success', onclick: async () => {
@@ -187,37 +251,51 @@
         } }, '确认订单');
       }
 
-      const cols = (withConfirm) => [
+      /* 供应商订单完成确认：物流服务推送过轨迹后可点；各方确认齐备 → 订单自动完成归档 */
+      const finishBtn = (r) => UI.h('button', {
+        class: 'sm primary', disabled: !r.logiPublished,
+        title: r.logiPublished ? '' : '待运营端推送物流服务后可确认',
+        onclick: async () => {
+          if (!(await UI.confirmBox('请确认已完成提货验收及所有结算。\n确认后待各方确认齐备，订单将自动完成。'))) return;
+          const d = await API.post('/orders/' + r.id + '/finish-confirm');
+          UI.toast(d.completed ? '各方确认齐备，订单已完成' : '订单完成确认成功，待各方确认齐备后自动完成', 'ok');
+          load();
+        },
+      }, '订单完成');
+
+      const cols = () => [
         { key: 'order_no', label: '订单号' },
         { key: 'varietyName', label: '品种' },
         { key: 'grade', label: '品位(%)' },
-        { key: 'quantity', label: '数量', num: true, render: (r) => UI.fmtMoney(r.myQty != null ? r.myQty : r.quantity) },
-        { key: 'unit_price', label: '单价', num: true, render: (r) => UI.fmtMoney(r.unit_price) },
-        { key: 'amount', label: '金额', num: true, render: (r) => UI.fmtMoney(r.amount) },
+        { key: 'quantity', label: '数量(湿吨)', num: true, render: (r) => UI.fmtMoney(r.myQty != null ? r.myQty : r.quantity) },
+        { label: '单价(元/湿吨)', num: true, render: (r) => UI.fmtMoney(r.unit_price) },
+        { label: '运费(元/湿吨)', num: true, render: (r) => (r.freight_price != null ? UI.fmtMoney(r.freight_price) : '-') },
+        { key: 'amount', label: '金额', num: true, render: (r) => UI.fmtMoney(amountOf(r)) },
         { key: 'delivery_date', label: '交货日', render: (r) => UI.fmtDate(r.delivery_date) },
         { key: 'status', label: '状态', render: (r) => UI.statusTag('ORDER', r.status) },
-        { key: 'buyerName', label: '需方' },
+        { label: '需方', render: (r) => r.buyerNames || r.buyerName || '-' },
         { key: 'confirm_deadline', label: '确认截止', render: (r) => UI.fmtDateTime(r.confirm_deadline) },
         { label: '操作', render: (r) => {
             const btns = [UI.h('button', { class: 'sm', onclick: () => supplierDetail(r.id) }, '详情')];
-            if (withConfirm && r.status === 'PENDING_CONFIRM') btns.push(confirmBtn(r));
+            if (r.status === 'PENDING_CONFIRM') btns.push(confirmBtn(r));
+            if (r.status === 'PERFORMING') {
+              btns.push(r.supplierFinishConfirmAt
+                ? UI.h('button', { class: 'sm success', disabled: true }, '已完成确认')
+                : finishBtn(r));
+            }
             return UI.h('span', { class: 'inline-flex' }, ...btns);
           } },
       ];
 
       async function load() {
         const d = await API.get('/orders' + API.qs({ page: pageNo, size: SIZE }));
-        listCard.innerHTML = '';
-        listCard.appendChild(UI.table(cols(false), d.list, '暂无订单'));
+        listBox.innerHTML = '';
+        listBox.appendChild(UI.table(cols(), d.list, '暂无订单'));
         pagerBox.innerHTML = '';
         UI.pager(pagerBox, pageNo, SIZE, d.total, (p) => { pageNo = p; load(); });
-        const pend = (await API.get('/orders' + API.qs({ page: 1, size: 50, status: 'PENDING_CONFIRM' }))).list || [];
-        confirmCard.innerHTML = '';
-        confirmCard.appendChild(pend.length ? UI.table(cols(true), pend, '暂无待确认订单')
-          : UI.h('div', { class: 'empty' }, '暂无待确认订单'));
       }
 
-      /* 订单详情：分区展示（基本信息/交货与结算/需供双方/关联合同） */
+      /* 订单详情：分区展示（基本信息/交货与结算/需供双方）；需方为参与该归集单的全部钢厂 */
       async function supplierDetail(oid) {
         const d = await API.get('/orders/' + oid);
         const body = UI.h('div', {},
@@ -225,8 +303,10 @@
           UI.kv([
             ['订单号', d.order_no], ['状态', UI.statusTag('ORDER', d.status)],
             ['品种', d.varietyName], ['品位(%)', d.grade],
-            ['数量', UI.fmtMoney(d.quantity) + ' 吨'], ['单价', UI.fmtMoney(d.unit_price)],
-            ['金额', UI.fmtMoney(d.amount)], ['溢短装', d.more_less_rate != null ? d.more_less_rate + '%' : '-'],
+            ['数量', UI.fmtMoney(d.quantity) + ' 湿吨'], ['单价', UI.fmtMoney(d.unit_price)],
+            ['运费', d.freight_price != null ? UI.fmtMoney(d.freight_price) : '-'],
+            ['是否含税', ({ INC_TAX: '含税', EX_TAX: '不含税' }[d.tax_type]) || '-'],
+            ['金额', UI.fmtMoney(amountOf(d))],
           ]),
           UI.h('div', { class: 'sec-title' }, '交货与结算'),
           UI.kv([
@@ -236,16 +316,9 @@
           ]),
           UI.h('div', { class: 'sec-title' }, '需供双方'),
           UI.kv([
-            ['需方', d.buyerName], ['供方', d.supplierName],
+            ['需方', d.buyerNames || d.buyerName || '-'], ['供方', d.supplierName],
             ['确认截止', UI.fmtDateTime(d.confirm_deadline)],
-          ]),
-          UI.h('div', { class: 'sec-title' }, '关联合同'),
-          UI.table([
-            { key: 'version', label: '版本', num: true },
-            { key: 'status', label: '状态', render: (r) => UI.statusTag('CONTRACT', r.status) },
-            { key: 'buyer_sign_at', label: '需方签署', render: (r) => UI.fmtDateTime(r.buyer_sign_at) },
-            { key: 'supplier_sign_at', label: '供方签署', render: (r) => UI.fmtDateTime(r.supplier_sign_at) },
-          ], d.contracts || []));
+          ]));
         UI.modal('订单详情 · ' + d.order_no, body, [], { wide: true });
       }
 
@@ -255,80 +328,174 @@
     await load();
   };
 
-  /* -------- 物流服务（钢厂/供应商）：节点跟踪 + 运输方案/分段运单（供应商只读） -------- */
+  /* -------- 物流服务：供应商主视图（95306 轨迹 + 运输方案/分段运单/详情），钢厂端收货视图（方案/运单/签收）；
+     运单由运营端运输调度统一创建，物流方案组织方式由钢厂选择 -------- */
   Pages.logistics = async function (page, user) {
-    /* 供应商端物流服务：仅查看运输方案与物流轨迹（95306 式，同钢厂端），无创建/编辑能力 */
+    /* 供应商端为主视图：95306 物流节点跟踪（每列车一条轨迹动态）+ 运输方案 + 分段运单（详情）；
+       钢厂端为收货视图：运输方案（含创建，组织方式为钢厂选择）+ 分段运单（详情/签收） */
     const isSupplier = (user.roles || []).indexOf('SUPPLIER') >= 0;
-    const orders = (await API.get('/orders?size=100')).list || [];
-    const carriers = isSupplier ? [] : (await API.get('/companies?type=LOGISTICS&size=100')).list || [];
-    if (!orders.length) { page.appendChild(UI.h('div', { class: 'card' }, UI.h('div', { class: 'empty' }, '暂无订单'))); return; }
-    const orderSel = UI.selectField(orders.map((o) => [o.id, o.order_no + '（' + (o.varietyName || '') + '）']), orders[0].id);
-
-    /* 板块一：物流节点跟踪（船到港 → 货物出港 → 到达中转站 → 到达目的地） */
-    const trackBody = UI.h('div', { style: 'display:grid;gap:12px' });
-    page.appendChild(UI.h('div', { class: 'card' },
-      UI.h('div', { class: 'toolbar' },
-        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '物流服务'),
-        UI.h('div', { class: 'spacer' }),
-        UI.h('label', { class: 'field' }, '选择订单 ', orderSel)),
-      UI.h('div', { class: 'hint' },
-        '节点跟踪：船到港 → 货物出港 → 到达中转站（公铁联运）→ 到达目的地；运营平台录入节点后本页自动刷新（约 15 秒）。'),
-      trackBody));
-
-    /* 95306 式自动更新：运营端录入节点后，钢厂端定时拉取节点进度（离开页面自动停止） */
-    const refreshTimer = setInterval(async () => {
-      if (location.hash !== '#/logistics' || !document.body.contains(trackBody)) {
-        clearInterval(refreshTimer);
-        return;
-      }
-      await loadTrack();
-    }, 15000);
-
-    /* 板块二：运输方案与分段运单（保留原有创建/新增能力） */
-    const body = UI.h('div', {});
-    page.appendChild(body);
-
-    orderSel.addEventListener('change', () => { loadTrack(); loadPlan(); });
-    await loadTrack();
-    await loadPlan();
-
-    async function loadTrack() {
-      trackBody.innerHTML = '';
-      let wbs = [];
-      try {
-        wbs = ((await API.get('/orders/' + orderSel.value + '/tracking')).list) || [];
-      } catch (e) { wbs = []; }
-      if (!wbs.length) {
-        trackBody.appendChild(UI.h('div', { class: 'empty' }, '该订单暂无运单，待运营平台制定运输方案'));
-        return;
-      }
-      wbs.forEach((w) => trackBody.appendChild(trackCard(w, orderSel.selectedOptions[0].textContent.split('（')[0])));
-    }
-
-    /* 95306 式轨迹事件流：按运单倒序生成「时间 + 【地点】+ 描述」 */
+    /* 运单状态文案（95306 轨迹面板角标）：须在首次渲染前声明（避免初始 await 先触发 TDZ） */
     const WB_STATE_TXT = {
       PENDING_DEPART: '待发运', IN_TRANSIT: '运输中',
       ARRIVED: '货物已到达', SIGNED: '货物已签收', CANCELLED: '已取消',
     };
+    const orders = (await API.get('/orders?size=100')).list || [];
+    if (!orders.length) { page.appendChild(UI.h('div', { class: 'card' }, UI.h('div', { class: 'empty' }, '暂无订单'))); return; }
+    const orderSel = UI.selectField(orders.map((o) => [o.id, o.order_no + '（' + (o.varietyName || '') + '）']), orders[0].id);
 
-    function trackEvents(w) {
-      const evs = [];
-      if (w.arriveAt) evs.push([w.arriveAt, w.arrivePlace || '目的地', '货物已到达目的地。']);
-      if (w.transitAt) evs.push([w.transitAt, w.transitStation || '中转站', '货物已到达中转站。']);
-      if (w.departAt) evs.push([w.departAt, w.departPlace || '起运地', '货物已出港发运。']);
-      if (w.etaActual) evs.push([w.etaActual, w.departPlace || '起运港', '船已到港，待发运。']);
-      evs.push([w.createdAt, w.departPlace || '起运地', '运单已生成，等待发运。']);
-      return evs.sort((a, b) => new Date(b[0].replace(' ', 'T')) - new Date(a[0].replace(' ', 'T')));
+    /* 供应商端：板块一 95306 物流节点跟踪（按运单/运输方式分卡）；钢厂端：工具栏 + 总节点跟踪（合并时间线） */
+    let trackBody = null;
+    let trackAllBody = null;
+    let planInfo = null;
+    let cargoBox = null;
+    /* 供应商端运输方案内容容器（页面上方卡片，含选择订单） */
+    let body = null;
+    if (isSupplier) {
+      /* 供应商端：运输方案（顶部，含选择订单）+ 物流服务整个框（bar-title 蓝竖线） */
+      trackBody = UI.h('div', { style: 'display:grid;gap:12px;padding:0 16px 16px' });
+      body = UI.h('div', { style: 'padding:0 16px 16px' });
+      page.appendChild(UI.h('div', { class: 'card' },
+        UI.h('h3', { class: 'bar-title' }, '运输方案',
+          UI.h('label', { class: 'field', style: 'margin-left:auto' }, '选择订单 ', orderSel)),
+        body));
+      page.appendChild(UI.h('div', { class: 'card' },
+        UI.h('h3', { class: 'bar-title' }, '物流服务'),
+        trackBody));
+    } else {
+      /* 钢厂端：物流节点跟踪整个框（与供应商端一致，bar-title 蓝竖线），选择订单置于标题右侧 */
+      planInfo = UI.h('div', { class: 'wb-head', style: 'margin:12px 16px 16px' });
+      trackAllBody = UI.h('div', { class: 'trace-line' });
+      cargoBox = UI.h('div', { class: 'side-kv' });
+      page.appendChild(UI.h('div', { class: 'card' },
+        UI.h('h3', { class: 'bar-title' }, '物流节点跟踪',
+          UI.h('label', { class: 'field', style: 'margin-left:auto' }, '选择订单 ', orderSel)),
+        planInfo,
+        UI.h('div', { class: 'trace-box trace-body trace-body-tall', style: 'margin:0 16px 16px' },
+          UI.h('div', { class: 'trace-panel' }, trackAllBody),
+          UI.h('div', { class: 'trace-side' },
+            UI.h('div', { class: 'trace-title' }, '货物信息'),
+            cargoBox))));
     }
 
-    function trackCard(w, orderNo) {
+    if (isSupplier) {
+      /* 95306 式自动更新：轨迹由运营端运输调度填写，钢厂/供应商端定时拉取节点进度（离开页面自动停止）；
+         刷新前后保持滚动位置，避免面板来回跳动 */
+      const refreshTimer = setInterval(async () => {
+        if (location.hash !== '#/logistics' || !document.body.contains(trackBody)) {
+          clearInterval(refreshTimer);
+          return;
+        }
+        const y = window.scrollY;
+        await loadTrack();
+        await loadPlan();
+        window.scrollTo(0, y);
+      }, 15000);
+    } else {
+      /* 钢厂端同源自动刷新：运营端录入节点后，节点跟踪/货物信息约 15 秒自动更新（保持滚动位置） */
+      const refreshTimer = setInterval(async () => {
+        if (location.hash !== '#/logistics' || !document.body.contains(trackAllBody)) {
+          clearInterval(refreshTimer);
+          return;
+        }
+        const y = window.scrollY;
+        await loadMerged();
+        await loadPlan();
+        window.scrollTo(0, y);
+      }, 15000);
+    }
+
+    /* 数据签名缓存：内容未变化时跳过重建面板，避免定时刷新引起跳动（须在首次渲染前声明） */
+    let lastTrackSig = null;
+    let lastMergedSig = null;
+    let lastPlanSig = null;
+
+    if (isSupplier) {
+      orderSel.addEventListener('change', () => { loadTrack(true); loadPlan(true); });
+      await loadTrack(true);
+    } else {
+      orderSel.addEventListener('change', () => { loadMerged(true); loadPlan(true); });
+      await loadMerged(true);
+    }
+    await loadPlan(true);
+
+    async function loadTrack(force) {
+      let d0 = null;
+      try {
+        d0 = await API.get('/orders/' + orderSel.value + '/tracking');
+      } catch (e) { d0 = null; }
+      const wbs = (d0 && d0.list) || [];
+      const cargo = (d0 && d0.cargo) || null;
+      const sig = JSON.stringify([wbs, cargo]);
+      if (!force && sig === lastTrackSig) return;
+      lastTrackSig = sig;
+      /* 原位原子更新：先在离屏片段构建，再一次性替换，面板不闪动不跳动 */
+      const frag = document.createDocumentFragment();
+      if (!wbs.length) {
+        frag.appendChild(UI.h('div', { class: 'empty' }, '该订单暂无运单，待运营平台制定运输方案并推送'));
+      } else {
+        const orderNo = orderSel.selectedOptions[0].textContent.split('（')[0];
+        wbs.forEach((w) => frag.appendChild(trackCard(w, orderNo, cargo, wbs)));
+      }
+      trackBody.replaceChildren(frag);
+    }
+
+    /* 钢厂端：物流节点跟踪——全部运单节点合并为一条倒序时间线（不标注运输方式） */
+    async function loadMerged(force) {
+      if (!trackAllBody) return;
+      let wbs = [];
+      try {
+        wbs = ((await API.get('/orders/' + orderSel.value + '/tracking')).list) || [];
+      } catch (e) { wbs = []; }
+      const sig = JSON.stringify(wbs);
+      if (!force && sig === lastMergedSig) return;
+      lastMergedSig = sig;
+      /* 原位原子更新：离屏构建后一次性替换 */
+      const frag = document.createDocumentFragment();
+      if (!wbs.length) {
+        frag.appendChild(UI.h('div', { class: 'empty' }, '该订单暂无运单节点，待运营端推送物流轨迹'));
+      }
+      const all = [];
+      wbs.forEach((w) => trackEvents(w).forEach((ev) => all.push(ev)));
+      all.sort((a, b) => new Date(String(b[0]).replace(' ', 'T')) - new Date(String(a[0]).replace(' ', 'T')));
+      all.forEach(([t, loc, txt], i) => {
+        const hm = String(t).split(' ')[1] || '';
+        frag.appendChild(UI.h('div', { class: 'trace-item' + (i === 0 && wbs.length ? ' latest' : '') },
+          UI.h('div', { class: 'trace-time' }, UI.fmtDate(t) + (hm ? ' ' + hm.slice(0, 5) : '')),
+          UI.h('div', { class: 'trace-rail' },
+            UI.h('span', { class: 'trace-dot' }),
+            UI.h('span', { class: 'trace-seg' })),
+          UI.h('div', { class: 'trace-desc' },
+            UI.h('span', { class: 'trace-loc' }, '【' + loc + '】'), txt)));
+      });
+      trackAllBody.replaceChildren(frag);
+    }
+
+    /* 95306 式轨迹事件流：节点录入追加的轨迹日志（nodeLog）优先；
+       无日志时按固定节点时间兜底（旧数据）；「运单已生成」始终保留 */
+    function trackEvents(w) {
+      const dot = (s) => (String(s || '').replace(/。*$/, '') + '。');
+      const evs = [];
+      const nl = Array.isArray(w.nodeLog) ? w.nodeLog : [];
+      if (nl.length) {
+        nl.forEach((e) => evs.push([e.occurTime, e.loc || '节点', dot(e.desc)]));
+      } else {
+        if (w.arriveAt) evs.push([w.arriveAt, w.arrivePlace || '目的地', '货物已到达目的地。']);
+        if (w.transitAt) evs.push([w.transitAt, w.transitStation || '中转站', '货物已到达中转站。']);
+        if (w.departAt) evs.push([w.departAt, w.departPlace || '起运地', '货物已出港发运。']);
+        if (w.etaActual) evs.push([w.etaActual, w.departPlace || '起运港', '船已到港，待发运。']);
+      }
+      evs.push([w.createdAt, w.departPlace || '起运地', '运单已生成，等待发运。']);
+      return evs.sort((a, b) => new Date(String(b[0]).replace(' ', 'T')) - new Date(String(a[0]).replace(' ', 'T')));
+    }
+
+    function trackCard(w, orderNo, cargo, allWbs) {
       /* 左侧：物流轨迹时间线（倒序，最新一条高亮） */
       const evs = trackEvents(w);
       const trace = UI.h('div', { class: 'trace-line' });
       evs.forEach(([t, loc, txt], i) => {
         const hm = String(t).split(' ')[1] || '';
         const item = UI.h('div', { class: 'trace-item' + (i === 0 ? ' latest' : '') },
-          UI.h('div', { class: 'trace-time' }, UI.fmtDate(t), hm ? UI.h('div', {}, hm.slice(0, 5)) : null),
+          UI.h('div', { class: 'trace-time' }, UI.fmtDate(t) + (hm ? ' ' + hm.slice(0, 5) : '')),
           UI.h('div', { class: 'trace-rail' },
             UI.h('span', { class: 'trace-dot' }),
             i < evs.length - 1 ? UI.h('span', { class: 'trace-seg' }) : null),
@@ -337,133 +504,119 @@
         trace.appendChild(item);
       });
 
+      /* 右侧：货物信息（同钢厂端六项）——优先运营端录入/推送的供应商货物信息；未推送时按运单实时汇总 */
+      const wbs = allWbs || [w];
+      const qtyOf = (x) => (x.actualQty != null ? Number(x.actualQty) : (x.planQty != null ? Number(x.planQty) : 0));
+      const wbSum = (sts) => wbs.filter((x) => sts.indexOf(x.status) >= 0).reduce((s, x) => s + qtyOf(x), 0);
+      const hasCargo = cargo && (cargo.cargoUpdatedAt || cargo.totalQty != null);
+      const rows = hasCargo
+        ? [['货物总量', cargo.totalQty], ['出港', cargo.shippedQty], ['在途', cargo.transitQty],
+           ['到站', cargo.arrivedQty], ['可提货', cargo.pickupQty]]
+        : [['货物总量', null], ['出港', wbSum(['IN_TRANSIT', 'ARRIVED', 'SIGNED'])], ['在途', wbSum(['IN_TRANSIT'])],
+           ['到站', wbSum(['ARRIVED', 'SIGNED'])], ['可提货', wbSum(['ARRIVED'])]];
+      const sideRow = (k, v) => UI.h('div', { class: 'side-kv-row' },
+        UI.h('span', { class: 'side-kv-k' }, k),
+        UI.h('span', { class: 'side-kv-v' }, v));
+
       return UI.h('div', { class: 'track-card' },
         UI.h('div', { class: 'wb-head' },
           UI.h('div', { class: 'wb-head-item' }, UI.h('span', { class: 'wb-k' }, '运单号'), UI.h('b', { class: 'wb-v' }, w.waybillNo)),
           UI.h('div', { class: 'wb-head-item' }, UI.h('span', { class: 'wb-k' }, '订单号'), UI.h('span', { class: 'wb-v' }, orderNo)),
-          UI.h('div', { class: 'wb-head-item' }, UI.h('span', { class: 'wb-k' }, '运输方式'), UI.h('span', { class: 'wb-v' }, (MODES[w.transportMode] || w.transportMode || '-') + ' · 第 ' + w.segmentNo + ' 段')),
+          UI.h('div', { class: 'wb-head-item' }, UI.h('span', { class: 'wb-k' }, '运输方式'), UI.h('span', { class: 'wb-v' }, (MODES[w.transportMode] || w.transportMode || '-') + ' · ' + segLabel(w.transportMode, w.segmentNo))),
           UI.h('div', { class: 'wb-head-item' }, UI.h('span', { class: 'wb-k' }, '发站'), UI.h('span', { class: 'wb-v' }, w.departPlace || '-')),
-          UI.h('div', { class: 'wb-head-item' }, UI.h('span', { class: 'wb-k' }, '到站'), UI.h('span', { class: 'wb-v' }, w.arrivePlace || '-')),
-          UI.h('div', { class: 'wb-head-item' }, UI.h('span', { class: 'wb-k' }, '车船号'), UI.h('span', { class: 'wb-v' }, w.vehicleNo || '-')),
-          UI.h('div', { class: 'wb-head-item' }, UI.h('span', { class: 'wb-k' }, '计划量'), UI.h('span', { class: 'wb-v' }, w.planQty != null ? UI.fmtQty(w.planQty) + ' 吨' : '-'))),
+          UI.h('div', { class: 'wb-head-item' }, UI.h('span', { class: 'wb-k' }, '到站'), UI.h('span', { class: 'wb-v' }, w.arrivePlace || '-'))),
         UI.h('div', { class: 'trace-body' },
           UI.h('div', { class: 'trace-panel' },
             UI.h('div', { class: 'trace-title' }, '物流轨迹',
               UI.h('span', { class: 'trace-state' }, '【' + (WB_STATE_TXT[w.status] || w.status) + '】')),
             trace),
           UI.h('div', { class: 'trace-side' },
-            UI.h('div', { class: 'trace-title' }, '运输信息'),
+            UI.h('div', { class: 'trace-title' }, '货物信息'),
             UI.h('div', { class: 'side-kv' },
-              [['计划发运', UI.fmtDate(w.planDepartDate)],
-               ['计划到达', UI.fmtDate(w.planArriveDate)],
-               ['预计船到港', UI.fmtDateTime(w.etaPlan)],
-               ['中转站', w.transitStation || '-'],
-               ['承运商', w.carrierName || '-'],
-               ['运费', w.freight != null ? UI.fmtMoney(w.freight) : '-']]
-                .map(([k, v]) => UI.h('div', { class: 'side-kv-row' },
-                  UI.h('span', { class: 'side-kv-k' }, k),
-                  UI.h('span', { class: 'side-kv-v' }, v)))))));
+              rows.map(([k, v]) => sideRow(k, v != null && v !== '' ? UI.fmtMoney(Number(v)) + ' 湿吨' : '-')),
+              sideRow('信息来源', hasCargo && cargo.cargoUpdatedAt ? '平台 ' + UI.fmtDateTime(cargo.cargoUpdatedAt) : '运单实时汇总')))));
     }
 
-    async function loadPlan() {
-      body.innerHTML = '';
+    async function loadPlan(force) {
       const oid = orderSel.value;
       let plan = null;
       try {
         plan = await API.get('/orders/' + oid + '/logistics-plan');
       } catch (e) { plan = null; }
-      /* 供应商只读视图：运输方案 + 分段运单，无创建/新增入口 */
+      /* 供应商主视图：运输方案（三框内容由运营端推送后可见并随推送更新）；
+         数据齐取后比对签名，未变化跳过重建 */
       if (isSupplier) {
+        let pub = null;
+        try {
+          pub = await API.get('/orders/' + oid + '/tracking');
+        } catch (e) { pub = null; }
+        const pushed = (pub && pub.plan) ? pub.plan : null;
+        const sig = JSON.stringify([plan, pushed]);
+        if (!force && sig === lastPlanSig) return;
+        lastPlanSig = sig;
+        /* 原位原子更新：离屏构建后一次性替换（内容渲染进顶部「运输方案」卡片） */
+        const frag = document.createDocumentFragment();
         if (!plan) {
-          body.appendChild(UI.h('div', { class: 'card' },
-            UI.h('div', { class: 'empty' }, '该订单暂无运输方案，待运营平台制定')));
+          frag.appendChild(UI.h('div', { class: 'empty', style: 'padding:12px 0' }, '该订单暂无运输方案，待运营平台制定'));
+          body.replaceChildren(frag);
           return;
         }
-        body.appendChild(UI.h('div', { class: 'card' },
-          UI.h('h3', { class: 'bar-title' }, '运输方案'),
-          UI.kv([
-            ['方案编号', plan.plan_no || plan.id],
-            ['组织方式', plan.org_mode === 'SELF' ? '钢厂自提' : '平台配送'],
-            ['创建时间', UI.fmtDateTime(plan.created_at)],
-          ])));
-        const wbCard = UI.h('div', { class: 'card' },
-          UI.h('h3', { class: 'bar-title' }, '分段运单'));
-        body.appendChild(wbCard);
-        const wb = await API.get('/waybills?size=100&orderId=' + oid);
-        wbCard.appendChild(UI.table(waybillCols('SUPPLIER', loadPlan, []), wb.list, '暂无运单'));
-        return;
-      }
-      if (!plan) {
-        body.appendChild(UI.h('div', { class: 'card' },
-          UI.h('h3', {}, '创建物流方案'),
-          UI.h('div', { class: 'inline-flex' },
-            UI.h('label', { class: 'field' }, '组织方式 ',
-              UI.selectField([['PLATFORM', '平台配送'], ['SELF', '钢厂自提']], 'PLATFORM', { id: 'org-mode' })),
-            UI.h('button', { class: 'primary', onclick: async () => {
-              const mode = document.getElementById('org-mode').value;
-              await API.post('/orders/' + oid + '/logistics-plan', { orgMode: mode });
-              UI.toast('方案已创建', 'ok'); loadPlan();
-            } }, '创建方案'))));
-        return;
-      }
-      body.appendChild(UI.h('div', { class: 'card' },
-        UI.h('h3', {}, '运输方案 ' + (plan.plan_no || plan.id)),
-        UI.kv([
+        frag.appendChild(UI.kv([
+          ['方案编号', plan.plan_no || plan.id],
           ['组织方式', plan.org_mode === 'SELF' ? '钢厂自提' : '平台配送'],
           ['创建时间', UI.fmtDateTime(plan.created_at)],
-        ])));
-      const wbCard = UI.h('div', { class: 'card' }, UI.h('h3', {}, '分段运单'));
-      body.appendChild(wbCard);
-      const wb = await API.get('/waybills?size=100&orderId=' + oid);
-      wbCard.appendChild(UI.table(waybillCols('STEEL', loadPlan, carriers), wb.list, '暂无运单'));
-      body.appendChild(waybillForm(plan.id, oid, carriers, loadPlan));
+        ]));
+        /* 三框运输方案内容（推送门控）：运营端「运输方案板块推送供应商 / 推送供应商」后可见并随推送更新 */
+        if (pushed) {
+          const secOf = (label, txt) => txt ? UI.h('div', { style: 'margin-top:10px' },
+            UI.h('div', { style: 'font-weight:600;margin-bottom:4px' }, label),
+            UI.h('div', { style: 'white-space:pre-wrap;line-height:1.6;color:var(--ink-2,#555)' }, txt)) : null;
+          [['铁路直达', pushed.rail], ['公铁联运', pushed.multimodal], ['汽运直达', pushed.truck]]
+            .forEach(([label, txt]) => { const el = secOf(label, txt); if (el) frag.appendChild(el); });
+        } else {
+          frag.appendChild(UI.h('div', { class: 'empty', style: 'margin-top:10px' }, '运输方案内容待运营端推送后显示'));
+        }
+        body.replaceChildren(frag);
+        return;
+      }
+      /* 钢厂端：运输方案面板已删除——组织方式/创建时间渲染进节点跟踪面板信息条 */
+      if (planInfo) {
+        const pf = document.createDocumentFragment();
+        pf.appendChild(UI.h('div', { class: 'wb-head-item' },
+          UI.h('span', { class: 'wb-k' }, '组织方式'),
+          UI.h('span', { class: 'wb-v' }, plan ? (plan.org_mode === 'SELF' ? '钢厂自提' : '平台配送') : '-')));
+        pf.appendChild(UI.h('div', { class: 'wb-head-item' },
+          UI.h('span', { class: 'wb-k' }, '创建时间'),
+          UI.h('span', { class: 'wb-v' }, plan ? UI.fmtDateTime(plan.created_at) : '-')));
+        planInfo.replaceChildren(pf);
+      }
+      await loadCargo(oid);
     }
 
-    function waybillForm(pid, oid, carriers, onDone) {
-      const segmentNo = UI.input('text', '', { placeholder: '如 SEG-1' });
-      const mode = UI.selectField(Object.entries(MODES), 'ROAD');
-      const planQty = UI.input('number', '', { placeholder: '计划量（吨）' });
-      const depart = UI.input('date', '', { placeholder: '计划发运日' });
-      const arrive = UI.input('date', '', { placeholder: '计划到达日' });
-      const departPlace = UI.input('text', '', { placeholder: '发运地（选填）' });
-      const arrivePlace = UI.input('text', '', { placeholder: '到达地（选填）' });
-      const freight = UI.input('number', '', { placeholder: '运费（选填）' });
-      const vehicle = UI.input('text', '', { placeholder: '车船号（选填）' });
-      const carrierSel = UI.selectField([['', '暂不指派']].concat(carriers.map((c) => [c.id, c.companyName])), '');
-      const deviation = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '分段合计偏差 >5% 时必填' });
-      return UI.h('div', { class: 'card' },
-        UI.h('h3', {}, '新增分段运单'),
-        UI.h('div', { class: 'form-grid' },
-          UI.formRow('分段号', segmentNo, true),
-          UI.formRow('运输方式', mode, true),
-          UI.formRow('计划量', planQty, true),
-          UI.formRow('计划发运日', depart, true),
-          UI.formRow('计划到达日', arrive, true),
-          UI.formRow('发运地', departPlace),
-          UI.formRow('到达地', arrivePlace),
-          UI.formRow('运费', freight),
-          UI.formRow('车船号', vehicle),
-          UI.formRow('承运商', carrierSel),
-          UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '偏差说明'), deviation)),
-        UI.h('button', { class: 'primary', onclick: async () => {
-          const body = {
-            segmentNo: segmentNo.value.trim(), transportMode: mode.value,
-            planQty: planQty.value, planDepartDate: depart.value, planArriveDate: arrive.value,
-          };
-          if (!body.segmentNo || !body.planQty || !body.planDepartDate || !body.planArriveDate) {
-            UI.toast('分段号/计划量/计划发运日/计划到达日为必填', 'err'); return;
-          }
-          if (departPlace.value.trim()) body.departPlace = departPlace.value.trim();
-          if (arrivePlace.value.trim()) body.arrivePlace = arrivePlace.value.trim();
-          if (freight.value !== '') body.freight = freight.value;
-          if (vehicle.value.trim()) body.vehicleNo = vehicle.value.trim();
-          if (carrierSel.value) body.carrierId = Number(carrierSel.value);
-          if (deviation.value.trim()) body.deviationReason = deviation.value.trim();
-          try {
-            await API.post('/logistics-plans/' + pid + '/waybills', body);
-            UI.toast('运单已创建', 'ok'); onDone();
-          } catch (e) { /* toast 已提示 */ }
-        } }, '创建运单'));
+    /* 钢厂端：货物信息（节点跟踪右侧）——货物总量/出港/在途/到站/可提货（湿吨）；
+       推送门控：读发布快照（运营端「推送」后可见）；快照无本厂货物信息时按已推送运单实时汇总 */
+    async function loadCargo(oid) {
+      if (!cargoBox) return;
+      let list = [];
+      let cargo = null;
+      try {
+        const t = await API.get('/orders/' + oid + '/tracking');
+        list = t.list || [];
+        cargo = t.cargo || null;
+      } catch (e) { list = []; cargo = null; }
+      const qtyOf = (w) => (w.actualQty != null ? Number(w.actualQty) : (w.planQty != null ? Number(w.planQty) : 0));
+      const sum = (sts) => list.filter((w) => sts.indexOf(w.status) >= 0).reduce((s, w) => s + qtyOf(w), 0);
+      const rows = cargo
+        ? [['货物总量', cargo.totalQty], ['出港', cargo.shippedQty], ['在途', cargo.transitQty],
+           ['到站', cargo.arrivedQty], ['可提货', cargo.pickupQty]]
+        : [['货物总量', null], ['出港', sum(['IN_TRANSIT', 'ARRIVED', 'SIGNED'])], ['在途', sum(['IN_TRANSIT'])],
+           ['到站', sum(['ARRIVED', 'SIGNED'])], ['可提货', sum(['ARRIVED'])]];
+      cargoBox.replaceChildren(...rows.map(([k, v]) => UI.h('div', { class: 'side-kv-row' },
+        UI.h('span', { class: 'side-kv-k' }, k),
+        UI.h('span', { class: 'side-kv-v' }, v != null && v !== '' ? UI.fmtMoney(Number(v)) + ' 湿吨' : '-'))),
+        UI.h('div', { class: 'side-kv-row' },
+          UI.h('span', { class: 'side-kv-k' }, '信息来源'),
+          UI.h('span', { class: 'side-kv-v' }, cargo ? '平台 ' + UI.fmtDateTime(cargo.cargoUpdatedAt) : '运单实时汇总')));
     }
   };
 
@@ -476,7 +629,9 @@
     const orderSel = UI.selectField(orders.map((o) => [o.id, o.order_no + '（' + (o.varietyName || '') + '）']), orders[0].id);
     const stageBox = UI.h('div', { class: 'flow-steps' });
     const chips = UI.h('div', { class: 'inline-flex', style: 'gap:8px;margin-top:12px' });
-    const traceBox = UI.h('div', { class: 'trace-line' });
+    /* 履约节点台账：面板固定高度（约 10 条），多余节点滚动查看 */
+    const traceBox = UI.h('div', { class: 'trace-line', style: 'max-height:660px;overflow-y:auto' });
+    let fulfillBody = null;
     const wbMap = new Map();
     const FILTERS = [['ALL', '全部'], ['ORDER', '订单'], ['WAYBILL', '运单'], ['SETTLEMENT', '结算']];
     const BIZ_TAG = { ORDER: ['订单', 'blue'], WAYBILL: ['运单', 'green'], SETTLEMENT: ['结算', 'orange'] };
@@ -492,33 +647,42 @@
         UI.h('h3', { class: 'bar-title' }, '履约进度',
           UI.h('label', { class: 'field', style: 'margin-left:auto' }, '选择订单 ', orderSel)),
         UI.h('div', { class: 'hint', style: 'margin-top:8px' },
-          '订单全链五阶段：订单生成 → 双方确认 → 提货计划 → 运输交付 → 结算归档'),
+          '订单全链五阶段：订单生成 → 双方确认 → 提货计划 → 运输交付 → 验收归档'),
         stageBox));
       page.appendChild(UI.h('div', { class: 'card' },
         UI.h('h3', { class: 'bar-title' }, '履约节点台账',
-          UI.h('span', { class: 'hint', style: 'margin-left:auto' }, '节点只增不改（留痕审计），95306 式倒序展示，最新节点高亮')),
+          UI.h('span', { class: 'hint', style: 'margin-left:auto' }, '节点只增不改（留痕审计）')),
         chips,
         UI.h('div', { style: 'margin-top:14px' }, traceBox)));
     } else {
+      /* 钢厂端：五阶段进度 + 全链信息表（节点轨迹台账/手工节点登记/运单面板已下线，信息以表格呈现） */
       page.appendChild(UI.h('div', { class: 'card' },
         UI.h('div', { class: 'toolbar' },
           UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '履约跟踪'),
           UI.h('label', { class: 'field' }, '选择订单 ', orderSel)),
-        UI.h('div', { class: 'hint' },
-          '订单全链节点台账：订单生成 → 双方确认 → 提货计划 → 运输交付 → 结算归档；节点只增不改（留痕审计），95306 式倒序展示，最新节点高亮。'),
-        stageBox,
-        chips,
-        UI.h('div', { style: 'margin-top:14px' }, traceBox),
-        isSteel ? UI.h('div', { style: 'margin-top:12px' }, manualNodeForm(orderSel.value, load)) : null));
+        stageBox));
+      fulfillBody = UI.h('div', {});
+      page.appendChild(fulfillBody);
     }
     const wbBody = UI.h('div', {});
-    page.appendChild(wbBody);
+    if (isSupplier) page.appendChild(wbBody);
     orderSel.addEventListener('change', load);
     await load();
 
     async function load() {
       const oid = orderSel.value;
       const order = orders.find((o) => String(o.id) === String(oid)) || {};
+      if (!isSupplier) {
+        /* 钢厂端：五阶段进度 + 全链信息表（一次取数，物流/交付/结算全部覆盖） */
+        const [t, f] = await Promise.all([
+          API.get('/orders/' + oid + '/timeline'),
+          API.get('/orders/' + oid + '/fulfillment'),
+        ]);
+        allNodesRaw = t.list || [];
+        renderStages(order, f.waybills || []);
+        renderFulfillment(f);
+        return;
+      }
       const [t, wb] = await Promise.all([
         API.get('/orders/' + oid + '/timeline'),
         API.get('/waybills?size=100&orderId=' + oid),
@@ -532,29 +696,31 @@
       renderChips();
       renderTrace();
       wbBody.innerHTML = '';
-      const carriers = isSteel ? ((await API.get('/companies?type=LOGISTICS&size=100')).list || []) : [];
       wbBody.appendChild(UI.h('div', { class: 'card' },
-        isSupplier
-          ? UI.h('h3', { class: 'bar-title' }, '运单列表',
-              UI.h('span', { class: 'hint', style: 'margin-left:auto' }, '只读，签收由需方确认'))
-          : UI.h('h3', {}, '运单'),
-        UI.table(waybillCols(isSupplier ? 'SUPPLIER' : 'STEEL', load, carriers), wb.list || [], '暂无运单')));
+        UI.h('h3', { class: 'bar-title' }, '运单列表',
+          UI.h('span', { class: 'hint', style: 'margin-left:auto' }, '只读')),
+        UI.table(waybillCols('SUPPLIER', load, []), wb.list || [], '暂无运单')));
     }
 
-    /* 履约五阶段进度：订单生成 → 双方确认 → 提货计划 → 运输交付 → 结算归档 */
+    /* 履约五阶段进度：订单生成 → 双方确认 → 提货计划 → 运输交付 → 验收归档 */
     function renderStages(order, wbs) {
       const st = order.status;
       const hasWb = wbs.length > 0;
       const signedAll = hasWb && wbs.every((w) => w.status === 'SIGNED' || w.status === 'CANCELLED');
       const find = (codes) => allNodesRaw.find((n) => codes.indexOf(n.nodeCode) >= 0);
-      const settleDone = st === 'COMPLETED'
-        || allNodesRaw.some((n) => ['SETTLEMENT_CREATED', 'QUALITY_CHECKED', 'ORDER_ARCHIVED'].indexOf(n.nodeCode) >= 0);
+      /* 验收归档：双方确认验收齐备后订单自动完成（付款结算线下完成，平台不登记） */
+      const acceptDone = st === 'COMPLETED'
+        || (allNodesRaw.some((n) => n.nodeCode === 'SUPPLY_CONFIRMED')
+            && allNodesRaw.some((n) => n.nodeCode === 'DEMAND_CONFIRMED'))
+        || allNodesRaw.some((n) => n.nodeCode === 'ORDER_ARCHIVED');
+      /* 运输交付：运单全部签收，或订单已完成（验收归档完成则前序环节必然完成） */
+      const transportDone = (hasWb && signedAll) || acceptDone;
       const stages = [
         ['订单生成', true, find(['AWARDED', 'ORDER_CREATED'])],
         ['双方确认', st !== 'PENDING_CONFIRM', find(['ORDER_CONFIRMED'])],
-        ['提货计划', st !== 'PENDING_PICKUP', null],
-        ['运输交付', hasWb && signedAll, null],
-        ['结算归档', settleDone, null],
+        ['提货计划', st !== 'PENDING_CONFIRM' && st !== 'PENDING_PICKUP', null],
+        ['运输交付', transportDone, null],
+        ['验收归档', acceptDone, null],
       ];
       stageBox.innerHTML = '';
       let curFound = false;
@@ -594,7 +760,7 @@
         const wbNo = n.bizType === 'WAYBILL' ? wbMap.get(String(n.bizId)) : null;
         const itemName = n.nodeName || EXTRA_TITLES[n.nodeCode] || n.nodeCode;
         const item = UI.h('div', { class: 'trace-item' + (i === 0 ? ' latest' : '') },
-          UI.h('div', { class: 'trace-time' }, UI.fmtDate(n.occurTime), hm ? UI.h('div', {}, hm.slice(0, 5)) : null),
+          UI.h('div', { class: 'trace-time' }, UI.fmtDate(n.occurTime) + (hm ? ' ' + hm.slice(0, 5) : '')),
           UI.h('div', { class: 'trace-rail' },
             UI.h('span', { class: 'trace-dot' }),
             i < list.length - 1 ? UI.h('span', { class: 'trace-seg' }) : null),
@@ -608,25 +774,100 @@
       });
     }
 
-    function manualNodeForm(oid, onDone) {
-      const code = UI.input('text', '', { placeholder: '节点代码（大写，如 LOAD_DONE）' });
-      const occur = UI.h('input', { type: 'datetime-local', placeholder: '发生时间' });
-      const remark = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '备注' });
-      const box = UI.h('div', {});
-      box.appendChild(UI.h('h3', { style: 'margin:12px 0 8px' }, '手工节点登记'));
-      box.appendChild(UI.h('div', { class: 'inline-flex', style: 'flex-wrap:wrap' },
-        UI.h('label', { class: 'field' }, '节点代码 ', code),
-        UI.h('label', { class: 'field' }, '发生时间 ', occur),
-        UI.h('button', { class: 'primary', onclick: async () => {
-          if (!code.value.trim()) { UI.toast('请填写节点代码', 'err'); return; }
-          const body = { nodeCode: code.value.trim().toUpperCase() };
-          if (occur.value) body.occurTime = occur.value.replace('T', ' ') + ':00';
-          if (remark.value.trim()) body.remark = remark.value.trim();
-          await API.post('/orders/' + oid + '/nodes', body);
-          UI.toast('节点已登记', 'ok'); onDone();
-        } }, '登 记')));
-      box.appendChild(UI.h('div', { style: 'margin-top:8px' }, remark));
-      return box;
+    /* 钢厂端全链信息表：询价 / 议价反馈 / 订单 / 提货计划 / 物流方案 / 运单 / 交付验收 / 结算 */
+    /* 钢厂端一个订单仅呈现一条运单记录：多段运单聚合为一行（整体轨迹进度，不显示运输方式与分列明细） */
+    function aggWaybill(wbs) {
+      const act = (wbs || []).filter((w) => w.status !== 'CANCELLED');
+      if (!act.length) return null;
+      const seg = (act[0].depart_place || '起运地') + ' → ' + (act[act.length - 1].arrive_place || '到达地');
+      const deps = act.map((w) => w.actual_depart_at).filter(Boolean).sort();
+      const arrs = act.map((w) => w.actual_arrive_at).filter(Boolean).sort();
+      const allSigned = act.every((w) => w.status === 'SIGNED');
+      const allArrived = allSigned || act.every((w) => w.status === 'ARRIVED' || w.status === 'SIGNED');
+      let track, status;
+      if (allSigned) {
+        track = seg + '（' + UI.fmtDateTime(deps[0]) + ' 发运 → ' + UI.fmtDateTime(arrs[arrs.length - 1]) + ' 到达，已签收）';
+        status = 'SIGNED';
+      } else if (allArrived) {
+        track = seg + '（' + UI.fmtDateTime(deps[0]) + ' 发运 → ' + UI.fmtDateTime(arrs[arrs.length - 1]) + ' 到达）';
+        status = 'ARRIVED';
+      } else if (deps.length) {
+        track = seg + '（' + UI.fmtDateTime(deps[0]) + ' 发运，运输中）';
+        status = 'IN_TRANSIT';
+      } else {
+        track = seg + '（待发运）';
+        status = act[0].status;
+      }
+      return {
+        no: act.length === 1 ? act[0].waybill_no : act[0].waybill_no + ' 等 ' + act.length + ' 单',
+        track: track,
+        status: status,
+        arrived: act.filter((w) => w.status === 'ARRIVED'),
+        createdAt: act[0].created_at,
+      };
+    }
+    function renderFulfillment(f) {
+      fulfillBody.innerHTML = '';
+      const rows = [];
+      const inq = f.inquiry;
+      if (inq) {
+        /* 钢厂需求品类/吨数 + 报价单价（每湿吨：中标 WIN 报价优先，无则取订单单价兜底） */
+        const price = inq.winPrice != null && inq.winPrice !== ''
+          ? Number(inq.winPrice)
+          : (f.unit_price != null ? Number(f.unit_price) : null);
+        rows.push(['询价', inq.inquiry_no || '-',
+          '需求品类 ' + (inq.varietyName || '-') + ' · 需求吨数 ' + UI.fmtQty(inq.quantity) + ' 湿吨'
+            + ' · 报价 ' + (price != null ? UI.fmtMoney(price) + ' 元/湿吨' : '-'),
+          inq.created_at, UI.statusTag('INQUIRY', inq.status)]);
+      }
+      const fb = f.feedback;
+      if (fb) rows.push(['议价反馈', '-',
+        fb.decision === 'ACCEPTED' ? '本厂认可（归集询价评审，全员认可自动成单）' : '本厂不认可：' + (fb.reason || '-'),
+        fb.created_at, UI.h('span', { class: 'tag ' + (fb.decision === 'ACCEPTED' ? 'green' : 'red') },
+          fb.decision === 'ACCEPTED' ? '已认可' : '已反馈')]);
+      rows.push(['订单', f.order_no || '-',
+        UI.fmtQty(f.quantity) + ' 湿吨 · 供应商 ' + (f.supplierName || '-')
+          + (f.amount != null ? ' · 金额 ' + UI.fmtMoney(f.amount) : ''),
+        f.created_at, UI.statusTag('ORDER', f.status)]);
+      const pk = f.pickup;
+      const isAgg = f.buyer_id == null; // 集采聚合订单才有提货计划收集环节，普通订单按合同约定交付
+      const pkDone = pk && pk.submitted_at;
+      rows.push(['提货计划', '-',
+        pkDone
+          ? '预期提货时间 ' + UI.fmtDate(pk.pickup_start_date) + ' · 日提 ' + UI.fmtQty(pk.daily_qty) + ' 湿吨'
+            + (pk.pickup_remark ? ' · ' + pk.pickup_remark : '')
+          : (isAgg ? '本厂提货计划未提交' : '普通订单按合同约定交付，无需提货计划'),
+        pkDone ? pk.submitted_at : '-',
+        pkDone ? UI.h('span', { class: 'tag blue' }, '已提交')
+          : (isAgg ? UI.h('span', { class: 'tag orange' }, '待提交') : UI.h('span', { class: 'tag gray' }, '不适用'))]);
+      const pl = f.plan;
+      rows.push(['物流方案', pl ? (pl.plan_no || ('WL-' + f.id)) : '-',
+        pl ? '组织方式：' + (pl.org_mode === 'SELF' ? '钢厂自提' : '平台配送') : '待运营平台制定',
+        pl ? pl.created_at : '-',
+        UI.h('span', { class: 'tag ' + (pl ? 'blue' : 'orange') }, pl ? '已生效' : '待制定')]);
+      const aw = aggWaybill(f.waybills);
+      if (aw) rows.push(['运单', aw.no, aw.track, aw.createdAt, UI.statusTag('WAYBILL', aw.status)]);
+      const active = (f.waybills || []).filter((w) => w.status !== 'CANCELLED');
+      const signed = active.filter((w) => w.status === 'SIGNED');
+      const qc = (f.qualityChecks || [])[0];
+      if (signed.length || qc) {
+        rows.push(['交付验收', qc ? qc.check_no : '-',
+          '已签收 ' + signed.length + '/' + active.length + ' 单'
+            + (qc ? ' · 质检结论 ' + (qc.conclusion || '-') + ' · 到货 ' + UI.fmtQty(qc.arrived_qty) + ' 湿吨' : ''),
+          qc ? qc.created_at : (signed.length ? signed[signed.length - 1].created_at : '-'),
+          UI.h('span', { class: 'tag ' + (active.length && signed.length === active.length ? 'green' : 'blue') },
+            active.length && signed.length === active.length ? '已交付' : '交付中')]);
+      }
+
+      fulfillBody.appendChild(UI.h('div', { class: 'card' },
+        UI.h('h3', { style: 'margin-top:0' }, '全链信息'),
+        UI.table([
+          { key: 'stage', label: '环节', render: (r) => UI.h('b', {}, r[0]) },
+          { key: 'no', label: '单号', render: (r) => r[1] },
+          { key: 'desc', label: '内容', render: (r) => r[2] },
+          { key: 'time', label: '时间', render: (r) => (r[3] ? UI.fmtDateTime(r[3]) : '-') },
+          { key: 'st', label: '状态', render: (r) => r[4] },
+        ], rows, '暂无数据')));
     }
   };
 })();

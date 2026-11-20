@@ -48,15 +48,15 @@
     });
   }
 
-  /* columns: [{key,label,num,render(row)}] */
+  /* columns: [{key,label,num,render(row),cls(自定义列样式,如勾选列 sel-col)}] */
   function table(columns, rows, emptyText) {
     if (!rows || !rows.length) return h('div', { class: 'empty' }, emptyText || '暂无数据');
     // 布局修复：外层 table-wrap 提供横向滚动，列多时表格在卡片内滚动而非溢出
     return h('div', { class: 'table-wrap' },
       h('table', { class: 'grid' },
-        h('thead', {}, h('tr', {}, ...columns.map(c => h('th', { class: c.num ? 'num' : '' }, c.label)))),
+        h('thead', {}, h('tr', {}, ...columns.map(c => h('th', { class: c.cls || (c.num ? 'num' : '') }, c.label)))),
         h('tbody', {}, ...rows.map(r => h('tr', {},
-          ...columns.map(c => h('td', { class: c.num ? 'num' : '' },
+          ...columns.map(c => h('td', { class: c.cls || (c.num ? 'num' : '') },
             c.render ? c.render(r) : (r[c.key] == null ? '-' : String(r[c.key])))))))));
   }
 
@@ -103,11 +103,12 @@
   }
 
   const STATUS = {
-    DEMAND: { DRAFT: ['草稿', 'gray'], SUBMITTED: ['已提交', 'blue'], INQUIRING: ['询价中', 'blue'], DEALT: ['已成交', 'green'], CLOSED: ['已关闭', 'gray'], WITHDRAWN: ['已撤回', 'orange'] },
-    INQUIRY: { DRAFT: ['草稿', 'gray'], SENT: ['已发出', 'blue'], QUOTING: ['报价中', 'blue'], CLOSED: ['已截止', 'gray'], FEEDBACK: ['反馈待处理', 'orange'], BARGAINING: ['议价中', 'blue'], AWARDED: ['已定标', 'green'], FAILED: ['已流标', 'red'] },
+    /* DEMAND 展示口径：DRAFT/WITHDRAWN/PENDING_DELETE 统一显示「待提交」；筛选用 UNPUSHED 联合查询三者 */
+    DEMAND: { DRAFT: ['待提交', 'orange', 'UNPUSHED'], SUBMITTED: ['已提交', 'blue'], TO_INQUIRY: ['待询价', 'orange'], WITHDRAWN: ['待提交', 'orange'], PENDING_DELETE: ['待提交', 'orange'], DELETE_AUDIT: ['删除待审核', 'orange'], INQUIRING: ['询价中', 'blue'], DEALT: ['已成交', 'green'], CLOSED: ['已关闭', 'gray'] },
+    INQUIRY: { DRAFT: ['草稿', 'gray'], SENT: ['已发出', 'blue'], AGGREGATED: ['已归集', 'orange'], QUOTING: ['报价中', 'blue'], CLOSED: ['已截止', 'gray'], FEEDBACK: ['反馈待处理', 'orange'], BARGAINING: ['议价中', 'blue'], AWARDED: ['已定标', 'green'], FAILED: ['已流标', 'red'] },
     QUOTE: { SUBMITTED: ['已报价', 'blue'], REVEALED: ['已揭示', 'gray'], BARGAINING: ['议价中', 'blue'], WIN: ['中标', 'green'], LOSE: ['未中标', 'red'], REJECTED: ['已拒绝', 'red'] },
     BARGAIN: { PENDING: ['待响应', 'orange'], ONGOING: ['待响应', 'orange'], ACCEPTED: ['已接受', 'green'], REJECTED: ['已拒绝', 'red'], EXPIRED: ['已失效', 'gray'] },
-    ORDER: { PENDING_PICKUP: ['待收集提货计划', 'orange'], PENDING_TRANSPORT: ['待制定运输方案', 'blue'], PENDING_CONFIRM: ['待供应商确认', 'orange'], PENDING_CONTRACT: ['待签合同', 'orange'], PENDING_EFFECT: ['待合同生效', 'orange'], PERFORMING: ['履约中', 'blue'], COMPLETED: ['已完成', 'green'], CANCELLED: ['已失效', 'red'] },
+    ORDER: { PENDING_PICKUP: ['待收集提货计划', 'orange'], PENDING_TRANSPORT: ['待制定运输方案', 'blue'], PENDING_CONFIRM: ['待确认', 'orange'], PENDING_CONTRACT: ['待签合同', 'orange'], PENDING_EFFECT: ['待合同生效', 'orange'], PERFORMING: ['履约中', 'blue'], COMPLETED: ['已完成', 'green'], CANCELLED: ['已失效', 'red'] },
     CONTRACT: { PENDING_GENERATE: ['待生成', 'gray'], PENDING_BUYER: ['待需方签署', 'orange'], PENDING_SUPPLIER: ['待供方签署', 'orange'], EFFECTIVE: ['已生效', 'green'], VOID: ['已作废', 'red'] },
     WAYBILL: { PENDING_DEPART: ['待发运', 'orange'], IN_TRANSIT: ['在途', 'blue'], ARRIVED: ['已到达', 'blue'], SIGNED: ['已签收', 'green'], CANCELLED: ['已取消', 'gray'] },
     SETTLEMENT: { PENDING_CONFIRM_SUPPLIER: ['待供应商确认', 'orange'], PENDING_CONFIRM_BUYER: ['待需方确认', 'orange'], CONFIRMED: ['已确认', 'blue'], COMPLETED: ['已完成', 'green'] },
@@ -143,6 +144,43 @@
   function selectField(options, value, props) {
     return h('select', Object.assign({}, props, { value: value == null ? '' : value }),
       ...options.map(([v, t]) => h('option', { value: v, selected: String(v) === String(value) }, t)));
+  }
+
+  /* 自定义下拉：内嵌浏览器中原生 select 弹层不渲染（点不出选项），改为页面内渲染的下拉面板。
+     options: [[value, text], ...]；props: { onchange(value) } */
+  function dropdown(options, value, props) {
+    const wrap = h('div', { class: 'dd' });
+    const cur = options.find((o) => String(o[0]) === String(value == null ? '' : value));
+    const btn = h('button', { class: 'dd-btn', type: 'button' },
+      h('span', { class: 'dd-text' }, cur ? cur[1] : (options[0] ? options[0][1] : '-')),
+      h('i', { class: 'dd-arrow' }));
+    const panel = h('div', { class: 'dd-panel' });
+    const onChange = props && props.onchange ? props.onchange : null;
+    function renderPanel() {
+      panel.innerHTML = '';
+      options.forEach(([v, t]) => {
+        const opt = h('div', { class: 'dd-opt' + (String(v) === String(value == null ? '' : value) ? ' active' : '') }, t);
+        opt.addEventListener('click', (e) => {
+          e.stopPropagation();
+          close();
+          value = v;
+          btn.querySelector('.dd-text').textContent = t;
+          panel.querySelectorAll('.dd-opt').forEach((el) => el.classList.remove('active'));
+          opt.classList.add('active');
+          if (onChange) onChange(v);
+        });
+        panel.appendChild(opt);
+      });
+    }
+    function open() { renderPanel(); wrap.classList.add('open'); document.addEventListener('click', close, true); }
+    function close() { wrap.classList.remove('open'); document.removeEventListener('click', close, true); }
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (wrap.classList.contains('open')) close(); else open();
+    });
+    wrap.appendChild(btn);
+    wrap.appendChild(panel);
+    return wrap;
   }
 
   /* 近30日基准价 SVG 折线（网格坐标轴 + 面积渐变 + 悬浮十字提示） */
@@ -203,7 +241,9 @@
     const iN = dayIdx[String(pts[pts.length - 1].priceDate).slice(0, 10)];
     /* 纵轴：价格图步长全站统一（元 → 10），格数随数据自适应；其他单位自适应取档 */
     const dom = _niceDomain(Math.min(...vals), Math.max(...vals), unit.charAt(0) === '元' ? 10 : null);
-    const lo = dom.lo, hi = dom.hi, step = dom.step;
+    /* 运量类数值（非价格单位）不可能为负：纵轴下限钳到 0，避免小运量时 nice 域出现负刻度 */
+    let lo = dom.lo, hi = dom.hi; const step = dom.step;
+    if (unit.charAt(0) !== '元') { if (lo < 0) lo = 0; if (hi <= lo) hi = lo + step; }
     const Y = (v) => MT + (hi - v) / (hi - lo) * (H - MT - MB);
     const fmtTick = (v) => Number.isInteger(v) ? String(v) : (Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(1));
     const fmtDay = (s) => { const m = String(s).match(/(\d{4})-(\d{2})-(\d{2})/); return m ? m[2] + '-' + m[3] : String(s); };
@@ -503,7 +543,7 @@
     });
     const fmtInt = (v) => v >= 10000 ? (v / 10000).toFixed(1) + '万' : v.toFixed(0);
     svg.appendChild(el('text', { x: cx, y: cy - 4, 'text-anchor': 'middle', 'font-size': '15', 'font-weight': '700', fill: '#1d1d1f' }, fmtInt(total)));
-    svg.appendChild(el('text', { x: cx, y: cy + 13, 'text-anchor': 'middle', 'font-size': '10', fill: '#86868b' }, centerLabel || '总量(吨)'));
+    svg.appendChild(el('text', { x: cx, y: cy + 13, 'text-anchor': 'middle', 'font-size': '10', fill: '#86868b' }, centerLabel || '总量(湿吨)'));
     wrap.appendChild(svg);
     wrap.appendChild(h('div', { class: 'donut-legend' },
       ...data.map((item, i) => h('div', { class: 'donut-legend-item' },
@@ -526,7 +566,7 @@
         h('span', { class: 'hbar-name' }, item[nk]),
         h('div', { class: 'hbar-track' },
           h('div', { class: 'hbar-fill', style: 'width:' + (parseFloat(item[vk]) / max * 100).toFixed(1) + '%;background:' + CHART_COLORS[i % CHART_COLORS.length] })),
-        h('span', { class: 'hbar-val' }, fmtInt(parseFloat(item[vk])) + (unitLabel || '吨'))));
+        h('span', { class: 'hbar-val' }, fmtInt(parseFloat(item[vk])) + (unitLabel || '湿吨'))));
     });
     return wrap;
   }
@@ -539,9 +579,13 @@
   }
 
   function statusFilter(kind, onChange) {
+    /* 按显示文案去重（同文案多状态如 DEMAND 待提交 → 合并为一个筛选选项，取 m[2] 联合查询码） */
+    const seen = {};
     const opts = [['', '全部状态']].concat(
-      Object.entries(STATUS[kind] || {}).map(([code, m]) => [code, m[0]]));
-    return selectField(opts, '', { onchange: (e) => onChange(e.target.value) });
+      Object.entries(STATUS[kind] || {})
+        .filter(([code, m]) => (seen[m[0]] ? false : (seen[m[0]] = true)))
+        .map(([code, m]) => [m[2] || code, m[0]]));
+    return dropdown(opts, '', { onchange: (v) => onChange(v) });
   }
 
   function timeline(nodes) {
@@ -562,9 +606,28 @@
   function fmtMoney(v) { return v == null || v === '' ? '-' : Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   const fmtQty = fmtMoney; /* 吨数同样保留两位小数 */
 
+  /* 行首勾选框列：picked 为选中键 Set（默认键为行 id，无 id 时取整行 JSON）；
+     仅作行选择展示，click 阻止冒泡（避免触发行点击，如运输调度选单） */
+  function selCol(picked, keyFn) {
+    const key = keyFn || ((r) => (r && r.id != null ? r.id : JSON.stringify(r)));
+    return {
+      label: '', cls: 'sel-col',
+      render: (r) => {
+        const el = h('input', { type: 'checkbox', title: '勾选该行' });
+        el.checked = picked.has(key(r));
+        el.addEventListener('click', (e) => e.stopPropagation());
+        el.addEventListener('change', () => {
+          const k = key(r);
+          if (el.checked) picked.add(k); else picked.delete(k);
+        });
+        return el;
+      },
+    };
+  }
+
   window.UI = {
-    h, toast, modal, confirmBox, table, pager, statusTag, kv, formRow, selectField,
+    h, toast, modal, confirmBox, table, pager, statusTag, kv, formRow, selectField, dropdown,
     trendChart, multiTrendChart, donutChart, hbarChart, input, statusFilter, timeline, STATUS,
-    fmtDate, fmtDateTime, fmtMoney, fmtQty,
+    fmtDate, fmtDateTime, fmtMoney, fmtQty, selCol,
   };
 })();

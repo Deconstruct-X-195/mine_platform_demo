@@ -18,7 +18,7 @@
     const code = c.creditCode || c.credit_code || '-';
     const audit = c.auditStatus || c.audit_status;
     /* 英文词段转中文：企业角色（支持多角色逗号分隔）与账号状态 */
-    const ROLE_CN = { STEEL: '钢厂', SUPPLIER: '供应商', CARRIER: '承运商', PLAT_ADMIN: '平台管理员', PLATFORM: '平台管理员' };
+    const ROLE_CN = { STEEL: '钢铁企业', SUPPLIER: '供应商', CARRIER: '承运商', PLAT_ADMIN: '平台管理员', PLATFORM: '平台管理员' };
     /* 资质类型中文名 */
     const QUAL_CN = { BUSINESS_LICENSE: '营业执照', OTHER: '其他资质' };
     const roleText = String(c.companyTypes || c.company_types || '').split(',')
@@ -199,7 +199,7 @@
     const isSupplier = roles.indexOf('SUPPLIER') >= 0;
     const map = {
       COMPANY: isPlat ? '#/admin-companies' : '#/profile',
-      DEMAND: isPlat ? '#/demand-pool' : (isSupplier ? '#/inquiry' : '#/demand'),
+      DEMAND: isPlat ? '#/demand-list' : (isSupplier ? '#/inquiry' : '#/demand'),
       INQUIRY: '#/inquiry',
       /* 合同面板已下线，合同类消息均跳转至订单相关页面 */
       CONTRACT: isPlat ? '#/logistics-dispatch' : '#/order',

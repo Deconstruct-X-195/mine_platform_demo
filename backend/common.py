@@ -55,12 +55,18 @@ def json_payload(row):
 
 
 def get_params():
-    """查询参数（GET）或 JSON 体（POST/PUT）统一读取。"""
-    if request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
+    """查询参数（GET）或 JSON 体（POST/PUT）统一读取。DELETE 无 JSON 体时回退读取查询参数。"""
+    if request.method in ('POST', 'PUT', 'PATCH'):
         body = request.get_json(silent=True)
         if isinstance(body, dict):
             return body
         return {}
+    # DELETE 常以查询参数携带字段（如删除理由 ?reason=xxx），无体时回退 args
+    body = request.get_json(silent=True)
+    if isinstance(body, dict):
+        args = request.args.to_dict()
+        args.update(body)
+        return args
     return request.args.to_dict()
 
 
@@ -127,19 +133,32 @@ def _dump(v):
 
 
 def send_msg(conn, receiver_company_id, title, content, biz_type=None, biz_id=None,
-             msg_category='NOTICE'):
+             msg_category='NOTICE', need_action=False):
     """站内消息（一期简化项：只写消息表 + 页面提示）。
 
     msg_category: NOTICE 通知 / WARN 预警 / ANNOUNCE 公告 / ACTIVITY 活动信息。
+    need_action: True=需要接收端后续操作（消息提醒板块归类为「任务」）；False=纯通知（「消息」）。
+    sender_company_id: 发布企业（自动取当前请求上下文的企业；空=运营端/平台发布）。
     """
     from .db import execute
+    sender = None
+    try:
+        from flask import has_request_context, g
+        if has_request_context():
+            ctx = getattr(g, 'ctx', None)
+            if ctx is not None and getattr(ctx, 'company', None):
+                sender = ctx.company['id']
+    except Exception:
+        sender = None
     execute(
         conn,
         """
-        INSERT INTO sys_message (receiver_company_id, title, content, biz_type, biz_id, msg_category)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO sys_message (receiver_company_id, title, content, biz_type, biz_id, msg_category,
+                                 need_action, sender_company_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """,
-        (receiver_company_id, title, content, biz_type, biz_id, msg_category),
+        (receiver_company_id, title, content, biz_type, biz_id, msg_category,
+         bool(need_action), sender),
     )
 
 

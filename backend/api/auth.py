@@ -48,9 +48,10 @@ def register_license():
 @bp.post('/auth/register')
 def register():
     p = get_params()
-    require_fields(p, 'companyName', 'creditCode', 'companyTypes', 'province',
+    # 注册页不再采集 省份/城市/开户银行/银行账号；地址改为必填（前端校验），province 降为可选
+    require_fields(p, 'companyName', 'creditCode', 'companyTypes',
                    'contactName', 'contactPhone', 'username', 'password',
-                   'licenseFileId')
+                   'legalPerson', 'licenseFileId')
     validate_credit_code(p['creditCode'])
     validate_phone(p['username'])
     validate_password(p['password'])
@@ -86,7 +87,7 @@ def register():
                                  contact_email, business_scope, bank_name, bank_account,
                                  audit_status, created_by, updated_by)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',0,0) RETURNING id
-        """, (p['companyName'].strip(), p['creditCode'], ','.join(types), p['province'],
+        """, (p['companyName'].strip(), p['creditCode'], ','.join(types), p.get('province'),
               p.get('city'), p.get('address'), p.get('legalPerson'), p['contactName'].strip(),
               p['contactPhone'], p.get('contactEmail'), p.get('businessScope'),
               p.get('bankName'), p.get('bankAccount')), returning_id=True)

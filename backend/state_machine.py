@@ -9,8 +9,11 @@ from .db import execute, q1
 TRANSITIONS = {
     'biz_demand': {
         'DRAFT': ['SUBMITTED', 'WITHDRAWN'],
-        'SUBMITTED': ['WITHDRAWN', 'INQUIRING', 'CLOSED'],
-        'WITHDRAWN': ['SUBMITTED'],  # 撤回重提生成新版本
+        'SUBMITTED': ['WITHDRAWN', 'TO_INQUIRY', 'INQUIRING', 'CLOSED', 'PENDING_DELETE'],
+        'TO_INQUIRY': ['INQUIRING', 'SUBMITTED', 'CLOSED', 'PENDING_DELETE'],  # 待询价：已归集未推送询价（可更改/删除/取消归集回退）
+        'WITHDRAWN': ['SUBMITTED', 'PENDING_DELETE'],  # 撤回重提生成新版本；待提交内容可转删除申请
+        'PENDING_DELETE': ['WITHDRAWN', 'DELETE_AUDIT'],  # 删除申请提交后转删除待审核（运营端审核）；也可转回更改（待提交）
+        'DELETE_AUDIT': ['CLOSED', 'SUBMITTED', 'TO_INQUIRY', 'WITHDRAWN'],  # 删除申请审核：通过→关闭，驳回→回退删除前状态
         'INQUIRING': ['DEALT', 'CLOSED', 'SUBMITTED'],  # SUBMITTED: 归集订单关闭后扣量释放回退
         'DEALT': ['CLOSED', 'SUBMITTED'],  # SUBMITTED: 订单超时失效后成交回填回退
     },
@@ -20,11 +23,13 @@ TRANSITIONS = {
         'AWARDED': ['CLOSED', 'INQUIRING'],  # INQUIRING: 订单 48h 超时失效后重开（可重新询价）
     },
     'biz_demand_change': {
+        'DRAFT': ['PENDING'],              # DRAFT: 钢厂保存暂存，点提交后转待审核
         'PENDING': ['APPROVED', 'REJECTED'],
     },
     'biz_inquiry': {
         'DRAFT': ['SENT'],
-        'SENT': ['QUOTING', 'CLOSED', 'FAILED'],
+        'SENT': ['QUOTING', 'CLOSED', 'FAILED', 'AGGREGATED'],
+        'AGGREGATED': ['AWARDED', 'FAILED', 'SENT'],  # 已归集：纳入运营端总询价单（成单/退回/失效）
         'QUOTING': ['CLOSED', 'FAILED'],
         'CLOSED': ['BARGAINING', 'AWARDED', 'FAILED', 'FEEDBACK'],  # FEEDBACK：钢厂不认可比价结果，待运营处理
         'FEEDBACK': ['CLOSED'],  # 运营重新发起询价后标记旧单已处理
@@ -86,6 +91,8 @@ NODE_TITLES = {
         'AWARDED': '定标完成',
         'ORDER_CREATED': '订单生成',
         'ORDER_CONFIRMED': '供应商确认订单',
+        'SUPPLY_CONFIRMED': '供方确认验收',
+        'DEMAND_CONFIRMED': '需方确认验收',
         'ORDER_EXPIRED': '订单超时失效',
         'ORDER_CANCELLED': '订单已取消',
         'CONTRACT_GENERATED': '合同生成',

@@ -2,6 +2,8 @@
 
 规则：节点只增不改，纠偏用新增"纠正记录"标注原节点；source 区分 SYSTEM/CARRIER/MANUAL。
 """
+import json
+
 from flask import g, request
 
 from ..common import (ApiError, get_params, json_payload, ok, op_log,
@@ -47,27 +49,56 @@ def timeline(oid):
 @bp.get('/orders/<int:oid>/tracking')
 @auth_required
 def tracking(oid):
-    """物流节点跟踪（物流服务页）：按分段运单返回四节点时间。
+    """物流节点跟踪（物流服务页）：推送门控——读发布快照，运营端「推送」后可见。
 
-    节点：船到港（计划 eta_at / 实际 actual_eta_at）→ 货物出港（actual_depart_at）
-    → 到达中转站（actual_transit_at，仅公铁联运展示）→ 到达目的地（actual_arrive_at）。
+    钢厂读 MILL 快照（推送至钢厂后可见轨迹；货物信息随成员单独推送更新）；
+    供应商读 SUPPLIER 快照（推送供应商后可见轨迹与货物汇总）。
     """
-    _order_view(oid)
-    wbs = qall(g.conn, """
-        SELECT w.id, w.waybill_no AS "waybillNo", w.segment_no AS "segmentNo",
-               w.transport_mode AS "transportMode", w.transit_station AS "transitStation",
-               w.depart_place AS "departPlace", w.arrive_place AS "arrivePlace",
-               w.plan_qty AS "planQty", w.freight, w.vehicle_no AS "vehicleNo",
-               w.plan_depart_date AS "planDepartDate", w.plan_arrive_date AS "planArriveDate",
-               w.eta_at AS "etaPlan", w.actual_eta_at AS "etaActual",
-               w.actual_depart_at AS "departAt", w.actual_transit_at AS "transitAt",
-               w.actual_arrive_at AS "arriveAt", w.status, w.created_at AS "createdAt",
-               cr.company_name AS "carrierName"
-        FROM biz_waybill w
-        LEFT JOIN ent_company cr ON cr.id=w.carrier_id
-        WHERE w.order_id=%s AND w.is_deleted=0 ORDER BY w.segment_no, w.id
-        """, (oid,))
-    return ok({'list': json_payload(wbs)})
+    row = _order_view(oid)
+    is_supplier = bool(g.ctx.company and g.ctx.company['id'] == row['supplier_id'])
+    target = 'SUPPLIER' if is_supplier else 'MILL'
+    pub = q1(g.conn, "SELECT trace_json, cargo_json, plan_json FROM biz_logistics_publish WHERE order_id=%s AND target=%s",
+             (oid, target))
+    items = []
+    if pub and pub.get('trace_json'):
+        try:
+            items = json.loads(pub['trace_json'])
+        except Exception:
+            items = []
+    if not isinstance(items, list):
+        items = []
+    cargo = None
+    if is_supplier:
+        # 供应商货物信息优先取运营端录入值（随录随更新）；未录入时回退快照货物汇总
+        pl = q1(g.conn, """
+            SELECT supp_total_qty, supp_shipped_qty, supp_transit_qty,
+                   supp_arrived_qty, supp_pickup_qty, supp_cargo_at
+            FROM biz_logistics_plan WHERE order_id=%s AND is_deleted=0
+            """, (oid,))
+        if pl and pl.get('supp_cargo_at'):
+            cargo = {'totalQty': pl['supp_total_qty'], 'shippedQty': pl['supp_shipped_qty'],
+                     'transitQty': pl['supp_transit_qty'], 'arrivedQty': pl['supp_arrived_qty'],
+                     'pickupQty': pl['supp_pickup_qty'], 'cargoUpdatedAt': pl['supp_cargo_at']}
+        elif pub and pub.get('cargo_json'):
+            try:
+                cargo_map = json.loads(pub['cargo_json'])
+            except Exception:
+                cargo_map = {}
+            cargo = cargo_map.get('aggregate') if isinstance(cargo_map, dict) else None
+    elif pub and pub.get('cargo_json'):
+        try:
+            cargo_map = json.loads(pub['cargo_json'])
+        except Exception:
+            cargo_map = {}
+        if isinstance(cargo_map, dict) and g.ctx.company:
+            cargo = cargo_map.get(str(g.ctx.company['id']))
+    plan = None
+    if pub and pub.get('plan_json'):
+        try:
+            plan = json.loads(pub['plan_json'])
+        except Exception:
+            plan = None
+    return ok({'list': items, 'cargo': cargo, 'plan': plan, 'published': bool(items)})
 
 
 @bp.post('/orders/<int:oid>/nodes')
@@ -78,6 +109,8 @@ def manual_node(oid):
     p = get_params()
     require_fields(p, 'nodeCode')
     occur = parse_datetime(p, 'occurTime', required=False)
+    from datetime import datetime
+    occur = occur or datetime.now()  # 缺省取当前时间（occur_time 非空约束）
     correct_id = p.get('correctionNodeId')
     remark = p.get('remark') or ''
     if correct_id:
@@ -106,8 +139,16 @@ def sign_waybill(wid):
     if not row:
         raise ApiError(40401, '运单不存在')
     order = q1(g.conn, "SELECT * FROM biz_order WHERE id=%s AND is_deleted=0", (row['order_id'],))
-    if not g.ctx.is_plat and (not g.ctx.company or order['buyer_id'] != g.ctx.company['id']):
-        raise ApiError(40301, '只有需方钢厂可签收')
+    if not g.ctx.is_plat:
+        # 需方钢厂可签收：传统订单按 buyer_id；集采聚合订单（buyer_id 为空）按参与钢厂成员判断
+        cid = g.ctx.company['id'] if g.ctx.company else None
+        allowed = order['buyer_id'] is not None and cid == order['buyer_id']
+        if not allowed and cid and order['buyer_id'] is None:
+            allowed = q1(g.conn, """
+                SELECT id FROM biz_order_member WHERE order_id=%s AND company_id=%s AND is_deleted=0
+                """, (order['id'], cid)) is not None
+        if not allowed:
+            raise ApiError(40301, '只有需方钢厂可签收')
     p = get_params()
     occur = parse_datetime(p, 'occurTime', required=False)
     from ..db import execute

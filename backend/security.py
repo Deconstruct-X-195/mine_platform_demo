@@ -92,10 +92,10 @@ class Ctx:
 
 
 MENUS = {
-    ROLE_STEEL: ['overview', 'demand', 'price', 'inquiry', 'bargain', 'order',
+    ROLE_STEEL: ['overview', 'demand', 'price', 'inquiry', 'order',
                  'logistics', 'track', 'profile'],
-    ROLE_SUPPLIER: ['overview', 'inquiry', 'order', 'logistics',
-                    'track', 'profile'],
+    ROLE_SUPPLIER: ['overview', 'inquiry', 'demand_group_sup', 'order',
+                    'logistics', 'track', 'profile'],
     'PLAT_ADMIN': ['dashboard', 'admin_companies', 'demand_pool', 'quote_inquiry', 'quote_history',
                    'order_admin', 'logistics_dispatch', 'base_data',
                    'alerts', 'dict', 'logs'],

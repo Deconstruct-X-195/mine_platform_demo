@@ -58,7 +58,7 @@
     const rows = d.orders || [];
     const headRow = UI.h('div', { class: 'ov-row ov-head' },
       UI.h('span', {}, '订单号'), UI.h('span', {}, '品种'),
-      UI.h('span', { class: 'num' }, '数量(吨)'), UI.h('span', { class: 'num' }, '金额(元)'),
+      UI.h('span', { class: 'num' }, '数量(湿吨)'), UI.h('span', { class: 'num' }, '金额(元)'),
       UI.h('span', { class: 'num' }, '交货日'), UI.h('span', {}, '状态'));
     const listBox = UI.h('div', { class: 'scroll-box' });
     page.appendChild(UI.h('div', { class: 'card' },
@@ -84,7 +84,6 @@
   };
 
   /* 供应商端总览：KPI 五卡 + 待办事项列表 + 近期动态 */
-  const SUP_MSG_CAT = { NOTICE: '通知', WARN: '预警', ANNOUNCE: '公告', ACTIVITY: '活动' };
   const SUP_TODO_TAG = { QUOTE: ['待报价', ' orange'], CONFIRM: ['待确认', ' red'] };
   const SUP_TODO_HASH = { QUOTE: '#/inquiry', CONFIRM: '#/order' };
 
@@ -121,12 +120,14 @@
             onclick: () => { location.hash = SUP_TODO_HASH[t.kind] || '#/'; } }, '去处理') },
       ], todos) : UI.h('div', { class: 'empty' }, '暂无待办事项，一切进展顺利')));
 
-    /* 3. 近期动态（本企业最近 10 条站内消息） */
+    /* 3. 近期动态（运营端发布的信息，最近 10 条；需要本端后续操作的归类为「任务」） */
     const recent = d.recent || [];
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('h3', { class: 'bar-title' }, '近期动态'),
       recent.length ? UI.table([
-        { label: '分类', render: (r) => UI.h('span', { class: 'tag' }, SUP_MSG_CAT[r.category] || '通知') },
+        { label: '分类', render: (r) => r.needAction
+          ? UI.h('span', { class: 'tag red' }, '任务')
+          : UI.h('span', { class: 'tag' }, '消息') },
         { label: '动态', render: (r) => UI.h('span', {}, r.title,
             UI.h('div', { class: 'hint' }, r.content)) },
         { label: '时间', render: (r) => UI.fmtDateTime(r.created_at) },

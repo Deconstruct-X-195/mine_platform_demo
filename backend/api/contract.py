@@ -42,7 +42,8 @@ def generate(oid):
                node_biz_type='ORDER', node_code='CONTRACT_GENERATED', node_biz_id=row['id'])
     transition(g.conn, g.ctx, 'biz_order', '订单', 'biz_order', oid, 'PENDING_EFFECT')
     send_msg(g.conn, row['buyer_id'], '合同待上传签署件（需方）',
-             '订单 %s 合同 v%d 已生成，请线下签署后上传本方签署件。' % (row['order_no'], version), 'CONTRACT', cid)
+             '订单 %s 合同 v%d 已生成，请线下签署后上传本方签署件。' % (row['order_no'], version), 'CONTRACT', cid,
+             need_action=True)
     op_log(g.conn, g.ctx, 'biz_contract', cid, 'GENERATE', None, {'version': version})
     return ok({'contractId': cid, 'version': version, 'status': 'PENDING_BUYER'})
 
@@ -122,7 +123,8 @@ def sign(cid):
         target = order['supplier_id'] if is_buyer else order['buyer_id']
         send_msg(g.conn, target, '合同待上传签署件',
                  '订单 %s 合同 %s 对方已上传签署件，请线下签署后上传本方签署件。'
-                 % (order['order_no'], row['contract_no']), 'CONTRACT', cid)
+                 % (order['order_no'], row['contract_no']), 'CONTRACT', cid,
+                 need_action=True)
         plat_status = None
     op_log(g.conn, g.ctx, 'biz_contract', cid, 'UPLOAD_SIGNED(%s)' % role_label,
            None, {'signerName': p['signerName'], 'fileSha256': sha})

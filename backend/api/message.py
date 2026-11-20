@@ -107,7 +107,7 @@ def list_todos():
             return {'CONTRACT': '#/contract-admin', 'COMPANY': '#/admin-companies',
                     'WAYBILL': '#/logistics-dispatch', 'ORDER': '#/logistics-dispatch',
                     'SETTLEMENT': '#/settlement-stats', 'INQUIRY': '#/quote-inquiry',
-                    'DEMAND': '#/demand-pool'}.get(biz_type, '')
+                    'DEMAND': '#/demand-list'}.get(biz_type, '')
         if 'LOGISTICS_CARRIER' in roles:
             return '#/waybill'
         if 'SUPPLIER' in roles:
@@ -184,7 +184,22 @@ def list_todos():
 
     # box=todo：按角色聚合待处理项
     if g.ctx.is_plat:
-        # 运营端：待核验合同 / 待审核企业准入 / 待指派运单
+        # 运营端：待归集需求 / 变更申请待审核 / 待核验合同 / 待审核企业准入 / 待指派运单
+        for r in qall(g.conn, """
+                SELECT id, demand_no AS t, created_at FROM biz_demand
+                WHERE status='SUBMITTED' AND is_deleted=0 ORDER BY id DESC LIMIT 20"""):
+            add('DEMAND', r['id'], '需求待归集：' + r['t'], r['created_at'], '#/demand-list')
+        for r in qall(g.conn, """
+                SELECT id, change_no AS t, created_at FROM biz_demand_change
+                WHERE status='PENDING' AND is_deleted=0 ORDER BY id DESC LIMIT 20"""):
+            add('DEMAND', r['id'], '变更申请待审核：' + r['t'], r['created_at'], '#/demand-changes')
+        for r in qall(g.conn, """
+                SELECT i.id, i.inquiry_no AS t, count(q.id) AS c, max(q.created_at) AS last_at
+                FROM biz_inquiry i JOIN biz_quote q
+                  ON q.inquiry_id=i.id AND q.is_deleted=0 AND q.status='SUBMITTED'
+                WHERE i.is_deleted=0 AND i.source='PLATFORM' AND i.status IN ('SENT','QUOTING')
+                GROUP BY i.id, i.inquiry_no ORDER BY max(q.created_at) DESC LIMIT 20"""):
+            add('QUOTE', r['id'], '收到新报价：%s（%d 条）' % (r['t'], r['c']), r['last_at'], '#/quote-inquiry')
         for r in qall(g.conn, """
                 SELECT id, contract_no AS t, created_at FROM biz_contract
                 WHERE plat_status='PENDING' AND is_deleted=0 ORDER BY id DESC LIMIT 20"""):

@@ -1,7 +1,7 @@
 """询价与报价（PRD 4.4/T08-T10）：询价创建/邀请/发出、密封报价、截止揭示与比价快照、流标。
 
 核心规则：
-- 报价截止 ≥ 当前+2h 且 ≤ 到货日期前 7 天；
+- 报价截止由平台自动设定：期望到货日前 7 天 18:00，下限为当前时间 +2 小时（界面不录入）；
 - 密封报价：截止前供应商只见自己的报价，任何一方都看不到他人价格；
 - 截止后揭示生成比价表快照（按价格升序固化），响应不足标记"响应不足"；
 - 可询量 = 明细数量 - 已询量累计，发单时扣减。
@@ -13,7 +13,7 @@ import json
 from flask import g, request
 
 from ..common import (ApiError, decimal_field, doc_no, get_params, json_payload,
-                      ok, op_log, page_args, page_data, parse_date, parse_datetime,
+                      ok, op_log, page_args, page_data, parse_date,
                       require_fields, send_msg)
 from ..db import execute, qall, q1
 from ..security import ROLE_STEEL, ROLE_SUPPLIER, auth_required, roles_required
@@ -23,11 +23,17 @@ from . import bp
 
 # ---------------- 询价 ----------------
 
+def _auto_deadline(arrive):
+    """自动计算报价截止：期望到货日前 7 天的 18:00，下限为当前时间 +2 小时（取较晚者）。"""
+    ddl = datetime.combine(arrive - timedelta(days=7), datetime.min.time()) + timedelta(hours=18)
+    return max(ddl, datetime.now() + timedelta(hours=2))
+
+
 @bp.post('/inquiries')
 @roles_required(ROLE_STEEL)
 def create_inquiry():
     p = get_params()
-    require_fields(p, 'demandId', 'demandItemId', 'quantity', 'arriveDate', 'deadline')
+    require_fields(p, 'demandId', 'demandItemId', 'quantity', 'arriveDate')
     item = q1(g.conn, """
         SELECT i.*, d.company_id, d.status AS demand_status, d.id AS demand_id2
         FROM biz_demand_item i JOIN biz_demand d ON d.id=i.demand_id
@@ -38,18 +44,15 @@ def create_inquiry():
     if item['demand_status'] not in ('SUBMITTED', 'INQUIRING'):
         raise ApiError(40901, '需求单状态为 %s，不可发起询价' % item['demand_status'])
     qty = p['quantity']
-    remain = item['quantity'] - item['inquired_qty']
+    # 剩余可询 = 明细数量 - 在途询价锁定量 - 已成交吨数（成交即占用，剩余自动随订单更新）
+    remain = item['quantity'] - item['inquired_qty'] - (item['deal_qty'] or 0)
     if qty <= 0:
         raise ApiError(40001, '询价数量必须大于0')
     if qty > remain:
         raise ApiError(40001, '询价数量 %.3f 超过剩余可询量 %.3f' % (qty, remain))
 
     arrive = parse_date(p, 'arriveDate')
-    deadline = parse_datetime(p, 'deadline')
-    if deadline < datetime.now() + timedelta(hours=2):
-        raise ApiError(40001, '报价截止时间必须至少为当前时间 +2 小时')
-    if deadline.date() > arrive - timedelta(days=7):
-        raise ApiError(40001, '报价截止时间不能晚于到货日期前 7 天')
+    deadline = _auto_deadline(arrive)
 
     invites = p.get('inviteSupplierIds') or []
     if invites:
@@ -79,6 +82,54 @@ def create_inquiry():
                 (iid, sid))
     op_log(g.conn, g.ctx, 'biz_inquiry', iid, 'CREATE', None, {'quantity': str(qty), 'invites': invites})
     return ok({'id': iid, 'status': 'DRAFT', 'remainQty': str(remain)})
+
+
+@bp.put('/inquiries/<int:iid>')
+@roles_required(ROLE_STEEL)
+def update_inquiry(iid):
+    """钢厂更改草稿询价单（仅 DRAFT 可改）：数量/到货/说明，报价截止由平台自动重算。
+
+    可询量在发单时才扣减，草稿阶段改数量只对照当前剩余可询量校验。
+    """
+    row = q1(g.conn, "SELECT * FROM biz_inquiry WHERE id=%s AND is_deleted=0", (iid,))
+    if not row or row['buyer_id'] != g.ctx.company['id']:
+        raise ApiError(40401, '询价单不存在')
+    assert_status(row, 'DRAFT', '询价单')
+    p = get_params()
+    require_fields(p, 'quantity', 'arriveDate')
+    item = q1(g.conn, "SELECT * FROM biz_demand_item WHERE id=%s AND is_deleted=0",
+              (row['demand_item_id'],))
+    if not item:
+        raise ApiError(40401, '关联需求明细不存在')
+    qty = p['quantity']
+    # 剩余可询 = 明细数量 - 在途询价锁定量 - 已成交吨数（成交即占用，剩余自动随订单更新）
+    remain = item['quantity'] - item['inquired_qty'] - (item['deal_qty'] or 0)
+    if qty <= 0:
+        raise ApiError(40001, '询价数量必须大于0')
+    if qty > remain:
+        raise ApiError(40001, '询价数量 %.3f 超过剩余可询量 %.3f' % (qty, remain))
+    arrive = parse_date(p, 'arriveDate')
+    deadline = _auto_deadline(arrive)
+    execute(g.conn, """
+        UPDATE biz_inquiry SET quantity=%s, expect_arrive_date=%s, deadline=%s, inquiry_desc=%s,
+               updated_by=%s, updated_at=now() WHERE id=%s
+        """, (qty, arrive, deadline, p.get('remark'), g.ctx.user['id'], iid))
+    op_log(g.conn, g.ctx, 'biz_inquiry', iid, 'UPDATE', None, {'quantity': str(qty)})
+    return ok({'id': iid, 'status': 'DRAFT'})
+
+
+@bp.delete('/inquiries/<int:iid>')
+@roles_required(ROLE_STEEL)
+def delete_inquiry(iid):
+    """钢厂删除草稿询价单（仅 DRAFT 可删，软删除；可询量发单时才扣减，删除无需归还）。"""
+    row = q1(g.conn, "SELECT * FROM biz_inquiry WHERE id=%s AND is_deleted=0", (iid,))
+    if not row or row['buyer_id'] != g.ctx.company['id']:
+        raise ApiError(40401, '询价单不存在')
+    assert_status(row, 'DRAFT', '询价单')
+    execute(g.conn, "UPDATE biz_inquiry SET is_deleted=1, updated_by=%s, updated_at=now() WHERE id=%s",
+            (g.ctx.user['id'], iid))
+    op_log(g.conn, g.ctx, 'biz_inquiry', iid, 'DELETE', None, None)
+    return ok({'id': iid, 'deleted': True})
 
 
 def create_and_send_platform_inquiry(conn, buyer_id, user_id, item, quantity,
@@ -113,11 +164,11 @@ def create_and_send_platform_inquiry(conn, buyer_id, user_id, item, quantity,
     drow = q1(conn, "SELECT id, status FROM biz_demand WHERE id=%s", (did,))
     if drow and drow['status'] == 'SUBMITTED':
         transition(conn, None, 'biz_demand', '需求单', 'biz_demand', did, 'INQUIRING')
-    ino = q1(conn, "SELECT inquiry_no, deadline FROM biz_inquiry WHERE id=%s", (iid,))
+    ino = q1(conn, "SELECT inquiry_no FROM biz_inquiry WHERE id=%s", (iid,))
     for sid in dict.fromkeys(supplier_ids):
         send_msg(conn, sid, '收到询价邀请',
-                 '询价单 %s 已发出（平台集中询价），请于 %s 前报价。' % (ino['inquiry_no'], ino['deadline']),
-                 'INQUIRY', iid)
+                 '询价单 %s 已发出（平台集中询价），请及时报价。' % ino['inquiry_no'],
+                 'INQUIRY', iid, need_action=True)
     return iid
 
 
@@ -147,7 +198,7 @@ def create_and_send_agg_inquiry(conn, agg, user_id, arrive, deadline,
                 (iid, sid))
     transition(conn, None, 'biz_inquiry', '询价单', 'biz_inquiry', iid, 'SENT')
     execute(conn, "UPDATE biz_inquiry SET sent_at=now(), updated_by=%s WHERE id=%s", (user_id, iid))
-    ino = q1(conn, "SELECT inquiry_no, deadline FROM biz_inquiry WHERE id=%s", (iid,))
+    ino = q1(conn, "SELECT inquiry_no FROM biz_inquiry WHERE id=%s", (iid,))
     mills = qall(conn, """
         SELECT DISTINCT company_id FROM biz_aggregated_order_item
         WHERE agg_id=%s AND is_deleted=0
@@ -158,8 +209,8 @@ def create_and_send_agg_inquiry(conn, agg, user_id, arrive, deadline,
                  % (agg['agg_no'], len(set(supplier_ids))), 'AGG_ORDER', agg['id'])
     for sid in dict.fromkeys(supplier_ids):
         send_msg(conn, sid, '收到询价邀请',
-                 '归集订单 %s 询价已发出（平台集采），请于 %s 前报价。' % (agg['agg_no'], ino['deadline']),
-                 'INQUIRY', iid)
+                 '归集订单 %s 询价已发出（平台集采），请及时报价。' % agg['agg_no'],
+                 'INQUIRY', iid, need_action=True)
     return iid
 
 
@@ -305,7 +356,7 @@ def inquiry_detail(iid):
     if not (g.ctx.is_plat or is_buyer or is_supplier):
         raise ApiError(40301, '无权限查看该询价单')
     data = json_payload(dict(row))
-    data['notice'] = '密封报价：报价截止前不展示任何报价价格'
+    data['notice'] = '密封报价：揭示前不展示任何报价价格'
     # 归集成员钢厂：返回本钢厂需求份额（前端按钢厂自己的询价信息展示）
     data['aggView'] = bool(row['agg_id'] and g.ctx.company
                            and _is_agg_member(g.conn, iid, g.ctx.company['id']))
@@ -315,12 +366,13 @@ def inquiry_detail(iid):
             JOIN biz_demand d ON d.id=m.demand_id
             WHERE m.agg_id=%s AND m.is_deleted=0 AND d.is_deleted=0 AND d.company_id=%s
             """, (row['agg_id'], g.ctx.company['id']))['s'])
-        # 报价供应商名单（仅公司名与报价状态，不含价格——密封期原则）
+        # 报价供应商名单（仅公司名与报价状态，不含价格——密封期原则）。
+        # 未揭示（SUBMITTED）报价不展示：运营端「汇总报价返回钢厂」后钢厂端才可见
         data['quoteSuppliers'] = qall(g.conn, """
             SELECT c.company_name AS "supplierName", q.status AS "quoteStatus",
                    to_char(q.created_at, 'YYYY-MM-DD HH24:MI') AS "quotedAt"
             FROM biz_quote q JOIN ent_company c ON c.id=q.supplier_id
-            WHERE q.inquiry_id=%s AND q.is_deleted=0 ORDER BY q.created_at
+            WHERE q.inquiry_id=%s AND q.is_deleted=0 AND q.status <> 'SUBMITTED' ORDER BY q.created_at
             """, (iid,))
     if g.ctx.is_plat or (is_buyer and not data['aggView']):
         invites = qall(g.conn, """
@@ -424,17 +476,41 @@ def _save_quote_files(conn, qid, p, company_id):
                 (qid, fid, f['file_name'], g.ctx.user['id']))
 
 
+def _spot_base_price(conn, variety_id, port):
+    """品种最新港口现货价：先取交付港口，无则回退黄骅港；均无则报错。
+
+    「港口现货价格±上下浮」报价模式的固定基准（港口现货价由平台统一维护）。
+    """
+    for name in ([port] if port else []) + ['黄骅港']:
+        row = q1(conn, """
+            SELECT price FROM base_port_price
+            WHERE variety_id=%s AND port_name=%s AND is_deleted=0
+            ORDER BY price_date DESC, id DESC LIMIT 1
+        """, (variety_id, name))
+        if row:
+            return row['price']
+    raise ApiError(40001, '该品种暂无港口现货价格，暂无法按此模式报价，请联系平台维护价格数据')
+
+
 def _quote_payload_check(conn, inq, p):
     require_fields(p, 'deliveryDate')
-    # 数值字段统一规范化：前端 <input> 的 value 为字符串，非法值返回 40001 而非 500
-    price = decimal_field(p, 'price', positive=False)
-    qty = decimal_field(p, 'quantity', positive=False)
+    # 密封报价「港口现货价格±上下浮」模式：传 priceSign(+/-) + priceFloat 时，
+    # 单价 = 品种最新港口现货价 ± 上下浮（上下浮 ≥0，由平台基准价换算，供应商不直接填绝对单价）
+    sign, flt = p.get('priceSign'), p.get('priceFloat')
+    if sign in ('+', '-') and flt not in (None, ''):
+        base = _spot_base_price(conn, inq['variety_id'], p.get('deliveryPlace'))
+        float_amt = decimal_field(p, 'priceFloat', positive=False)
+        if float_amt < 0:
+            raise ApiError(40001, '上下浮价格不能为负')
+        price = base + float_amt if sign == '+' else base - float_amt
+    else:
+        # 数值字段统一规范化：前端 <input> 的 value 为字符串，非法值返回 40001 而非 500
+        price = decimal_field(p, 'price', positive=False)
     if price <= 0:
         raise ApiError(40001, '报价单价必须大于0')
+    qty = decimal_field(p, 'quantity', positive=False)
     if qty <= 0:
         raise ApiError(40001, '可供数量必须大于0')
-    if qty < Decimal(str(inq['quantity'])) * Decimal('0.8') and not (p.get('remark') or '').strip():
-        raise ApiError(40001, '可供数量低于询价量 80% 时必须填写备注说明')
     delivery_date = parse_date(p, 'deliveryDate')
     if inq['expect_arrive_date'] and delivery_date > inq['expect_arrive_date']:
         raise ApiError(40001, '交货期承诺晚于期望到货日期')
@@ -442,16 +518,19 @@ def _quote_payload_check(conn, inq, p):
 
 
 def _quote_extra_fields(p):
-    """报价扩展字段：含税标志（必填）、运价（必填 ≥0）、交货方式（必填枚举）。"""
+    """报价扩展字段：含税标志（必填）、运价（必填 ≥0）、交货方式（可选，缺省港口自提）。
+
+    表单改由「到货港口」承载交付信息后，交货方式不再单独收集。
+    """
     tax = p.get('taxType') or ''
     if tax not in ('INC_TAX', 'EX_TAX'):
         raise ApiError(40001, '请选择含税/不含税')
     freight = decimal_field(p, 'freightPrice', positive=False, required=True)
     if freight < 0:
         raise ApiError(40001, '运价必须 ≥ 0')
-    dtype = p.get('deliveryType') or ''
+    dtype = p.get('deliveryType') or 'PORT_TRUCK'
     if dtype not in ('PORT_FOB', 'PORT_TRUCK', 'PLANT'):
-        raise ApiError(40001, '请选择交货方式（港口离岸/港口自提/厂内自提）')
+        raise ApiError(40001, '交货方式不合法（港口离岸/港口自提/场内自提）')
     return tax, freight, dtype
 
 
@@ -493,9 +572,9 @@ def submit_quote(iid):
             (iid, g.ctx.company['id']))
     # 报价附件：经通用 /files 上传的文件关联到本次报价
     _save_quote_files(g.conn, qid, p, g.ctx.company['id'])
-    # 报价单推送运营端：站内消息提醒平台（receiver_company_id 为空 = 平台消息）
+    # 收到新报价：任务中心待办（聚合提示）+ 站内消息提醒（铃铛内外均可见）
     send_msg(g.conn, None, '收到新报价',
-             '供应商「%s」已对询价单 %s 提交报价（可供 %s 吨、交期 %s），请前往「报价询价」查看汇总。'
+             '供应商「%s」已对询价单 %s 提交报价（可供 %s 湿吨、交期 %s），请前往「询价报价」查看汇总。'
              % (g.ctx.company['company_name'], row['inquiry_no'], qty, delivery_date),
              'INQUIRY', iid)
     op_log(g.conn, g.ctx, 'biz_quote', qid, 'CREATE', None,
@@ -545,7 +624,7 @@ def quote_detail(qid):
     inq = q1(g.conn, "SELECT buyer_id FROM biz_inquiry WHERE id=%s", (row['inquiry_id'],))
     allowed = (g.ctx.is_plat or (g.ctx.company and row['supplier_id'] == g.ctx.company['id']))
     if not allowed:
-        raise ApiError(40301, '密封报价截止前仅供应商本人可见')
+        raise ApiError(40301, '密封报价揭示前仅供应商本人可见')
     data = json_payload(dict(row))
     data['files'] = _quote_files(g.conn, qid)
     data['notice'] = '密封报价'
@@ -560,14 +639,22 @@ def reveal_inquiry(conn, iid, ctx):
     if not row:
         raise ApiError(40401, '询价单不存在')
     if row['status'] in ('CLOSED', 'BARGAINING', 'AWARDED', 'FAILED'):
-        snap = row['reveal_snapshot']
-        return json.loads(snap) if snap else None
+        snap = json.loads(row['reveal_snapshot']) if row['reveal_snapshot'] else None
+        # 旧快照无港口字段：从报价表回填（比价表「港口」列）
+        if snap and snap.get('rows') and any('deliveryPlace' not in r for r in snap['rows']):
+            qmap = {q['id']: q['delivery_place'] for q in qall(conn, """
+                SELECT id, delivery_place FROM biz_quote WHERE inquiry_id=%s AND is_deleted=0
+                """, (iid,))}
+            for r in snap['rows']:
+                r.setdefault('deliveryPlace', qmap.get(r.get('quoteId')))
+        return snap
     if row['status'] == 'DRAFT':
         raise ApiError(40901, '询价尚未发出，无报价可揭示')
 
     quotes = qall(conn, """
         SELECT q.id, q.supplier_id, q.price, q.quantity, q.delivery_date,
-               q.pay_terms, q.valid_until, q.status, q.tax_type, q.freight_price
+               q.pay_terms, q.valid_until, q.status, q.tax_type, q.freight_price,
+               q.delivery_place
         FROM biz_quote q WHERE q.inquiry_id=%s AND q.is_deleted=0 ORDER BY q.price, q.id
         """, (iid,))
     min_resp = row['min_response'] or 2
@@ -582,6 +669,7 @@ def reveal_inquiry(conn, iid, ctx):
              'quantity': str(qt['quantity']),
              'taxType': qt['tax_type'],
              'freightPrice': str(qt['freight_price']) if qt['freight_price'] is not None else None,
+             'deliveryPlace': qt['delivery_place'],
              'responseRate': str(round(qt['quantity'] / row['quantity'] * 100, 2)) + '%',
              'deliveryDate': qt['delivery_date'].strftime('%Y-%m-%d') if qt['delivery_date'] else None,
              'payTerms': qt['pay_terms'], 'validUntil': qt['valid_until'].strftime('%Y-%m-%d') if qt['valid_until'] else None}
@@ -614,11 +702,11 @@ def manual_reveal(iid):
     if row['agg_id']:
         for cid in _agg_member_company_ids(g.conn, row['agg_id']):
             send_msg(g.conn, cid, '报价已揭示',
-                     '归集订单询价 %s 报价截止，共 %d 家报价，请查看比价表。'
+                     '归集订单询价 %s 已截止，共 %d 家报价，请查看比价表。'
                      % (row['inquiry_no'], len(snapshot['rows'])), 'INQUIRY', iid)
     else:
         send_msg(g.conn, row['buyer_id'], '报价已揭示',
-                 '询价单 %s 报价截止，共 %d 家报价，请查看比价表。' % (row['inquiry_no'], len(snapshot['rows'])),
+                 '询价单 %s 已截止，共 %d 家报价，请查看比价表。' % (row['inquiry_no'], len(snapshot['rows'])),
                  'INQUIRY', iid)
     return ok(snapshot)
 
@@ -746,9 +834,9 @@ def fail_inquiry(iid):
     transition(g.conn, g.ctx, 'biz_inquiry', '询价单', 'biz_inquiry', iid, 'FAILED')
     execute(g.conn, "UPDATE biz_inquiry SET inquiry_desc=concat_ws(' | ', inquiry_desc, %s::VARCHAR), updated_by=%s WHERE id=%s",
             ('流标原因：' + p['reason'], g.ctx.user['id'], iid))
-    # 归还可询量
+    # 归还可询量（成交已释放的锁定量此处按 0 下限兜底）
     execute(g.conn, """
-        UPDATE biz_demand_item SET inquired_qty = inquired_qty - %s, updated_at=now() WHERE id=%s
+        UPDATE biz_demand_item SET inquired_qty = GREATEST(inquired_qty - %s, 0), updated_at=now() WHERE id=%s
         """, (row['quantity'], row['demand_item_id']))
     for inv in qall(g.conn, "SELECT supplier_id FROM biz_inquiry_invite WHERE inquiry_id=%s AND is_deleted=0", (iid,)):
         send_msg(g.conn, inv['supplier_id'], '询价已流标',
