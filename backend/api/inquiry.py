@@ -24,61 +24,10 @@ from . import bp
 # ---------------- 询价 ----------------
 
 @bp.post('/inquiries')
-@roles_required(ROLE_STEEL)
+@auth_required
 def create_inquiry():
-    p = get_params()
-    require_fields(p, 'demandId', 'demandItemId', 'quantity', 'arriveDate', 'deadline')
-    item = q1(g.conn, """
-        SELECT i.*, d.company_id, d.status AS demand_status, d.id AS demand_id2
-        FROM biz_demand_item i JOIN biz_demand d ON d.id=i.demand_id
-        WHERE i.id=%s AND i.demand_id=%s AND i.is_deleted=0 AND d.is_deleted=0
-        """, (p['demandItemId'], p['demandId']))
-    if not item or item['company_id'] != g.ctx.company['id']:
-        raise ApiError(40401, '需求明细不存在')
-    if item['demand_status'] not in ('SUBMITTED', 'INQUIRING'):
-        raise ApiError(40901, '需求单状态为 %s，不可发起询价' % item['demand_status'])
-    qty = p['quantity']
-    remain = item['quantity'] - item['inquired_qty']
-    if qty <= 0:
-        raise ApiError(40001, '询价数量必须大于0')
-    if qty > remain:
-        raise ApiError(40001, '询价数量 %.3f 超过剩余可询量 %.3f' % (qty, remain))
-
-    arrive = parse_date(p, 'arriveDate')
-    deadline = parse_datetime(p, 'deadline')
-    if deadline < datetime.now() + timedelta(hours=2):
-        raise ApiError(40001, '报价截止时间必须至少为当前时间 +2 小时')
-    if deadline.date() > arrive - timedelta(days=7):
-        raise ApiError(40001, '报价截止时间不能晚于到货日期前 7 天')
-
-    invites = p.get('inviteSupplierIds') or []
-    if invites:
-        _check_invites(invites)
-    else:
-        # 邀请供应商改为自动邀请：未指定时邀请全部已准入且启用的供应商
-        invites = [r['id'] for r in qall(g.conn, """
-            SELECT id FROM ent_company
-            WHERE position('SUPPLIER' in company_types) > 0
-              AND audit_status='APPROVED' AND status='ENABLED' AND is_deleted=0
-        """)]
-    min_response = p.get('minResponse') or 2
-    if not (1 <= int(min_response) <= 10):
-        raise ApiError(40001, '最少响应家数取值 1~10')
-
-    iid = execute(g.conn, """
-        INSERT INTO biz_inquiry (inquiry_no, demand_id, demand_item_id, buyer_id, variety_id, grade,
-            quantity, delivery_type, delivery_place, expect_arrive_date, settle_type,
-            deadline, min_response, inquiry_desc, status, created_by, updated_by)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'DRAFT',%s,%s) RETURNING id
-        """, (doc_no(g.conn, 'XJ'), p['demandId'], p['demandItemId'], g.ctx.company['id'],
-              item['variety_id'], item['grade'], qty, p.get('deliveryType'), p.get('deliveryPlace'),
-              arrive, p.get('settleType'), deadline, int(min_response), p.get('remark'),
-              g.ctx.user['id'], g.ctx.user['id']), returning_id=True)
-    for sid in dict.fromkeys(invites):  # 去重保序
-        execute(g.conn, "INSERT INTO biz_inquiry_invite (inquiry_id, supplier_id) VALUES (%s,%s)",
-                (iid, sid))
-    op_log(g.conn, g.ctx, 'biz_inquiry', iid, 'CREATE', None, {'quantity': str(qty), 'invites': invites})
-    return ok({'id': iid, 'status': 'DRAFT', 'remainQty': str(remain)})
+    """钢厂自发询价已下线（2026-11-21 对齐新设计）：询价统一由平台归集需求后代发。"""
+    raise ApiError(40301, '钢厂自发询价已下线：询价由平台归集后统一代发')
 
 
 def create_and_send_platform_inquiry(conn, buyer_id, user_id, item, quantity,
@@ -465,6 +414,8 @@ def submit_quote(iid):
         raise ApiError(40901, '询价单已停止报价（%s）' % row['status'])
     if datetime.now() >= row['deadline']:
         raise ApiError(40901, '报价已截止')
+    if row['source'] != 'PLATFORM':
+        raise ApiError(40301, '仅平台代发询价可报价')
     inv = q1(g.conn, "SELECT id FROM biz_inquiry_invite WHERE inquiry_id=%s AND supplier_id=%s AND is_deleted=0",
              (iid, g.ctx.company['id']))
     if not inv:
@@ -514,6 +465,8 @@ def update_quote(qid):
     if row['status'] != 'SUBMITTED':
         raise ApiError(40901, '报价已揭示/结束，不可修改')
     inq = q1(g.conn, "SELECT * FROM biz_inquiry WHERE id=%s AND is_deleted=0", (row['inquiry_id'],))
+    if inq['source'] != 'PLATFORM':
+        raise ApiError(40301, '仅平台代发询价的报价可修改')
     if datetime.now() >= inq['deadline']:
         raise ApiError(40901, '报价已截止，不可修改')
     p = get_params()

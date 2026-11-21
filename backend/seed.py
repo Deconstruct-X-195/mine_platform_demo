@@ -1,8 +1,11 @@
-"""演示数据种子（幂等）：平台管理员、演示企业与账号、品种档案与当日基准价。
+"""种子数据（幂等）：基础数据（品种档案/当日基准价/港口现货价）+ 演示数据（企业/账号/合同/消息）。
+
+生产部署：MINE_SEED_BASE=1 仅写入基础数据（不含任何账号与企业，管理员经 manage.py create-admin 创建）；
+本地开发/回归测试：MINE_SEED_DEMO=1 写入基础数据 + 演示数据全套。
 
 业务单据由实际操作产生；仅合同管理/运输调度预置少量演示单据（_ensure_demo_contracts，幂等）。
 
-账号约定：
+演示账号约定（仅 MINE_SEED_DEMO=1 时写入）：
   平台管理员  13800000000 / admin123456
   钢厂        13800000001 / demo123456
   供应商×3    13800000002-04 / demo123456
@@ -43,7 +46,7 @@ def _ensure_varieties(conn):
         """, (code, vname, grade, len(code)), returning_id=True)
         execute(conn, """
             INSERT INTO base_price (variety_id, price_date, price, price_basis, source_desc)
-            VALUES (%s, current_date, %s, 'WET', '运营手工维护（演示数据）')
+            VALUES (%s, current_date, %s, 'WET', '运营手工维护')
         """, (vid, price))
 
 
@@ -254,11 +257,37 @@ def _ensure_grade_608(conn):
     """, (v['id'],))
 
 
-def seed(conn):
-    """幂等：品种档案/港口价格/演示合同单据/演示消息按幂等补齐；已存在平台管理员则跳过账号/企业。"""
+def _ensure_pb_port_prices(conn):
+    """PB粉 港口+品位维度基准价分档（幂等）：当日已有分档行则跳过。
+    锚点：兰格钢铁网 2026-11-09 天津港 60.8% 657 元；61.5% 按品位价差 +10 推算 667。"""
+    pb = _pb_variety(conn)
+    if not pb:
+        return
+    if q1(conn, "SELECT id FROM base_price WHERE variety_id=%s AND price_date=current_date "
+                "AND port IS NOT NULL LIMIT 1", (pb['id'],)):
+        return
+    # 61.5%/60.8% 两档分档价
+    for grade, tj in (('61.50', 667.00), ('60.80', 657.00)):
+        for port, p in (('天津港', tj), ('黄骅港', round(tj - 2, 2))):
+            execute(conn, """
+                INSERT INTO base_price (variety_id, price_date, price, price_basis, port, grade, source_desc)
+                VALUES (%s, current_date, %s, 'WET', %s, %s, '兰格钢铁网公开报价锚点·锚点间线性内插')
+            """, (pb['id'], p, port, grade))
+
+
+def seed_base_data(conn):
+    """生产基础数据（幂等，不含任何账号与企业）：品种档案、当日基准价、港口现货价。
+
+    由 run.py 在 MINE_SEED_BASE=1 时调用；管理员账号经 manage.py create-admin 创建。"""
     _ensure_varieties(conn)
     _ensure_port_prices(conn)
     _ensure_grade_608(conn)
+    _ensure_pb_port_prices(conn)
+
+
+def seed(conn):
+    """幂等：基础数据/港口价格/演示合同单据/演示消息按幂等补齐；已存在平台管理员则跳过账号/企业。"""
+    seed_base_data(conn)
     _ensure_demo_contracts(conn)
     _ensure_demo_messages(conn)
     if q1(conn, "SELECT id FROM sys_user WHERE username=%s AND is_deleted=0", ('13800000000',)):
@@ -282,15 +311,5 @@ def seed(conn):
             RETURNING id
         """, (cid, phone, hash_password('demo123456'), real_name,
               {'STEEL': 'STEEL_BUYER', 'SUPPLIER': 'SUPPLIER', 'LOGISTICS': 'LOGISTICS_CARRIER'}[types]))
-    # 品种档案已由 _ensure_varieties 幂等补齐
-    # PB粉 港口+品位维度基准价分档：61.5%/60.8% 两档
-    # （锚点：兰格钢铁网 2026-11-09 天津港 60.8% 657 元；61.5% 按品位价差 +10 推算 667）
-    pb = _pb_variety(conn)
-    if pb:
-        for grade, tj in (('61.50', 667.00), ('60.80', 657.00)):
-            for port, p in (('天津港', tj), ('黄骅港', round(tj - 2, 2))):
-                execute(conn, """
-                    INSERT INTO base_price (variety_id, price_date, price, price_basis, port, grade, source_desc)
-                    VALUES (%s, current_date, %s, 'WET', %s, %s, '兰格钢铁网公开报价锚点·锚点间线性内插（演示）')
-                """, (pb['id'], p, port, grade))
     return True
+

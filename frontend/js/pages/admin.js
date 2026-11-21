@@ -545,11 +545,26 @@
       return UI.h('span', { class: 'inline-flex' }, ...btns);
     }
 
-    /* 运营端重置企业账号密码（演示约定：重置为 demo123456） */
-    async function resetPwd(r) {
-      if (!(await UI.confirmBox('重置企业「' + r.companyName + '」账号「' + (r.account || '') + '」的密码为 demo123456？'))) return;
-      await API.put('/admin/companies/' + r.id + '/reset-password');
-      UI.toast('密码已重置为 demo123456', 'ok');
+    /* 运营端重置企业账号密码：弹窗输入新口令（强度校验在后端） */
+    function resetPwd(r) {
+      const p1 = UI.h('input', { type: 'password', style: 'width:100%', autocomplete: 'new-password',
+        placeholder: '至少8位，须同时包含字母和数字' });
+      const p2 = UI.h('input', { type: 'password', style: 'width:100%', autocomplete: 'new-password',
+        placeholder: '再次输入新密码' });
+      const m = UI.modal('重置密码 · ' + r.companyName,
+        UI.h('form', { onsubmit: (e) => e.preventDefault() },
+          UI.h('p', { style: 'margin:0 0 12px;color:#6b7280' },
+            '将重置企业「' + r.companyName + '」账号「' + (r.account || '') + '」的登录密码，请设置新密码并线下告知该企业'),
+          UI.formRow('新密码', p1, true),
+          UI.formRow('确认新密码', p2, true)), [
+        UI.h('button', { class: 'primary', onclick: async () => {
+          if (!p1.value || p1.value !== p2.value) { UI.toast('两次输入的密码不一致', 'err'); return; }
+          try {
+            await API.put('/admin/companies/' + r.id + '/reset-password', { password: p1.value });
+            m.close(); UI.toast('密码已重置，请将新密码线下告知该企业账号', 'ok');
+          } catch (e) { /* toast 已提示 */ }
+        } }, '确 定'),
+      ]);
     }
 
     async function auditModal(r) {

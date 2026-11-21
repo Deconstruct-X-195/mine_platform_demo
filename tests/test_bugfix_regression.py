@@ -17,6 +17,13 @@
 - BUG-07 询价保存"静默失败"：校验拒绝须返回明确 message
   （回归断言 +2h / 前 7 天规则的 40001 message，供弹窗内持久展示）。
 
+部署前安全回归（部署前全面评估报告-20261121 P1/P1-1/P2-1）：
+- P1-1 登录限流真实 IP：限流键取 X-Real-IP（反代注入），不同来源互不影响锁定；
+  锁定窗口内正确密码亦被拒；无反代头直连回退 remote_addr。
+- P2-1 附件下载归属校验：非归属企业/无业务关联者下载被拒（40401 不泄露存在性）；
+  归属企业本人与平台管理员可下载；注册执照（无归属）仅平台管理员可下载；
+  合同扫描件经单据引用对订单参与方开放（seed 环境存在演示合同件时断言）。
+
 运行前置：Flask 运行于 127.0.0.1:8000（POSTGRES 可达，已应用
 docs/migrations/20261108_bug06_timezone_fix.sql 并重启服务）。
 运行：python tests/test_bugfix_regression.py
@@ -27,7 +34,9 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from e2e_helpers import ADMIN, PG_DSN, Client, check, discover_accounts, pg_one, summary
+import requests
+
+from e2e_helpers import ADMIN, BASE, PG_DSN, Client, check, discover_accounts, pg_one, summary
 
 PASS = 'demo123456'
 
@@ -116,20 +125,109 @@ def run():
     check('BUG-06 DB生成时间戳=本地时间(±10分钟)', diff < 600,
           'created_at=%s 本地=%s diff=%.1fs' % (row[0], now, diff))
 
-    # ---- BUG-06/07 询价时间校验 ----
+    # ---- BUG-06/07 询价时间校验（平台归集代发询价；钢厂自发询价已下线，直发返回 40301 为预期） ----
     print('\n[BUG-06/07] 询价时间校验')
     item_id = dv2['items'][0]['id']
-    inq = {'demandId': d['id'], 'demandItemId': item_id, 'quantity': 5000,
-           'arriveDate': (now + timedelta(days=10)).strftime('%Y-%m-%d'),
-           'deadline': (now + timedelta(hours=2, minutes=10)).strftime('%Y-%m-%d %H:%M:%S'),
-           'inviteSupplierIds': [sup.user['company']['id']], 'minResponse': 1}
-    q = steel.post('/inquiries', inq)
-    check('BUG-06 本地时间语义下 +2h10min 询价可创建', q.get('status') == 'DRAFT', q)
-    s, c, m = steel.try_code('POST', '/inquiries', dict(inq, deadline=(now + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')))
+    agg = plat.post('/admin/aggregated-orders', {'itemIds': [item_id]})
+    agg_id = agg['id']
+    base = {'aggOrderId': agg_id, 'arriveDate': (now + timedelta(days=10)).strftime('%Y-%m-%d'),
+            'deadline': (now + timedelta(hours=2, minutes=10)).strftime('%Y-%m-%d %H:%M:%S'),
+            'minResponse': 1, 'inviteSupplierIds': [sup.user['company']['id']]}
+    q = plat.post('/admin/quote-inquiries', base)
+    check('BUG-06 本地时间语义下 +2h10min 询价可创建', bool(q.get('inquiryId')), q)
+    s, c, m = plat.try_code('POST', '/admin/quote-inquiries',
+                            dict(base, deadline=(now + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')))
     check('BUG-07 截止+1h被拦且message明确(40001)', c == 40001 and '2 小时' in (m or ''), m)
-    s, c, m = steel.try_code('POST', '/inquiries',
-                             dict(inq, arriveDate=(now + timedelta(days=1)).strftime('%Y-%m-%d')))
+    s, c, m = plat.try_code('POST', '/admin/quote-inquiries',
+                            dict(base, arriveDate=(now + timedelta(days=1)).strftime('%Y-%m-%d')))
     check('BUG-07 截止晚于到货前7天被拦且message明确(40001)', c == 40001 and '7 天' in (m or ''), m)
+    s, c, m = steel.try_code('POST', '/inquiries', {'demandId': d['id'], 'demandItemId': item_id,
+                                                    'quantity': 5000, 'arriveDate': (now + timedelta(days=10)).strftime('%Y-%m-%d'),
+                                                    'deadline': (now + timedelta(hours=2, minutes=10)).strftime('%Y-%m-%d %H:%M:%S'),
+                                                    'inviteSupplierIds': [sup.user['company']['id']], 'minResponse': 1})
+    check('BUG-07 钢厂自发询价已下线(40301)', c == 40301 and '下线' in (m or ''), m)
+
+    # ---- P1-1 登录限流真实 IP（反代部署语义） ----
+    # 反代场景：全体客户端 remote_addr 均为 127.0.0.1，限流键必须取反代注入的 X-Real-IP。
+    # 使用不存在的账号名，避免影响真实账号的锁定状态。
+    print('\n[P1-1] 登录限流真实 IP 隔离')
+    ghost = 'locktest-nouser-' + tag
+
+    def _login_probe(ip, username, password):
+        headers = {'X-Real-IP': ip} if ip else {}
+        r = requests.post(BASE + '/auth/login', json={'username': username, 'password': password},
+                          headers=headers, timeout=10)
+        b = r.json() if 'json' in r.headers.get('Content-Type', '') else {}
+        return r.status_code, b.get('code'), b.get('message')
+
+    for i in range(5):
+        s, c, m = _login_probe('10.99.0.1', ghost, 'wrong-%d' % i)
+        check('P1-1 第%d次错误密码正常拒绝' % (i + 1),
+              s == 200 and c == 40001 and '密码' in (m or ''), 'http=%s code=%s msg=%s' % (s, c, m))
+    s, c, m = _login_probe('10.99.0.1', ghost, PASS)
+    check('P1-1 同IP第6次(含正确密码)被锁定', s == 200 and c == 40001 and '频繁' in (m or ''),
+          'http=%s code=%s msg=%s' % (s, c, m))
+    s, c, m = _login_probe('10.99.0.2', ghost, 'wrong-x')
+    check('P1-1 不同X-Real-IP不受影响', s == 200 and c == 40001 and '密码' in (m or ''),
+          'http=%s code=%s msg=%s' % (s, c, m))
+    s, c, m = _login_probe(None, ghost, 'wrong-x')
+    check('P1-1 无反代头直连回退remote_addr不受影响', s == 200 and c == 40001 and '密码' in (m or ''),
+          'http=%s code=%s msg=%s' % (s, c, m))
+
+    # ---- P2-1 附件下载归属校验 ----
+    print('\n[P2-1] 附件下载归属校验')
+
+    def _dl(client_or_token_session, fid):
+        r = client_or_token_session.get(BASE + '/files/%s' % fid, timeout=15)
+        return r
+
+    # 供应商上传私有附件 → 归属企业本人可下载
+    r = sup.s.post(BASE + '/files',
+                   files={'file': ('acl-test-%s.pdf' % tag, b'%PDF-1.4 acl-test', 'application/pdf')},
+                   timeout=15)
+    up = (r.json() or {}).get('data') or {}
+    fid = up.get('fileId')
+    check('P2-1 供应商上传文件成功', bool(fid), r.text[:200])
+    rd = _dl(sup.s, fid)
+    check('P2-1 归属企业本人可下载', rd.status_code == 200 and rd.content.startswith(b'%PDF'),
+          'http=%s ct=%s' % (rd.status_code, rd.headers.get('Content-Type')))
+    # 钢厂（无业务关联）直接下载他人附件 → 40401 不泄露存在性
+    rd2 = _dl(steel.s, fid)
+    try:
+        b2 = rd2.json()
+    except ValueError:
+        b2 = {}
+    check('P2-1 非归属企业下载被拒(40401)', b2.get('code') == 40401,
+          'http=%s body=%s' % (rd2.status_code, b2))
+    # 平台管理员可下载任意附件
+    rda = _dl(plat.s, fid)
+    check('P2-1 平台管理员可下载', rda.status_code == 200 and rda.content.startswith(b'%PDF'),
+          'http=%s' % rda.status_code)
+    # 注册执照（无归属 sys_file，company_id=NULL）：匿名上传后任何企业不可下载，仅平台管理员可
+    r = requests.post(BASE + '/auth/license',
+                      files={'file': ('license-%s.pdf' % tag, b'%PDF-1.4 lic', 'application/pdf')},
+                      timeout=15)
+    lic = (r.json() or {}).get('data') or {}
+    lid = lic.get('fileId')
+    check('P2-1 匿名执照上传成功', bool(lid), r.text[:200])
+    rd3 = _dl(steel.s, lid)
+    try:
+        b3 = rd3.json()
+    except ValueError:
+        b3 = {}
+    check('P2-1 无归属执照企业端不可下载(40401)', b3.get('code') == 40401,
+          'http=%s body=%s' % (rd3.status_code, b3))
+    rda2 = _dl(plat.s, lid)
+    check('P2-1 平台管理员可下载执照', rda2.status_code == 200 and rda2.content.startswith(b'%PDF'),
+          'http=%s' % rda2.status_code)
+    # 合同扫描件经 biz_contract 单据引用对订单参与方开放（仅 seed 环境存在演示合同件）
+    demo_f = pg_one("SELECT file_id FROM sys_file WHERE file_id='democontractscan0000000000000001'")
+    if demo_f:
+        rdc = _dl(steel.s, 'democontractscan0000000000000001')
+        check('P2-1 合同件对订单参与方开放', rdc.status_code == 200 and rdc.content.startswith(b'%PDF'),
+              'http=%s' % rdc.status_code)
+    else:
+        print('  SKIP 演示合同文件不存在（清理后基线），跳过合同引用开放断言')
 
     return summary()
 

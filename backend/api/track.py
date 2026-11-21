@@ -106,7 +106,13 @@ def sign_waybill(wid):
     if not row:
         raise ApiError(40401, '运单不存在')
     order = q1(g.conn, "SELECT * FROM biz_order WHERE id=%s AND is_deleted=0", (row['order_id'],))
-    if not g.ctx.is_plat and (not g.ctx.company or order['buyer_id'] != g.ctx.company['id']):
+    # 需方签收权限：订单买方，或归集订单（buyer_id 为空）的参与钢厂成员
+    signable = False
+    if not g.ctx.is_plat and g.ctx.company:
+        signable = order['buyer_id'] == g.ctx.company['id'] or q1(
+            g.conn, "SELECT 1 FROM biz_order_member WHERE order_id=%s AND company_id=%s "
+                    "AND is_deleted=0", (order['id'], g.ctx.company['id'])) is not None
+    if not signable:
         raise ApiError(40301, '只有需方钢厂可签收')
     p = get_params()
     occur = parse_datetime(p, 'occurTime', required=False)

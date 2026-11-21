@@ -213,9 +213,13 @@ def list_waybills():
         where += ' AND w.carrier_id=%s'
         args.append(g.ctx.company['id'] or -1)
     else:
-        where += """ AND w.order_id IN (SELECT id FROM biz_order
-                     WHERE buyer_id=%s OR supplier_id=%s)"""
-        args += [g.ctx.company['id'] or -1, g.ctx.company['id'] or -1]
+        # 归集订单（buyer_id 为空）的参与钢厂按成员明细放行
+        where += """ AND (w.order_id IN (SELECT id FROM biz_order
+                     WHERE buyer_id=%s OR supplier_id=%s)
+                     OR w.order_id IN (SELECT order_id FROM biz_order_member
+                     WHERE company_id=%s AND is_deleted=0))"""
+        args += [g.ctx.company['id'] or -1, g.ctx.company['id'] or -1,
+                 g.ctx.company['id'] or -1]
     if params.get('orderId'):
         where += ' AND w.order_id=%s'
         args.append(params['orderId'])
@@ -245,6 +249,9 @@ def waybill_detail(wid):
         raise ApiError(40401, '运单不存在')
     if not g.ctx.is_plat and g.ctx.company:
         order = q1(g.conn, "SELECT buyer_id, supplier_id FROM biz_order WHERE id=%s", (row['order_id'],))
-        if g.ctx.company['id'] not in (row['carrier_id'], order['buyer_id'], order['supplier_id']):
+        member = q1(g.conn, "SELECT 1 FROM biz_order_member WHERE order_id=%s AND company_id=%s "
+                            "AND is_deleted=0", (row['order_id'], g.ctx.company['id']))
+        if not member and g.ctx.company['id'] not in (
+                row['carrier_id'], order['buyer_id'], order['supplier_id']):
             raise ApiError(40301, '无权限查看该运单')
     return ok(json_payload(dict(row)))

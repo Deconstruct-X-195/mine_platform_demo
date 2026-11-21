@@ -171,6 +171,10 @@ def confirm_settlement(sid):
     s = _settlement_view(sid)
     is_buyer = g.ctx.company and g.ctx.company['id'] == s['buyerId']
     is_supplier = g.ctx.company and g.ctx.company['id'] == s['supplierId']
+    # 归集订单（buyer_id 为空）：任一参与钢厂成员行使需方确认权
+    if not is_buyer and g.ctx.company:
+        is_buyer = q1(g.conn, "SELECT 1 FROM biz_order_member WHERE order_id=%s AND company_id=%s "
+                              "AND is_deleted=0", (s['order_id'], g.ctx.company['id'])) is not None
     if not g.ctx.is_plat and not (is_buyer or is_supplier):
         raise ApiError(40301, '无权限确认该结算单')
     if s['status'] == 'PENDING_CONFIRM_SUPPLIER':
@@ -201,7 +205,13 @@ def confirm_settlement(sid):
 @roles_required(ROLE_STEEL)
 def register_payment(sid):
     s = _settlement_view(sid)
-    if not g.ctx.is_plat and (not g.ctx.company or g.ctx.company['id'] != s['buyerId']):
+    pay_ok = g.ctx.is_plat or (g.ctx.company and (
+        g.ctx.company['id'] == s['buyerId']
+        # 归集订单（buyer_id 为空）：任一参与钢厂成员行使付款权
+        or (not s['buyerId'] and q1(g.conn, "SELECT 1 FROM biz_order_member WHERE order_id=%s "
+                                           "AND company_id=%s AND is_deleted=0",
+                                    (s['order_id'], g.ctx.company['id'])) is not None)))
+    if not pay_ok:
         raise ApiError(40301, '仅需方可登记付款')
     if s['status'] not in ('CONFIRMED', 'COMPLETED'):
         raise ApiError(40901, '结算单当前状态为 %s，须双方确认后方可登记付款' % s['status'])
@@ -210,11 +220,13 @@ def register_payment(sid):
     amount = decimal_field(p, 'amount')
     pay_date = parse_date(p, 'payDate')
     payment_no = doc_no(g.conn, 'FK')  # TODO(PRD待确认): 付款单前缀未在 PRD 3.3 定义，最小实现 FK
+    # 付款人记录实际付款企业：普通订单为买方；归集订单（buyer_id 为空）为操作的成员钢厂
+    payer_id = g.ctx.company['id'] if g.ctx.company else s['buyerId']
     pid = execute(g.conn, """
         INSERT INTO biz_payment (payment_no, settlement_id, payer_id, amount, pay_date,
                                  pay_desc, file_url, created_by)
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
-    """, (payment_no, sid, s['buyerId'], amount, pay_date, p.get('payDesc'),
+    """, (payment_no, sid, payer_id, amount, pay_date, p.get('payDesc'),
           p.get('fileId'), g.ctx.user['id']), returning_id=True)
     if s['status'] == 'CONFIRMED':
         transition(g.conn, g.ctx, 'biz_settlement', '结算单', 'biz_settlement', sid, 'COMPLETED')
@@ -333,8 +345,10 @@ def list_settlements():
     if not g.ctx.is_plat:
         if not g.ctx.company:
             return ok(page_data([], 0, page, size))
-        where.append('(o.buyer_id=%s OR o.supplier_id=%s)')
-        args += [g.ctx.company['id'], g.ctx.company['id']]
+        # 归集订单（buyer_id 为空）的参与钢厂同样可见
+        where.append("""(o.buyer_id=%s OR o.supplier_id=%s
+            OR o.id IN (SELECT order_id FROM biz_order_member WHERE company_id=%s AND is_deleted=0))""")
+        args += [g.ctx.company['id'], g.ctx.company['id'], g.ctx.company['id']]
     if p.get('status'):
         where.append('s.status=%s')
         args.append(p['status'])

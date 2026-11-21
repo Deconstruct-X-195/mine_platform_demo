@@ -30,6 +30,13 @@ _login_locks = {}      # (ip, username) -> 锁定截止时间戳
 _login_mutex = threading.Lock()
 
 
+def _client_ip():
+    """登录限流客户端 IP（P1-1）：生产经 Nginx 反代部署（app 仅监听 127.0.0.1）时，
+    优先取反代注入的 X-Real-IP——否则全体客户端 remote_addr 均为 127.0.0.1，
+    任一来源 5 次失败即锁定全体用户 10 分钟。本地直连（无反代头）回退 remote_addr。"""
+    return request.headers.get('X-Real-IP') or request.remote_addr or '-'
+
+
 def _login_locked(key):
     with _login_mutex:
         now = time.monotonic()
@@ -147,7 +154,7 @@ def register():
 def login():
     p = get_params()
     require_fields(p, 'username', 'password')
-    key = (request.remote_addr or '-', p['username'])
+    key = (_client_ip(), p['username'])
     if _login_locked(key):
         raise ApiError(40001, '登录尝试过于频繁，请 10 分钟后再试')
     user = q1(g.conn, "SELECT * FROM sys_user WHERE username=%s AND is_deleted=0", (p['username'],))
