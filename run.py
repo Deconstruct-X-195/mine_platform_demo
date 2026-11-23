@@ -41,5 +41,8 @@ if __name__ == '__main__':
         print('[jobs] 独立任务进程：单轮执行完成')
     else:
         from waitress import serve  # C1（部署适配方案 §5）：生产级 WSGI 容器替换 werkzeug 开发服务器
-        print('[run] 服务启动：http://127.0.0.1:%s (waitress, threads=8)' % port)
-        serve(app, host='127.0.0.1', port=port, threads=8)
+        # D2-4（部署前全面评估报告）：线程数环境变量化，默认 8 不变；
+        # 内存受限服务器可设 MINE_WORKERS=4 降低常驻内存
+        workers = int(os.environ.get('MINE_WORKERS', '8'))
+        print('[run] 服务启动：http://127.0.0.1:%s (waitress, threads=%d)' % (port, workers))
+        serve(app, host='127.0.0.1', port=port, threads=workers)
