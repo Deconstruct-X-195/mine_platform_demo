@@ -114,6 +114,7 @@ def _seed_pb_base_prices(conn):
                 execute(conn, """
                     INSERT INTO base_price (variety_id, price_date, price, price_basis, port, grade, source_desc)
                     VALUES (%s, current_date, %s, 'WET', %s, %s, '兰格钢铁网公开报价锚点·锚点间线性内插（演示）')
+                    ON CONFLICT (variety_id, price_date, port, grade) DO NOTHING
                 """, (pb['id'], p, port, grade))
 
 
