@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """剩余可询量随成交自动更新 回归：
 口径 剩余可询 = 明细数量 - 在途询价锁定量(inquired_qty) - 已成交吨数(deal_qty)
   D1) 发出询价锁量 → 剩余减少；超量创建被拒；流标归还 → 剩余恢复
@@ -12,11 +12,9 @@ from datetime import datetime, timedelta
 import psycopg
 import requests
 
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
-from backend.db import DEFAULT_DSN  # noqa: E402
-
 API = 'http://127.0.0.1:8000/api/v1'
+# E2E 直连库必须与被测服务一致：默认本机演示库，多环境验证时用 MINE_PG_DSN 覆盖
+PG_DSN = os.environ.get('MINE_PG_DSN', 'postgresql://postgres:Langchain2026@127.0.0.1:5432/mine_platform')
 FAILS = []
 
 
@@ -114,15 +112,15 @@ def main():
     sup_user = login(sup, '13800000002', 'demo123456')['user']
     sup_cid = sup_user['company']['id']
     _, r = api(plat, 'POST', '/admin/quote-inquiries', json={
-        'aggOrderId': aid, 'arriveDate': start,
-        'deadline': deadline.replace('T', ' ') + ':00', 'inviteSupplierIds': [sup_cid]})
+        'aggOrderId': aid, 'arriveDate': start, 'inviteSupplierIds': [sup_cid]})
     check('D2 总询价单发出', r.get('code') == 0, r)
     iid2 = r['data']['inquiryId']
     _, r = api(sup, 'POST', '/inquiries/%d/quotes' % iid2, json={
         'price': '855', 'quantity': '12000', 'deliveryDate': (d0 + timedelta(days=10)).strftime('%Y-%m-%d'),
+        'varietyId': vid, 'origin': '澳大利亚', 'grade': '62',
         'taxType': 'INC_TAX', 'freightPrice': '30', 'deliveryType': 'PORT_TRUCK'})
     check('D2 供应商报价成功', r.get('code') == 0, r)
-    with psycopg.connect(DEFAULT_DSN) as conn:
+    with psycopg.connect(PG_DSN) as conn:
         conn.execute("UPDATE biz_inquiry SET deadline=now()-interval '2 hours' WHERE id=%s", (iid2,))
         conn.commit()
     _, r = api(steel, 'POST', '/inquiries/%d/reveal' % iid2)

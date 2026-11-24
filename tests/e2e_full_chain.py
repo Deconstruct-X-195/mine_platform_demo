@@ -77,7 +77,8 @@ def run():
     reg1 = {'companyName': 'E2E钢厂二' + tag, 'creditCode': credit1,
             'companyTypes': 'STEEL_BUYER', 'province': '河北省', 'city': '唐山市',
             'contactName': 'E2E 联系人一', 'contactPhone': '13900000001',
-            'username': u1, 'password': 'new123456', 'licenseFileId': lic}
+            'username': u1, 'password': 'new123456', 'legalPerson': 'E2E 法定代表人',
+            'licenseFileId': lic}
     r1 = anon.post('/auth/register', reg1)
     check('AC-01 注册成功待准入', r1['auditStatus'] == 'PENDING', r1)
     t1 = pg_one("SELECT company_types FROM ent_company WHERE id=%s", (r1['companyId'],))[0]
@@ -104,7 +105,8 @@ def run():
         regi = {'companyName': 'E2E补位供应商%s%s' % (i + 1, tag), 'creditCode': credit_i,
                 'companyTypes': 'SUPPLIER', 'province': '山东省', 'city': '青岛市',
                 'contactName': 'E2E 供应商联系人', 'contactPhone': '1390000%04d' % (i + 1),
-                'username': ui, 'password': 'new123456', 'licenseFileId': lic_i}
+                'username': ui, 'password': 'new123456', 'legalPerson': 'E2E 供应商法人%s' % (i + 1),
+                'licenseFileId': lic_i}
         ri = anon.post('/auth/register', regi)
         ti = pg_one("SELECT company_types FROM ent_company WHERE id=%s", (ri['companyId'],))[0]
         check('AC-01 补位供应商注册并归一(SUPPLIER)', ti == 'SUPPLIER', ti)
@@ -211,7 +213,7 @@ def run():
     bad2 = dict(base_body)
     bad2['demandName'] = '提交后改名尝试'
     s, c, m = steel.try_code('PUT', '/demands/%d' % dem_id, bad2)
-    check('AC-03 提交后关键字段锁定(40901)', c == 40901, m)
+    check('AC-03 提交后更改须填更改理由(40001)', c == 40001, m)
     w = steel.post('/demands/%d/withdraw' % dem_id)
     check('AC-03 撤回 WITHDRAWN', w['status'] == 'WITHDRAWN', w)
     r = steel.post('/demands/%d/submit' % dem_id)
@@ -232,9 +234,9 @@ def run():
     print('\n[AC-07] 需求归集与平台代发询价')
     deadline = (now + timedelta(hours=2, minutes=10)).strftime('%Y-%m-%d %H:%M:%S')
     arrive = (now + timedelta(days=9)).strftime('%Y-%m-%d')
-    # 钢厂自发询价已下线（对齐新设计）：询价统一由平台归集后代发
+    # 钢厂自发询价恢复为完整端点（对齐 2026-11-24 迭代）：缺 quantity/arriveDate 被参数校验拦截
     s, c, m = steel.try_code('POST', '/inquiries', {'demandId': dem_id, 'demandItemId': item_id})
-    check('AC-07 钢厂自发询价已下线(40301)', c == 40301, m)
+    check('AC-07 自发询价必填参数拦截(40001)', c == 40001, m)
     # 钢厂二创建同品种同品位需求并提交，供平台归集
     d2body = dict(base_body, demandName='E2E 归集需求-钢厂二' + tag,
                   items=[dict(base_body['items'][0], quantity=15000)])
@@ -250,13 +252,13 @@ def run():
     agg = plat.post('/admin/aggregated-orders', {'itemIds': item_ids})
     check('AC-07 归集订单生成 45000 吨',
           bool(agg.get('aggNo')) and float(agg['totalQty']) == 45000.0, agg)
-    bad = {'aggOrderId': agg['id'], 'arriveDate': arrive,
-           'deadline': now.strftime('%Y-%m-%d %H:%M:%S'), 'minResponse': 3,
-           'inviteSupplierIds': [sup1_cid, sup2_cid, sup3_cid]}
+    # 报价截止由平台自动设定（到货日前 7 天 18:00，下限当前 +2h），调用方不再传 deadline
+    bad = {'aggOrderId': agg['id'], 'arriveDate': arrive, 'minResponse': 3,
+           'inviteSupplierIds': []}
     s, c, m = plat.try_code('POST', '/admin/quote-inquiries', bad)
-    check('AC-07 截止须至少当前+2h(40001)', c == 40001, m)
+    check('AC-07 至少邀请一家供应商(40001)', c == 40001, m)
     qi = plat.post('/admin/quote-inquiries',
-                   {'aggOrderId': agg['id'], 'arriveDate': arrive, 'deadline': deadline,
+                   {'aggOrderId': agg['id'], 'arriveDate': arrive,
                     'minResponse': 3, 'inviteSupplierIds': [sup1_cid, sup2_cid, sup3_cid],
                     'remark': 'E2E 平台代发询价'})
     inq_id = qi['inquiryId']
@@ -273,16 +275,20 @@ def run():
     s, c, m = plat.try_code('POST', '/admin/quote-inquiries/%d/return' % inq_id, {})
     check('AC-08 无报价不可汇总揭示(40001)', c == 40001, m)
     deliver = (now + timedelta(days=8)).strftime('%Y-%m-%d')
+    # 报价新契约（2026-11-24 迭代）：产品申报必填矿种 varietyId
+    var_id = pg_one("SELECT variety_id FROM biz_inquiry WHERE id=%s", (inq_id,))[0]
     for cli, price in ((sup1, 818.00), (sup2, 815.00), (sup3, 812.00)):
         cli.post('/inquiries/%d/quotes' % inq_id,
                  {'price': price, 'quantity': 45000, 'deliveryDate': deliver, 'payTerms': 'T/T',
-                  'taxType': 'INC_TAX', 'freightPrice': 30.0, 'deliveryType': 'PORT_FOB'})
+                  'taxType': 'INC_TAX', 'freightPrice': 30.0, 'deliveryType': 'PORT_FOB',
+                  'varietyId': var_id, 'origin': '澳大利亚', 'grade': 61.5})
         det = cli.get('/inquiries/%d' % inq_id)
         check('AC-08 供应商可见自己报价',
               det.get('myQuote', {}).get('status') == 'SUBMITTED', det.get('myQuote'))
     s, c, m = sup1.try_code('POST', '/inquiries/%d/quotes' % inq_id,
                             {'price': 810, 'quantity': 45000, 'deliveryDate': deliver,
-                             'taxType': 'INC_TAX', 'freightPrice': 30.0, 'deliveryType': 'PORT_FOB'})
+                             'taxType': 'INC_TAX', 'freightPrice': 30.0, 'deliveryType': 'PORT_FOB',
+                             'varietyId': var_id, 'origin': '澳大利亚', 'grade': 61.5})
     check('AC-08 重复报价被拦截(40902)', c == 40902, m)
     det = steel.get('/inquiries/%d' % inq_id)
     leak = [i for i in det.get('quoteSuppliers', []) if 'price' in i or 'unitPrice' in i]
@@ -474,10 +480,14 @@ def run():
     std = steel.get('/settlements/%d' % sid_)
     check('T19 付款后结算 COMPLETED', std['status'] == 'COMPLETED', std)
     check('T19 付款记录可查', len(std.get('payments', [])) == 1, std.get('payments'))
-    steel.post('/orders/%d/archive' % oid, {})
+    # 完成确认（2026-11-24 迭代）：全部钢厂成员与供应商 finish-confirm 齐备后订单自动完成并归档
+    steel.post('/orders/%d/finish-confirm' % oid, {})
+    steel2.post('/orders/%d/finish-confirm' % oid, {})
+    r1 = sup3.post('/orders/%d/finish-confirm' % oid, {})
+    check('T19 双方确认后订单自动完成', r1.get('completed') is True, r1)
     od4 = steel.get('/orders/%d' % oid)
     check('T19 归档后订单 COMPLETED', od4['status'] == 'COMPLETED', od4)
-    blob = dl_bytes(steel, '/orders/%d/archive/export' % oid)
+    blob = dl_bytes(plat, '/orders/%d/archive/export' % oid)
     zf = zipfile.ZipFile(io.BytesIO(blob))
     check('T19 档案 zip 含 manifest.json',
           blob[:2] == b'PK' and 'manifest.json' in zf.namelist(), zf.namelist()[:5])

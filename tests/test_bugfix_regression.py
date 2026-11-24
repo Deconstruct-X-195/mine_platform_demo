@@ -9,13 +9,13 @@
 - BUG-03 编辑需求明细不回显：GET /demands/<id> 明细字段须齐全
   （回归断言 varietyId/grade/quantity/moreLessRate 回读）。
 - BUG-04 撤回后无重提入口：后端状态机 WITHDRAWN→SUBMITTED（version+1）
-  （回归断言完整 提交→撤回→重提 链路，以及撤回态不可编辑）。
+  （回归断言完整 提交→撤回→重提 链路，以及撤回态可编辑、重提生成新版本）。
 - BUG-05 企业信息页误显"平台管理员无企业档案"：/companies/me 平铺返回
   企业字段（回归断言企业用户平铺+qualifications、管理员 company=null）。
 - BUG-06 业务时区 UTC/本地 8 小时偏差：DB now() 生成时间戳须等于本地时间
   （回归断言 created_at 与本机时钟差 < 10 分钟）。
 - BUG-07 询价保存"静默失败"：校验拒绝须返回明确 message
-  （回归断言 +2h / 前 7 天规则的 40001 message，供弹窗内持久展示）。
+  （回归断言邀请供应商为空 / 最少响应家数越界的 40001 message，供弹窗内持久展示）。
 
 部署前安全回归（部署前全面评估报告-20261121 P1/P1-1/P2-1）：
 - P1-1 登录限流真实 IP：限流键取 X-Real-IP（反代注入），不同来源互不影响锁定；
@@ -104,7 +104,7 @@ def run():
     w = steel.post('/demands/%d/withdraw' % d['id'])
     check('BUG-04 撤回 WITHDRAWN', w.get('status') == 'WITHDRAWN', w)
     s, c, m = steel.try_code('PUT', '/demands/%d' % d['id'], body)
-    check('BUG-04 撤回态不可编辑(40901)', c == 40901, m)
+    check('BUG-04 撤回态可编辑(无需更改理由)', c == 0, m)
     r2 = steel.post('/demands/%d/submit' % d['id'])
     check('BUG-04 重新提交生成新版本', r2.get('status') == 'SUBMITTED' and r2.get('version') == 2, r2)
 
@@ -125,27 +125,33 @@ def run():
     check('BUG-06 DB生成时间戳=本地时间(±10分钟)', diff < 600,
           'created_at=%s 本地=%s diff=%.1fs' % (row[0], now, diff))
 
-    # ---- BUG-06/07 询价时间校验（平台归集代发询价；钢厂自发询价已下线，直发返回 40301 为预期） ----
-    print('\n[BUG-06/07] 询价时间校验')
-    item_id = dv2['items'][0]['id']
+    # ---- BUG-06/07 询价校验（平台归集代发询价；截止由平台自动设定，另验自发询价必填拦截） ----
+    print('\n[BUG-06/07] 询价校验')
+    pool = plat.get('/admin/demand-pool', size=50)
+    pool_item = next((it for it in pool.get('list') or []
+                      if str(it.get('demandId') or '') == str(d['id'])
+                      and it.get('status') == 'SUBMITTED'
+                      and float(it['quantity']) - float(it.get('inquiredQty') or 0) > 0), None)
+    assert pool_item, '需求池未找到 BUG-02/03 创建的已提交明细'
+    item_id = pool_item['itemId'] if 'itemId' in pool_item else pool_item['id']
     agg = plat.post('/admin/aggregated-orders', {'itemIds': [item_id]})
     agg_id = agg['id']
     base = {'aggOrderId': agg_id, 'arriveDate': (now + timedelta(days=10)).strftime('%Y-%m-%d'),
-            'deadline': (now + timedelta(hours=2, minutes=10)).strftime('%Y-%m-%d %H:%M:%S'),
             'minResponse': 1, 'inviteSupplierIds': [sup.user['company']['id']]}
     q = plat.post('/admin/quote-inquiries', base)
-    check('BUG-06 本地时间语义下 +2h10min 询价可创建', bool(q.get('inquiryId')), q)
+    check('BUG-06 本地时间语义下归集询价可创建', bool(q.get('inquiryId')), q)
+    dl = str(pg_one("SELECT deadline FROM biz_inquiry WHERE id=%s", (q['inquiryId'],))[0])
+    check('BUG-07 截止由平台自动设定(到货前7天18:00)',
+          dl.startswith((now + timedelta(days=3)).strftime('%Y-%m-%d')) and dl.endswith('18:00:00'), dl)
     s, c, m = plat.try_code('POST', '/admin/quote-inquiries',
-                            dict(base, deadline=(now + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')))
-    check('BUG-07 截止+1h被拦且message明确(40001)', c == 40001 and '2 小时' in (m or ''), m)
+                            dict(base, inviteSupplierIds=[]))
+    check('BUG-07 邀请供应商为空被拦且message明确(40001)', c == 40001 and '供应商' in (m or ''), m)
     s, c, m = plat.try_code('POST', '/admin/quote-inquiries',
-                            dict(base, arriveDate=(now + timedelta(days=1)).strftime('%Y-%m-%d')))
-    check('BUG-07 截止晚于到货前7天被拦且message明确(40001)', c == 40001 and '7 天' in (m or ''), m)
+                            dict(base, minResponse=11))
+    check('BUG-07 最少响应家数越界被拦且message明确(40001)', c == 40001 and '1~10' in (m or ''), m)
     s, c, m = steel.try_code('POST', '/inquiries', {'demandId': d['id'], 'demandItemId': item_id,
-                                                    'quantity': 5000, 'arriveDate': (now + timedelta(days=10)).strftime('%Y-%m-%d'),
-                                                    'deadline': (now + timedelta(hours=2, minutes=10)).strftime('%Y-%m-%d %H:%M:%S'),
-                                                    'inviteSupplierIds': [sup.user['company']['id']], 'minResponse': 1})
-    check('BUG-07 钢厂自发询价已下线(40301)', c == 40301 and '下线' in (m or ''), m)
+                                                    'arriveDate': (now + timedelta(days=10)).strftime('%Y-%m-%d')})
+    check('BUG-07 自发询价缺quantity被拦且message明确(40001)', c == 40001, m)
 
     # ---- P1-1 登录限流真实 IP（反代部署语义） ----
     # 反代场景：全体客户端 remote_addr 均为 127.0.0.1，限流键必须取反代注入的 X-Real-IP。
