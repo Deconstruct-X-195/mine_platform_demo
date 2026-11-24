@@ -93,7 +93,7 @@ CREATE TABLE biz_demand (
   demand_name VARCHAR(50) NOT NULL,
   delivery_type VARCHAR(20) NOT NULL, -- PORT_FOB,PORT_TRUCK,PLANT
   delivery_place VARCHAR(100), -- 港口自提时可为空（港口由供应商报价确定）
-  expect_arrive_start DATE NOT NULL, expect_arrive_end DATE NOT NULL,
+  expect_arrive_start DATE, expect_arrive_end DATE, -- 「其它」品种需求（仅需求归集）可为空
   price_intent VARCHAR(500),
   settle_type VARCHAR(32) NOT NULL, settle_days INT, quality_req VARCHAR(500),
   attachments TEXT, remark VARCHAR(500), version INT DEFAULT 1,
@@ -214,6 +214,9 @@ CREATE TABLE biz_quote (
   supplier_id BIGINT NOT NULL, price NUMERIC(18,2) NOT NULL,
   tax_type VARCHAR(10), -- 含税标识：INC_TAX/EX_TAX（新报价应用层必填，存量行可空）
   freight_price NUMERIC(18,2), -- 运费单价（元/吨）
+  variety_id BIGINT, -- 矿种：供应商申报所报货物品种（必填）
+  origin VARCHAR(100), -- 产地：供应商申报（必填）
+  grade NUMERIC(5,2), -- 品位(%)：供应商申报（必填）
   delivery_type VARCHAR(20), -- 交付方式：PORT_FOB/PORT_TRUCK/PLANT
   quantity NUMERIC(18,3) NOT NULL, delivery_date DATE NOT NULL,
   delivery_place VARCHAR(100), pay_terms VARCHAR(200), quality_commit VARCHAR(300),
@@ -411,6 +414,10 @@ CREATE TABLE sys_message (
   title VARCHAR(100) NOT NULL,
   content VARCHAR(500), biz_type VARCHAR(20), biz_id BIGINT,
   is_read SMALLINT DEFAULT 0,
+  msg_category VARCHAR(20) NOT NULL DEFAULT 'NOTICE', -- NOTICE/WARN/ANNOUNCE/ACTIVITY
+  need_action BOOLEAN NOT NULL DEFAULT FALSE, -- 需要接收端后续操作（任务）
+  sender_company_id INTEGER, -- 发布企业（空=运营端发布）
+  bell_cleared SMALLINT NOT NULL DEFAULT 0, -- 小铃铛列表清除标记（全部消息页不受影响）
   created_at TIMESTAMP NOT NULL DEFAULT now()
 );
 

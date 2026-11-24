@@ -1104,7 +1104,6 @@ h3.bar-title::before { content: ''; width: 4px; height: 16px; border-radius: 2px
 .wb-v { color: var(--gray-1, inherit); font-weight: 500; }
 .trace-body { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 20px; align-items: start; }
 .trace-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--gray-1, inherit); }
-.trace-state { color: #c2620a; margin-left: 6px; }
 .trace-line { display: flex; flex-direction: column; }
 .trace-item { display: flex; gap: 10px; }
 .trace-time { width: 112px; flex-shrink: 0; font-size: 12px; color: var(--gray-2); line-height: 1.45; white-space: nowrap; }

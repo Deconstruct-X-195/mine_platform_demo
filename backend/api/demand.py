@@ -73,39 +73,55 @@ def create_demand():
     if not g.ctx.has_role(ROLE_STEEL):
         raise ApiError(40301, '仅钢厂可创建需求')
     p = get_params()
-    place = _validate_demand(p)
+    place = _validate_demand(g.conn, p)
     did = execute(g.conn, """
         INSERT INTO biz_demand (demand_no, company_id, demand_name, delivery_type, delivery_place,
                                 expect_arrive_start, expect_arrive_end, price_intent, settle_type,
                                 settle_days, quality_req, remark, status, created_by, updated_by)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'DRAFT',%s,%s) RETURNING id
-        """, (doc_no(g.conn, 'XQ'), g.ctx.company['id'], p['demandName'], p['deliveryType'],
-              place or None, parse_date(p, 'expectArriveStart'), parse_date(p, 'expectArriveEnd'),
-              p.get('priceIntent'), p['settleType'], p.get('settleDays'), p.get('qualityReq'),
+        """, (doc_no(g.conn, 'XQ'), g.ctx.company['id'], p['demandName'], p.get('deliveryType'),
+              place or None, parse_date(p, 'expectArriveStart', required=False),
+              parse_date(p, 'expectArriveEnd', required=False),
+              p.get('priceIntent'), p.get('settleType'), p.get('settleDays'), p.get('qualityReq'),
               p.get('remark'), g.ctx.user['id'], g.ctx.user['id']), returning_id=True)
     _save_items(g.conn, did, p.get('items') or [], g.ctx.user['id'])
     op_log(g.conn, g.ctx, 'biz_demand', did, 'CREATE', None, {'demandName': p['demandName']})
     return ok({'id': did, 'status': 'DRAFT'})
 
 
-def _validate_demand(p):
-    require_fields(p, 'demandName', 'deliveryType',
-                   'expectArriveStart', 'expectArriveEnd', 'settleType')
+def _is_other_demand(conn, p):
+    """「其它」品种需求：所有明细均为 OTHER 品种 → 仅做需求归集，交货/到货/结算信息选填。"""
+    items = p.get('items') or []
+    if not items:
+        return False
+    other = q1(conn, "SELECT id FROM base_variety WHERE variety_code='OTHER' AND is_deleted=0")
+    if not other:
+        return False
+    return all(str(it.get('varietyId')) == str(other['id']) for it in items)
+
+
+def _validate_demand(conn, p):
+    require_fields(p, 'demandName')
     if len(str(p['demandName'])) > 50:
         raise ApiError(40001, '需求名称不超过50字')
-    if p.get('deliveryType') not in ('PLANT', 'STATION_SELF', 'PORT_FOB', 'PORT_TRUCK'):
+    other = _is_other_demand(conn, p)
+    if not other:
+        require_fields(p, 'deliveryType', 'expectArriveStart', 'expectArriveEnd', 'settleType')
+    delivery_type = p.get('deliveryType')
+    if delivery_type is not None and delivery_type not in ('PLANT', 'STATION_SELF', 'PORT_FOB', 'PORT_TRUCK'):
         raise ApiError(40001, '交货方式不合法（PLANT/STATION_SELF）')
-    # 交货地点：到场/到站自提必选；港口自提由供应商报价确定，可为空
+    # 交货地点：到场/到站自提必选；港口自提由供应商报价确定，可为空；「其它」品种选填
     place = (str(p['deliveryPlace']).strip() if p.get('deliveryPlace') is not None else '')
-    if p.get('deliveryType') in ('PLANT', 'STATION_SELF') and not place:
+    if delivery_type in ('PLANT', 'STATION_SELF') and not place and not other:
         raise ApiError(40001, '到场/到站自提必须选择交货地点')
-    start = parse_date(p, 'expectArriveStart')
-    end = parse_date(p, 'expectArriveEnd')
-    if end < start:
+    start = parse_date(p, 'expectArriveStart', required=not other)
+    end = parse_date(p, 'expectArriveEnd', required=not other)
+    if start and end and end < start:
         raise ApiError(40001, '期望到货结束日期不能早于开始日期')
-    if p.get('settleType') not in ('PREPAY', 'COD', 'CREDIT', 'INSTALLMENT'):
+    settle_type = p.get('settleType')
+    if settle_type is not None and settle_type not in ('PREPAY', 'COD', 'CREDIT', 'INSTALLMENT'):
         raise ApiError(40001, '结算方式不合法（PREPAY/COD/CREDIT/INSTALLMENT）')
-    if p.get('settleType') == 'CREDIT' and not p.get('settleDays'):
+    if settle_type == 'CREDIT' and not p.get('settleDays'):
         raise ApiError(40001, '选择账期结算必须填写账期天数')
     if p.get('remark') and len(str(p['remark'])) > 500:
         raise ApiError(40001, '备注不超过500字')
@@ -132,7 +148,7 @@ def update_demand(did):
             """, (did,))
         if pend:
             raise ApiError(40901, '该需求单已有待审核的变更申请，请等待运营端处理')
-    place = _validate_demand(p)
+    place = _validate_demand(g.conn, p)
     new_status = 'WITHDRAWN' if st in ('SUBMITTED', 'PENDING_DELETE') else st
     before = _demand_raw_snapshot(g.conn, did) if st in ('SUBMITTED', 'PENDING_DELETE') else None
     execute(g.conn, """
@@ -140,9 +156,10 @@ def update_demand(did):
             expect_arrive_start=%s, expect_arrive_end=%s, price_intent=%s, settle_type=%s,
             settle_days=%s, quality_req=%s, remark=%s, status=%s, updated_by=%s, updated_at=now()
         WHERE id=%s
-        """, (p['demandName'], p['deliveryType'], place or None,
-              parse_date(p, 'expectArriveStart'), parse_date(p, 'expectArriveEnd'),
-              p.get('priceIntent'), p['settleType'], p.get('settleDays'), p.get('qualityReq'),
+        """, (p['demandName'], p.get('deliveryType'), place or None,
+              parse_date(p, 'expectArriveStart', required=False),
+              parse_date(p, 'expectArriveEnd', required=False),
+              p.get('priceIntent'), p.get('settleType'), p.get('settleDays'), p.get('qualityReq'),
               ('更改理由：' + reason) if reason else p.get('remark'),
               new_status, g.ctx.user['id'], did))
     _save_items(g.conn, did, p.get('items') or [], g.ctx.user['id'])
@@ -367,7 +384,7 @@ def create_change_request(did):
     reason = (p.get('changeReason') or '').strip()
     if not reason:
         raise ApiError(40001, '变更申请必须填写变更理由')
-    _validate_demand(p)   # 校验变更后的内容合法性
+    _validate_demand(g.conn, p)   # 校验变更后的内容合法性
     before = _demand_raw_snapshot(g.conn, did)
     if agg_locked:
         from decimal import Decimal, InvalidOperation

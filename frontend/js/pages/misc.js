@@ -118,7 +118,7 @@
         ['联系人', c.contactName || c.contact_name],
         ['联系电话', c.contactPhone || c.contact_phone],
         ['联系邮箱', c.contactEmail || c.contact_email],
-        ['经营地址', c.address, true],
+        ['注册地址', c.address, true],
       ]));
       infoCard.appendChild(UI.h('div', { class: 'sec-title' }, '银行与经营'));
       infoCard.appendChild(UI.kv([
@@ -133,8 +133,8 @@
       const creditCode = UI.input('text', c.creditCode || c.credit_code || '', { placeholder: '18 位字母数字，如 91130000XXXXXXXXXX' });
       const province = UI.input('text', c.province || '', { placeholder: '如：河北' });
       const city = UI.input('text', c.city || '', { placeholder: '如：邯郸市' });
-      const address = UI.input('text', c.address || '', { placeholder: '省/市之后的具体经营地址' });
-      const legalPerson = UI.input('text', c.legalPerson || c.legal_person || '', { placeholder: '选填' });
+      const address = UI.input('text', c.address || '', { placeholder: '省/市之后的具体注册地址' });
+      const legalPerson = UI.input('text', c.legalPerson || c.legal_person || '', { placeholder: '请输入法定代表人姓名' });
       const contactName = UI.input('text', c.contactName || c.contact_name || '', { placeholder: '请输入联系人姓名' });
       const contactPhone = UI.input('text', c.contactPhone || c.contact_phone || '', { placeholder: '11 位手机号' });
       const contactEmail = UI.input('text', c.contactEmail || c.contact_email || '', { placeholder: '如 name@company.com' });
@@ -148,8 +148,8 @@
           UI.formRow('统一社会信用代码', creditCode, true),
           UI.formRow('所在省份', province),
           UI.formRow('所在城市', city),
-          UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '经营地址'), address),
-          UI.formRow('法定代表人', legalPerson),
+          UI.h('div', { class: 'form-row full' }, UI.h('label', { class: 'req' }, '注册地址'), address),
+          UI.formRow('法定代表人', legalPerson, true),
           UI.formRow('联系人', contactName, true),
           UI.formRow('联系电话', contactPhone, true),
           UI.formRow('联系邮箱', contactEmail),
@@ -161,6 +161,8 @@
           const email = contactEmail.value.trim();
           const code = creditCode.value.trim();
           if (!companyName.value.trim()) { UI.toast('请填写企业名称', 'err'); return; }
+          if (!address.value.trim()) { UI.toast('请填写注册地址', 'err'); return; }
+          if (!legalPerson.value.trim()) { UI.toast('请填写法定代表人', 'err'); return; }
           if (code && !/^[0-9A-Z]{15,18}$/.test(code)) { UI.toast('统一社会信用代码应为 15~18 位大写字母或数字', 'err'); return; }
           if (phone && !/^1\d{10}$/.test(phone)) { UI.toast('联系电话应为 11 位手机号', 'err'); return; }
           if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { UI.toast('联系邮箱格式不正确，如 name@company.com', 'err'); return; }
@@ -191,23 +193,30 @@
   };
 
   /* -------- 消息中心（左侧栏：任务=待办任务；消息=全部/通知/预警/公告/活动信息） -------- */
-  /* 按业务类型 + 当前角色跳转对应页面（抽屉与消息中心共用） */
-  window.msgJumpTarget = function (r) {
-    const user = API.currentUser() || {};
-    const roles = user.roles || [];
-    const isPlat = roles.indexOf('PLAT_ADMIN') >= 0;
-    const isSupplier = roles.indexOf('SUPPLIER') >= 0;
-    const map = {
-      COMPANY: isPlat ? '#/admin-companies' : '#/profile',
-      DEMAND: isPlat ? '#/demand-list' : (isSupplier ? '#/inquiry' : '#/demand'),
-      INQUIRY: '#/inquiry',
-      /* 合同面板已下线，合同类消息均跳转至订单相关页面 */
-      CONTRACT: isPlat ? '#/logistics-dispatch' : '#/order',
-      ORDER: isPlat ? '#/logistics-dispatch' : '#/order',
-      WAYBILL: isPlat ? '#/logistics-dispatch' : '#/track',
-    };
-    return map[r.bizType] || '';
+
+  Pages.msg_detail = async function (page) {
+    const m = (location.hash || '').match(/[?&]id=(\d+)/);
+    const id = m ? Number(m[1]) : null;
+    page.innerHTML = '';
+    const CAT_LABEL = { NOTICE: '通知', WARN: '预警', ANNOUNCE: '公告', ACTIVITY: '活动' };
+    let r = null;
+    if (id) {
+      try { r = await API.get('/messages/' + id); } catch (e) { /* toast 已提示 */ }
+    }
+    page.appendChild(UI.h('div', { class: 'card' },
+      UI.h('h3', { class: 'bar-title' }, '消息详情',
+        UI.h('button', { class: 'sm', style: 'margin-left:auto',
+          onclick: () => { location.hash = '#/messages'; } }, '返回消息中心')),
+      r ? UI.h('div', {},
+        UI.h('div', { style: 'margin:12px 0 6px' },
+          UI.h('span', { class: 'msg-cat msg-cat-' + (r.msgCategory || 'NOTICE') },
+            CAT_LABEL[r.msgCategory] || '通知'),
+          UI.h('b', { style: 'font-size:16px;margin-left:8px' }, r.title || '-')),
+        UI.h('div', { class: 'hint', style: 'margin-bottom:12px' }, UI.fmtDateTime(r.createdAt)),
+        UI.h('div', { style: 'line-height:1.8;white-space:pre-wrap' }, r.content || '-'))
+        : UI.h('div', { class: 'empty' }, '消息不存在或无权查看')));
   };
+
   const MSG_CAT_LABEL = { NOTICE: '通知', WARN: '预警', ANNOUNCE: '公告', ACTIVITY: '活动' };
   const TASK_TYPE_LABEL = {
     CONTRACT: '合同', COMPANY: '企业准入', WAYBILL: '运单',
@@ -350,8 +359,9 @@
                 r.isRead = 1;
                 App.refreshMsgBadge();
               }
-              const t = window.msgJumpTarget(r);
-              if (t && t !== location.hash) location.hash = t;
+              /* 消息点击进入消息详情页（完整信息 + 清除入口） */
+              const t = '#/msg-detail?id=' + r.id;
+              if (t !== location.hash) location.hash = t;
             } catch (e) { /* toast 已提示 */ }
           });
         });

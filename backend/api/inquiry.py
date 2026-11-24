@@ -497,12 +497,15 @@ def _quote_payload_check(conn, inq, p):
     # 密封报价「港口现货价格±上下浮」模式：传 priceSign(+/-) + priceFloat 时，
     # 单价 = 品种最新港口现货价 ± 上下浮（上下浮 ≥0，由平台基准价换算，供应商不直接填绝对单价）
     sign, flt = p.get('priceSign'), p.get('priceFloat')
+    stored_sign, stored_float = None, None
     if sign in ('+', '-') and flt not in (None, ''):
         base = _spot_base_price(conn, inq['variety_id'], p.get('deliveryPlace'))
         float_amt = decimal_field(p, 'priceFloat', positive=False)
         if float_amt < 0:
             raise ApiError(40001, '上下浮价格不能为负')
         price = base + float_amt if sign == '+' else base - float_amt
+        # 申报值随报价落库：展示「港口现货价格±上下浮」用存储值，避免基准价变动后反推失真
+        stored_sign, stored_float = sign, float_amt
     else:
         # 数值字段统一规范化：前端 <input> 的 value 为字符串，非法值返回 40001 而非 500
         price = decimal_field(p, 'price', positive=False)
@@ -514,7 +517,24 @@ def _quote_payload_check(conn, inq, p):
     delivery_date = parse_date(p, 'deliveryDate')
     if inq['expect_arrive_date'] and delivery_date > inq['expect_arrive_date']:
         raise ApiError(40001, '交货期承诺晚于期望到货日期')
-    return price, qty, delivery_date
+    return price, qty, delivery_date, stored_sign, stored_float
+
+
+def _quote_product_fields(conn, p):
+    """报价产品申报：矿种/产地/品位（均必填，描述供应商实际所报货物）。"""
+    vid = p.get('varietyId')
+    v = q1(conn, "SELECT id FROM base_variety WHERE id=%s AND is_deleted=0", (vid,)) if vid else None
+    if not v:
+        raise ApiError(40001, '请选择矿种')
+    origin = str(p.get('origin') or '').strip()
+    if not origin:
+        raise ApiError(40001, '请填写产地')
+    if len(origin) > 100:
+        raise ApiError(40001, '产地不超过100字')
+    grade = decimal_field(p, 'grade', positive=False, required=True)
+    if grade <= 0:
+        raise ApiError(40001, '品位必须大于0')
+    return v['id'], origin, grade
 
 
 def _quote_extra_fields(p):
@@ -553,18 +573,21 @@ def submit_quote(iid):
     if exists:
         raise ApiError(40902, '已提交过报价，请走修改（PUT /quotes/{id}）')
     p = get_params()
-    price, qty, delivery_date = _quote_payload_check(g.conn, row, p)
+    price, qty, delivery_date, price_sign, price_float = _quote_payload_check(g.conn, row, p)
     tax_type, freight_price, delivery_type = _quote_extra_fields(p)
+    variety_id, origin, grade = _quote_product_fields(g.conn, p)
     default_valid = (row['deadline'] + timedelta(days=7)).date() if hasattr(row['deadline'], 'date') else row['deadline']
     qid = execute(g.conn, """
         INSERT INTO biz_quote (quote_no, inquiry_id, supplier_id, price, quantity, delivery_date,
             delivery_place, pay_terms, quality_commit, valid_until, remark, tax_type,
-            freight_price, delivery_type, version, status, created_by, updated_by)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,'SUBMITTED',%s,%s) RETURNING id
+            freight_price, delivery_type, variety_id, origin, grade, price_sign, price_float,
+            version, status, created_by, updated_by)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,1,'SUBMITTED',%s,%s) RETURNING id
         """, (doc_no(g.conn, 'BJ'), iid, g.ctx.company['id'], price, qty, delivery_date,
               p.get('deliveryPlace'), p.get('paymentTerms'), p.get('qualityTerms'),
               parse_date(p, 'validUntil', required=False) or default_valid, p.get('remark'),
-              tax_type, freight_price, delivery_type,
+              tax_type, freight_price, delivery_type, variety_id, origin, grade,
+              price_sign, price_float,
               g.ctx.user['id'], g.ctx.user['id']), returning_id=True)
     if row['status'] == 'SENT':
         transition(g.conn, g.ctx, 'biz_inquiry', '询价单', 'biz_inquiry', iid, 'QUOTING')
@@ -596,16 +619,19 @@ def update_quote(qid):
     if datetime.now() >= inq['deadline']:
         raise ApiError(40901, '报价已截止，不可修改')
     p = get_params()
-    price, qty, delivery_date = _quote_payload_check(g.conn, inq, p)
+    price, qty, delivery_date, price_sign, price_float = _quote_payload_check(g.conn, inq, p)
     tax_type, freight_price, delivery_type = _quote_extra_fields(p)
+    variety_id, origin, grade = _quote_product_fields(g.conn, p)
     execute(g.conn, """
         UPDATE biz_quote SET price=%s, quantity=%s, delivery_date=%s, delivery_place=%s,
             pay_terms=%s, quality_commit=%s, valid_until=%s, remark=%s,
             tax_type=%s, freight_price=%s, delivery_type=%s,
+            variety_id=%s, origin=%s, grade=%s, price_sign=%s, price_float=%s,
             version=version+1, updated_by=%s, updated_at=now() WHERE id=%s
         """, (price, qty, delivery_date, p.get('deliveryPlace'), p.get('paymentTerms'),
               p.get('qualityTerms'), parse_date(p, 'validUntil', required=False) or row['valid_until'],
               p.get('remark'), tax_type, freight_price, delivery_type,
+              variety_id, origin, grade, price_sign, price_float,
               g.ctx.user['id'], qid))
     # 修改报价：附件整体替换（旧附件置失效，按本次提交重建）
     execute(g.conn, "UPDATE biz_quote_file SET is_deleted=1 WHERE quote_id=%s AND is_deleted=0", (qid,))
@@ -654,7 +680,7 @@ def reveal_inquiry(conn, iid, ctx):
     quotes = qall(conn, """
         SELECT q.id, q.supplier_id, q.price, q.quantity, q.delivery_date,
                q.pay_terms, q.valid_until, q.status, q.tax_type, q.freight_price,
-               q.delivery_place
+               q.delivery_place, q.price_sign, q.price_float
         FROM biz_quote q WHERE q.inquiry_id=%s AND q.is_deleted=0 ORDER BY q.price, q.id
         """, (iid,))
     min_resp = row['min_response'] or 2
@@ -668,6 +694,8 @@ def reveal_inquiry(conn, iid, ctx):
             {'seq': i + 1, 'quoteId': qt['id'], 'unitPrice': str(qt['price']),
              'quantity': str(qt['quantity']),
              'taxType': qt['tax_type'],
+             'priceSign': qt['price_sign'],
+             'priceFloat': str(qt['price_float']) if qt['price_float'] is not None else None,
              'freightPrice': str(qt['freight_price']) if qt['freight_price'] is not None else None,
              'deliveryPlace': qt['delivery_place'],
              'responseRate': str(round(qt['quantity'] / row['quantity'] * 100, 2)) + '%',

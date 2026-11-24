@@ -221,6 +221,10 @@ def list_orders():
                  WHERE q.id=o.quote_id AND q.is_deleted=0 LIMIT 1) AS "freight_price",
                (SELECT q.tax_type FROM biz_quote q
                  WHERE q.id=o.quote_id AND q.is_deleted=0 LIMIT 1) AS "tax_type",
+               (SELECT q.price_sign FROM biz_quote q
+                 WHERE q.id=o.quote_id AND q.is_deleted=0 LIMIT 1) AS "priceSign",
+               (SELECT q.price_float FROM biz_quote q
+                 WHERE q.id=o.quote_id AND q.is_deleted=0 LIMIT 1) AS "priceFloat",
                (SELECT string_agg(c2.company_name, '、') FROM biz_order_member m2
                  JOIN ent_company c2 ON c2.id=m2.company_id
                  WHERE m2.order_id=o.id AND m2.is_deleted=0) AS "buyerNames"
@@ -241,11 +245,13 @@ def order_detail(oid):
     data['varietyName'] = (q1(g.conn, "SELECT variety_name AS n FROM base_variety WHERE id=%s", (row['variety_id'],)) or {}).get('n')
     data['buyerName'] = (q1(g.conn, "SELECT company_name AS n FROM ent_company WHERE id=%s", (row['buyer_id'],)) or {}).get('n')
     data['supplierName'] = (q1(g.conn, "SELECT company_name AS n FROM ent_company WHERE id=%s", (row['supplier_id'],)) or {}).get('n')
-    # 成交报价运费/含税标志 + 参与本单集采的全部钢厂（聚合订单需方为平台）
-    qrow = q1(g.conn, "SELECT freight_price, tax_type FROM biz_quote WHERE id=%s AND is_deleted=0",
+    # 成交报价运费/含税标志 + 申报的上下浮方向与金额 + 参与本单集采的全部钢厂（聚合订单需方为平台）
+    qrow = q1(g.conn, "SELECT freight_price, tax_type, price_sign, price_float FROM biz_quote WHERE id=%s AND is_deleted=0",
               (row['quote_id'],)) if row['quote_id'] else None
     data['freight_price'] = qrow['freight_price'] if qrow else None
     data['tax_type'] = qrow['tax_type'] if qrow else None
+    data['priceSign'] = qrow['price_sign'] if qrow else None
+    data['priceFloat'] = str(qrow['price_float']) if qrow and qrow['price_float'] is not None else None
     data['buyerNames'] = (q1(g.conn, """
         SELECT string_agg(c.company_name, '、') AS n FROM biz_order_member m
         JOIN ent_company c ON c.id=m.company_id
@@ -289,11 +295,12 @@ def order_fulfillment(oid):
     # 询价信息（成交来源）：钢厂端履约跟踪展示 品类/吨数/中标报价总价（WIN 报价 单价×数量）
     inq = q1(g.conn, """
         SELECT i.inquiry_no, i.status, i.quantity, i.deadline, i.created_at,
-               v.variety_name AS "varietyName", wq.price AS "winPrice", wq.quantity AS "winQty"
+               v.variety_name AS "varietyName", wq.price AS "winPrice", wq.quantity AS "winQty",
+               wq.price_sign AS "priceSign", wq.price_float AS "priceFloat"
         FROM biz_inquiry i
         JOIN base_variety v ON v.id = i.variety_id
         LEFT JOIN LATERAL (
-            SELECT q.price, q.quantity FROM biz_quote q
+            SELECT q.price, q.quantity, q.price_sign, q.price_float FROM biz_quote q
             WHERE q.inquiry_id = i.id AND q.status = 'WIN' AND q.is_deleted = 0
             ORDER BY q.price ASC, q.id ASC LIMIT 1) wq ON TRUE
         WHERE i.id = %s AND i.is_deleted = 0""", (row['inquiry_id'],)) if row['inquiry_id'] else None
@@ -465,8 +472,9 @@ def supplier_overview():
                          " AND q.supplier_id=%s AND q.is_deleted=0)")
     kpi = {
         'orderTotal': count('SELECT count(*) AS c FROM biz_order o WHERE o.is_deleted=0 AND o.supplier_id=%s', (cid,)),
-        'totalAmount': str(q1(g.conn, 'SELECT COALESCE(SUM(o.amount),0) AS s FROM biz_order o'
-                              ' WHERE o.is_deleted=0 AND o.supplier_id=%s', (cid,))['s']),
+        # 总吨数：已完成订单的总吨数（湿吨）
+        'totalQty': str(q1(g.conn, 'SELECT COALESCE(SUM(o.quantity),0) AS s FROM biz_order o'
+                           " WHERE o.is_deleted=0 AND o.supplier_id=%s AND o.status='COMPLETED'", (cid,))['s']),
         'pendingQuote': count(pending_quote_sql, (cid, cid)),
         'inTransit': count("SELECT count(*) AS c FROM biz_waybill w JOIN biz_order o ON o.id=w.order_id"
                            " WHERE w.is_deleted=0 AND w.status='IN_TRANSIT' AND o.supplier_id=%s", (cid,)),
@@ -495,11 +503,14 @@ def supplier_overview():
         todos.append({'kind': 'CONFIRM', 'main': '订单 %s 待确认（48 小时期限内）' % r['order_no'],
                       'time': r['created_at']})
 
-    # 近期动态：仅显示运营端（平台）发布的信息，最近 10 条；needAction=需要供应商后续操作（任务）
+    # 近期动态：仅显示运营端（平台）发布的公告/活动类信息（含平台广播），最近 10 条；
+    # 订单相关的任务与消息仅在小铃铛（消息抽屉）中显示
     recent = qall(g.conn, """
         SELECT id, title, content, biz_type AS "bizType", biz_id AS "bizId",
                msg_category AS "category", need_action AS "needAction", created_at
         FROM sys_message
-        WHERE receiver_company_id=%s AND sender_company_id IS NULL
+        WHERE (receiver_company_id=%s OR receiver_company_id IS NULL)
+          AND sender_company_id IS NULL
+          AND msg_category IN ('ANNOUNCE', 'ACTIVITY')
         ORDER BY id DESC LIMIT 10""", (cid,))
     return ok({'kpi': kpi, 'todos': todos, 'recent': recent})

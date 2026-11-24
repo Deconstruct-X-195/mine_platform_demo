@@ -16,15 +16,36 @@
     try {
       const d = await API.get('/admin/quote-inquiries/' + iid + '/summary');
       const q = (d.quotes || []).find((z) => z.id === x.quoteId) || {};
+      /* 单价：与供应商报价模式一致（港口现货价格±上下浮），由品种港口现货价反推方向与浮金额，
+         不直接展示按价格指数换算的绝对单价 */
+      let priceBox = UI.h('span', { class: 'hint' }, '-');
+      if (q.price != null) {
+        const basePorts = ((await API.get('/base-prices/ports' + API.qs({ port: '黄骅港' })).catch(() => ({}))) || {}).list || [];
+        const target = q.varietyName || (d.inquiry && d.inquiry.varietyName) || '';
+        const baseRow = basePorts.find((z) => z.varietyName === target) || null;
+        if (baseRow) {
+          const diff = Number(q.price) - Number(baseRow.price);
+          priceBox = UI.h('span', { class: 'inline-flex', style: 'gap:8px;flex-wrap:nowrap;align-items:center' },
+            UI.h('input', { value: '港口现货价格', disabled: true,
+              style: 'width:150px;background:#f5f5f7;color:var(--label-2)' }),
+            UI.h('span', { style: 'padding:0 4px;font-weight:600' }, diff >= 0 ? '+' : '-'),
+            UI.h('input', { value: UI.fmtMoney(Math.abs(diff)), disabled: true,
+              style: 'width:110px;background:#f5f5f7' }));
+        } else {
+          priceBox = UI.h('span', { class: 'hint' }, '该品种暂无港口现货价（报价单价 ' + UI.fmtMoney(q.price) + '）');
+        }
+      }
       UI.modal('报价详情 · ' + (q.quoteNo || ''), UI.h('div', {},
+        UI.h('div', { class: 'form-row' },
+          UI.h('label', { class: 'req' }, '单价(元/湿吨)'), priceBox),
         UI.kv([
           ['报价单号', q.quoteNo || '-'],
           ['供应商', q.companyName || x.supplierName || '-'],
-          ['单价(元/湿吨)', q.price != null ? UI.fmtMoney(q.price) : '-'],
+          ['矿种', q.varietyName || (d.inquiry && d.inquiry.varietyName) || '-'],
+          ['产地', q.origin || '-'],
+          ['品位(%)', q.grade != null ? String(q.grade) : '-'],
           ['含税/不含税', ({ INC_TAX: '含税', EX_TAX: '不含税' }[q.taxType]) || '-'],
-          ['其他综合费用(元/湿吨)', q.freightPrice != null ? UI.fmtMoney(q.freightPrice) : '-'],
-          ['总价(元/湿吨)', q.price != null
-            ? UI.fmtMoney(Number(q.price) + Number(q.freightPrice || 0)) : '-'],
+          ['运费(元/湿吨)', q.freightPrice != null ? UI.fmtMoney(q.freightPrice) : '-'],
           ['可供数量(湿吨)', q.quantity != null ? fmtQty(q.quantity) : '-'],
           ['预计到港时间', q.deliveryDate ? UI.fmtDate(q.deliveryDate) : '-'],
           ['到货港口', q.deliveryPlace || '-'],
@@ -1552,6 +1573,7 @@
     async function summaryModal(r) {
       const d = await API.get('/admin/quote-inquiries/' + r.id + '/summary');
       const quotes = d.quotes || [];
+      const spotMap = await UI.spotPrices();   // 报价模式单价：品种→港口现货价
       const canReturn = (r.status === 'SENT' || r.status === 'QUOTING') && !r.revealed;
       // 按份额定标：仅归集询价、已截止（已揭示）时可操作
       const canAward = !!r.aggId && r.status === 'CLOSED';
@@ -1571,11 +1593,14 @@
           { label: '序号', render: (x) => String(quotes.indexOf(x) + 1) },
           { key: 'quoteNo', label: '报价单号' },
           { key: 'companyName', label: '供应商' },
-          { label: '总价(元/湿吨)', num: true,
-            render: (x) => UI.fmtMoney(Number(x.price) + Number(x.freightPrice || 0)) },
+          { label: '单价(元/湿吨)', num: true,
+            render: (x) => UI.spotShown(x.priceSign, x.priceFloat)
+              || UI.spotDiff(spotMap[x.varietyName || r.varietyName], x.price) },
           { key: 'taxType', label: '是否含税', render: (x) => ({ INC_TAX: '含税', EX_TAX: '不含税' }[x.taxType] || '-') },
+          { key: 'freightPrice', label: '运费(元/湿吨)', num: true,
+            render: (x) => (x.freightPrice != null ? UI.fmtMoney(x.freightPrice) : '-') },
           { key: 'quantity', label: '可供数量(湿吨)', num: true, render: (x) => fmtQty(x.quantity) },
-          { key: 'deliveryDate', label: '到货日', render: (x) => UI.fmtDate(x.deliveryDate) },
+          { key: 'deliveryDate', label: '预计到港时间', render: (x) => UI.fmtDate(x.deliveryDate) },
           { key: 'deliveryPlace', label: '港口', render: (x) => x.deliveryPlace || '-' },
           { label: '操作', render: (x) => (canAward
               ? UI.h('button', { class: 'sm primary', onclick: () => awardQuote(r, x, shares, m) }, '定标')
@@ -1790,6 +1815,7 @@
 
     async function load() {
       const d = await API.get('/admin/orders' + API.qs({ page: pageNo, size: SIZE, status, keyword }));
+      const spotMap = await UI.spotPrices();   // 报价模式单价：品种→港口现货价
       listBox.innerHTML = '';
       listBox.appendChild(scrollWrap(UI.table([
         UI.selCol(picked),
@@ -1798,9 +1824,9 @@
         { key: 'varietyName', label: '矿种' },
         { key: 'grade', label: '品位(%)' },
         { label: '总吨数(湿吨)', num: true, render: (r) => fmtQty(r.totalQty) },
-        { label: '单价(元/湿吨)', num: true, render: (r) => UI.fmtMoney(r.unitPrice) },
+        { label: '单价(元/湿吨)', num: true,
+          render: (r) => UI.spotShown(r.priceSign, r.priceFloat) || UI.spotDiff(spotMap[r.varietyName], r.unitPrice) },
         { label: '运费(元/湿吨)', num: true, render: (r) => (r.freightPrice != null ? UI.fmtMoney(r.freightPrice) : '-') },
-        { label: '金额', num: true, render: (r) => UI.fmtMoney((Number(r.unitPrice) + Number(r.freightPrice || 0)) * Number(r.totalQty || 0)) },
         { label: '供应商', render: (r) => r.supplierName || '-' },
         { label: '参与钢厂数', num: true, render: (r) => String(r.millCount || 0) },
         { label: '提货计划', render: (r) => (r.millCount
@@ -1817,6 +1843,7 @@
 
     async function detail(r) {
       const d = await API.get('/admin/orders/' + r.id);
+      const spotMap = await UI.spotPrices();   // 报价模式单价：品种→港口现货价
       const members = d.members || [];
       const sum = d.pickupSummary || { totalMills: 0, doneMills: 0 };
       const pickupTag = (s) => (s === 'SUBMITTED'
@@ -1838,12 +1865,12 @@
           ['矿种', d.varietyName || '-'],
           ['品位(%)', d.grade],
           ['总吨数(湿吨)', fmtQty(d.totalQty)],
-          ['单价(元/湿吨)', UI.fmtMoney(d.unitPrice)],
+          ['单价(元/湿吨)', UI.spotShown(d.priceSign, d.priceFloat)
+            || UI.spotDiff(spotMap[d.varietyName], d.unitPrice)],
           ['运费(元/湿吨)', d.freightPrice != null ? UI.fmtMoney(d.freightPrice) : '-'],
-          ['金额', UI.fmtMoney((Number(d.unitPrice) + Number(d.freightPrice || 0)) * Number(d.totalQty || 0))],
           ['供应商', d.supplierName || '-'],
           ['交货地点', d.deliveryPlace || '-'],
-          ['交货日', UI.fmtDate(d.deliveryDate)],
+          ['预计到港时间', UI.fmtDate(d.deliveryDate)],
           ['状态', UI.statusTag('ORDER', d.status)],
           ['创建时间', UI.fmtDateTime(d.createdAt)],
           ['提货计划', sum.doneMills + '/' + sum.totalMills + ' 已提交'],
@@ -2590,7 +2617,10 @@
     async function waybillCreateModal(r, afterSave) {
       const remain = Math.max(0, (r.quantity || 0) - (r.plannedQty || 0));
       const segNo = numInput({ value: String((r.waybillCount || 0) + 1), min: '1', style: 'width:100%' });
-      const mode = UI.selectField(Object.entries(MODE_LABEL), 'RAIL');
+      /* 运输方式：内嵌浏览器原生 select 弹层点不出选项，改用页面内渲染的下拉面板 */
+      let modeVal = 'RAIL';
+      const mode = UI.dropdown(Object.entries(MODE_LABEL), modeVal,
+        { onchange: (v) => { modeVal = v; } });
       /* 各运输方式已排量：供应商端方案分方式排量，每种运输方式单独录入运输量 */
       const byMode = {};
       (r.waybills || []).forEach((w) => {
@@ -2627,7 +2657,7 @@
           try {
             await API.post('/admin/logistics-plans/' + r.planId + '/waybills', {
               segmentNo: parseInt(segNo.value, 10) || 1,
-              transportMode: mode.value,
+              transportMode: modeVal,
               planQty: q,
               departPlace: departPlace.value.trim(),
               arrivePlace: arrivePlace.value.trim(),
@@ -2938,6 +2968,8 @@
           ['订单量', UI.fmtMoney(d.order.quantity) + ' 湿吨'],
           ['供方', d.order.supplierName || '-'],
           ['物流方案', d.order.planNo ? d.order.planNo + '（' + (ORG_LABEL[d.order.orgMode] || d.order.orgMode || '-') + '）' : '未制定'],
+          ['起始地', d.order.startPlace || '-'],
+          ['目的地', d.order.destPlace || '-'],
         ])),
         UI.h('div', { class: 'sec-title' }, '成员钢厂与货物信息'),
         memberBox);
