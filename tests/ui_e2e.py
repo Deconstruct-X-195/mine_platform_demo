@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
 """前端全流程可视化专项检测（Selenium Edge headless）
-链路：需求→询价→报价→揭示→议价→定标→订单→合同双签→质检→结算→付款
+链路（平台归集版）：需求提交→平台需求归集→平台代发询价→供应商密封报价→
+平台汇总揭示→钢厂比价认可自动成单→供方确认→钢厂提货计划→平台物流方案与分段运单→
+平台发运/到达→钢厂签收→订单/履约跟踪渲染
 每步截图 + toast/DOM 断言 + console 错误收集 → docs/shots/results.json
+说明：结算工作台/合同面板 UI 已下线，质检→结算→归档由 API 侧
+tests/e2e_full_chain.py（T17-T19）覆盖，本脚本不再重复。
 """
-import json, os, subprocess, time, traceback
+import json, os, re, subprocess, time, traceback
 from datetime import date, timedelta
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -15,11 +19,12 @@ BASE = r'e:\TRAE\mine_platform_demo'
 SHOTS = os.path.join(BASE, 'docs', 'shots')
 os.makedirs(SHOTS, exist_ok=True)
 RESULT = os.path.join(SHOTS, 'results.json')
-SEAL = os.path.join(BASE, 'uploads', '8a2d75e891cf46d89a6624a1285ddc9b.pdf')  # 盖章件（pdf）
 
 BUYER = ('13800000001', 'demo123456')     # 示范钢铁集团（钢厂/需方）
 SUPPLIER = ('13800000002', 'demo123456')  # 示范矿产贸易（供应商/供方）
 ADMIN = ('13800000000', 'admin123456')    # 平台管理员
+
+PG = ['docker', 'exec', 'mine-platform-pg', 'psql', '-U', 'postgres', '-d', 'mine_platform', '-c']
 
 D = date.today()
 DS = lambda n: (D + timedelta(days=n)).isoformat()
@@ -74,6 +79,17 @@ def q_text(d, txt, tag='button', timeout=8, scope=None):
     root = scope or d
     def f(dd):
         for e in root.find_elements(By.XPATH, "//%s[contains(normalize-space(),'%s')]" % (tag, txt)):
+            if _vis(e):
+                return e
+        return None
+    return WebDriverWait(d, timeout).until(lambda dd: f(dd))
+
+
+def q_exact(d, txt, tag='button', timeout=8, scope=None):
+    """按钮文本精确匹配（避免「认可」误命中「不认可」）"""
+    root = scope or d
+    def f(dd):
+        for e in root.find_elements(By.XPATH, "//%s[normalize-space()='%s']" % (tag, txt)):
             if _vis(e):
                 return e
         return None
@@ -237,6 +253,7 @@ def step(d, name, fn, shot_name=None):
     except Exception as e:
         rec(name, False, traceback.format_exc(limit=2) or e, shot_name)
 
+
 def run(d):
     # S01 登录页渲染
     def s01():
@@ -244,7 +261,7 @@ def run(d):
         assert q_ph(d, '手机号') and q_ph(d, '密码') and q_text(d, '登 录'), '登录表单缺失'
     step(d, 'S01 登录页渲染', s01, '01-登录页')
 
-    # S02 普阳登录
+    # S02 需方登录
     def s02():
         login(d, *BUYER)
         assert q_css(d, '.layout'), '未进入主布局'
@@ -274,61 +291,113 @@ def run(d):
         assert t2, '提交toast未出现 | seen=%s' % seen2
     step(d, 'S03 新建需求+提交', s03, '03-需求已提交')
 
-    # S04 新建询价→保存草稿→详情→发出
+    logout(d)
+
+    # S04 平台需求归集：清理历史残留 → 勾选目标明细 → 合并归集
     def s04():
-        goto(d, 'inquiry')
-        q_text(d, '引入需求管理').click(); time.sleep(0.6)
+        # 幂等清理：本企业历史 3000t 残留明细软删、仅保留最新一条（本次 S03 创建）。
+        # 不论是否已归集都要清：归集单软删后行内不再显示 GJ- 号，已归集旧行会混入候选。
+        subprocess.run(PG + [
+            "UPDATE biz_demand_item i SET is_deleted=1 FROM biz_demand d "
+            "WHERE i.demand_id=d.id AND i.is_deleted=0 AND d.is_deleted=0 AND d.status='SUBMITTED' "
+            "AND i.quantity=3000 "
+            "AND d.company_id=(SELECT id FROM ent_company WHERE company_name LIKE '示范钢铁集团%') "
+            "AND i.id < (SELECT max(i2.id) FROM biz_demand_item i2 "
+            "JOIN biz_demand d2 ON d2.id=i2.demand_id "
+            "WHERE i2.is_deleted=0 AND i2.quantity=3000 AND d2.is_deleted=0 "
+            "AND d2.status='SUBMITTED' "
+            "AND d2.company_id=(SELECT id FROM ent_company WHERE company_name LIKE '示范钢铁集团%'));"],
+            capture_output=True, timeout=60)
+        login(d, *ADMIN)
+        goto(d, 'demand_pool')
+        # 以本次 S03 创建的最新需求单号精确定位目标行（池中旧行状态/归集显示各异，文本匹配易误命中）
+        out = subprocess.run(PG + [
+            "SELECT d.demand_no FROM biz_demand d WHERE d.is_deleted=0 ORDER BY d.id DESC LIMIT 1;"],
+            capture_output=True, text=True, timeout=60)
+        mno = re.search(r'XQ-\d{8}-\d{4}', out.stdout)
+        assert mno, '未取到最新需求单号 | %s' % (out.stderr or out.stdout)
+        target = [r for r in (x for x in d.find_elements(By.CSS_SELECTOR, 'table tbody tr') if _vis(x))
+                  if mno.group(0) in r.text]
+        assert len(target) == 1, '按单号 %s 定位目标行应唯一，实际 %d 行' % (mno.group(0), len(target))
+        assert '3000' in target[0].text.replace(',', ''), '目标行吨数非3000：%s' % target[0].text
+        cbs = [c for c in target[0].find_elements(By.CSS_SELECTOR, 'input[type=checkbox]') if _vis(c)]
+        assert cbs, '目标行缺勾选框（勾选参与归集）'
+        cbs[0].click(); time.sleep(0.3)
+        q_text(d, '合并归集').click(); time.sleep(0.5)
+        confirm(d)
+        t, seen = poll_toast(d, '已生成')
+        assert t, '归集toast未出现 | seen=%s' % seen
+        assert '3000' in t.replace(',', ''), '归集数量非3000：%s' % t
+    step(d, 'S04 平台需求归集', s04, '04-需求已归集')
+
+    # S05 平台代发询价（归集订单统一询价，钢厂自发询价已下线）
+    def s05():
+        # 清理历史重跑残留的 3000 吨候选归集单（软删），仅保留最新一张，保证选项唯一
+        subprocess.run(PG + [
+            "UPDATE biz_aggregated_order SET is_deleted=1 "
+            "WHERE total_qty=3000 AND status IN ('OPEN','INQUIRING') AND is_deleted=0 "
+            "AND id <> (SELECT max(id) FROM biz_aggregated_order "
+            "WHERE total_qty=3000 AND status IN ('OPEN','INQUIRING') AND is_deleted=0);"],
+            capture_output=True, timeout=60)
+        goto(d, 'quote_inquiry')
+        q_text(d, '发起询价').click(); time.sleep(0.6)
         m = modal(d)
-        assert '新建询价' in m.text, '新建询价弹窗未出现'
-        assert wait_js(d, "[...document.querySelectorAll('.modal option')]"
-                           ".some(o=>o.textContent.includes('（数量'))", 10), '需求明细选项未加载'
+        assert '归集订单' in m.text, '发起询价弹窗未出现'
+        # 明确选中本次 3000 吨归集单（库中可能有历史 INQUIRING 归集单干扰默认选中；
+        # totalQty 为后端序列化字符串，形如 '3000.000'，用正则兼容小数尾零）
+        ok = wait_js(d, "[...document.querySelectorAll('.modal select option')]"
+                        ".some(o=>/·\\s*3000(\\.0+)?吨\\s*·/.test(o.textContent))", 10)
+        assert ok, '归集订单选项未加载（未找到3000吨归集单）'
+        d.execute_script("var re=/·\\s*3000(\\.0+)?吨\\s*·/;"
+                         "var o=[...document.querySelectorAll('.modal select option')]"
+                         ".find(x=>re.test(x.textContent));"
+                         "o.selected=true;o.closest('select')"
+                         ".dispatchEvent(new Event('change',{bubbles:true}));")
+        # 期望到货日默认 now+18 天，早于供方报价到货日 DS(22)，须显式置后（供方到货日 ≤ 期望到货日）
+        dds = [e for e in m.find_elements(By.CSS_SELECTOR, "input[type='date']") if _vis(e)]
+        assert dds, '缺期望到货日输入'
+        set_val(d, dds[0], DS(25))
         dtl = [e for e in m.find_elements(By.CSS_SELECTOR, "input[type='datetime-local']") if _vis(e)]
         assert dtl, '缺报价截止输入'
         set_val(d, dtl[0], DT(2, '18:00'))
-        q_text_in(d, m, '保存草稿').click()
-        t, seen = poll_toast(d, '询价草稿已创建')
-        assert t, '保存toast未出现 | seen=%s' % seen
-        time.sleep(0.6)
-        q_text(d, '详情').click(); time.sleep(0.6)
-        q_text(d, '发出询价', 'button', 10).click()
-        t2, seen2 = poll_toast(d, '询价已发出')
-        assert t2, '发出toast未出现 | seen=%s' % seen2
-    step(d, 'S04 新建询价并发出', s04, '04-询价已发出')
+        nums = [e for e in m.find_elements(By.CSS_SELECTOR, 'input[type=number]') if _vis(e)]
+        assert nums, '缺最少响应家数输入'
+        set_val(d, nums[0], '1')  # 单供应商场景：最少响应家数置 1，否则平台揭示被拦截
+        cbs = [c for c in m.find_elements(By.CSS_SELECTOR, 'input[type=checkbox]') if _vis(c)]
+        assert cbs, '缺邀请供应商勾选'
+        for c in cbs:
+            c.click(); time.sleep(0.1)
+        q_text_in(d, m, '保存并发出').click()
+        t, seen = poll_toast(d, '询价已发出')
+        assert t, '发出toast未出现 | seen=%s' % seen
+    step(d, 'S05 平台代发询价', s05, '05-询价已发出')
 
-    # S05 询价列表渲染
-    def s05():
+    # S06 平台询价列表渲染
+    def s06():
         close_modals(d); time.sleep(0.6)
         rows = [r for r in d.find_elements(By.CSS_SELECTOR, 'table tbody tr') if _vis(r)]
         assert rows, '询价列表无行'
-    step(d, 'S05 询价列表渲染', s05, '05-询价列表')
-
-    # S06 询价详情渲染
-    def s06():
-        q_text(d, '详情').click(); time.sleep(0.7)
-        m = top_modal(d)
-        assert m and '询价详情' in m.text, '询价详情未渲染'
-        close_modals(d)
-    step(d, 'S06 询价详情渲染', s06, '06-询价详情')
+    step(d, 'S06 平台询价列表渲染', s06, '06-询价列表')
 
     logout(d)
 
-    # S07 中矿登录+收到的询价
+    # S07 供方登录+收到的询价
     def s07():
         login(d, *SUPPLIER)
         goto(d, 'inquiry')
         assert q_text(d, '报价', 'button', 10), '无报价入口'
     step(d, 'S07 供方登录+询价列表', s07, '07-供方询价')
 
-    # S08 密封报价（PR #9 必填：含税口径/运价/交货方式，缺一返回 40001）
+    # S08 密封报价（单价/运价/可供数量/交货时间，交货日不得晚于期望到货止日）
     def s08():
         q_text(d, '报价').click(); time.sleep(0.6)
         m = modal(d)
-        q_ph_in(d, m, '单价').send_keys('860')
+        q_ph_in(d, m, '单价').send_keys('820')
         q_ph_in(d, m, '运价').send_keys('30')
         qty = q_ph_in(d, m, '数量'); qty.clear(); qty.send_keys('3000')
         dates = [e for e in m.find_elements(By.CSS_SELECTOR, 'input[type=date]') if _vis(e)]
         assert dates, '缺到货日输入'
-        set_val(d, dates[0], DS(22))  # 不得晚于询价期望到货日（S03 到货止=DS(22)，自动引入）
+        set_val(d, dates[0], DS(22))  # 不得晚于归集需求期望到货止（DS(22)）
         sels = [s for s in m.find_elements(By.CSS_SELECTOR, 'select') if _vis(s)]
         dt = next(s for s in sels
                   if any('港口离岸' in o.text for o in s.find_elements(By.CSS_SELECTOR, 'option')))
@@ -337,200 +406,168 @@ def run(d):
         q_text_in(d, m, '提交报价').click()
         t, seen = poll_toast(d, '报价已提交')
         assert t, 'toast未出现 | seen=%s' % seen
-    step(d, 'S08 密封报价提交', s08, '08-已报价')
+    step(d, 'S08 供方密封报价', s08, '08-已报价')
 
     logout(d)
 
-    # S09 截止揭示+比价快照
+    # S09 平台汇总揭示：模拟截止到期 → 汇总报价返回钢厂
     def s09():
-        # 模拟自然到期：将未截止询价的 deadline 提前（后端规定截止后方可揭示）
-        subprocess.run(['docker', 'exec', 'mine-platform-pg', 'psql', '-U', 'postgres', '-d',
-                        'mine_platform', '-c',
-                        "UPDATE biz_inquiry SET deadline=now()-interval '5 minutes' "
-                        "WHERE status IN ('SENT','QUOTING') AND deadline>now();"],
-                       capture_output=True, timeout=60)
-        login(d, *BUYER); goto(d, 'inquiry')
+        # 模拟自然到期：将未截止询价的 deadline 提前（平台揭示须在截止后）
+        subprocess.run(PG + [
+            "UPDATE biz_inquiry SET deadline=now()-interval '5 minutes' "
+            "WHERE status IN ('SENT','QUOTING') AND deadline>now();"],
+            capture_output=True, timeout=60)
+        login(d, *ADMIN)
+        goto(d, 'quote_inquiry')
+        q_text(d, '汇总报价返回钢厂', 'button', 12).click()
+        q_text(d, '确认汇总并返回钢厂', 'button', 12).click()  # 等待汇总弹窗异步打开并确认
+        t, seen = poll_toast(d, '已汇总')
+        assert t, '揭示toast未出现 | seen=%s' % seen
+        assert '1 家' in t, '报价家数非1：%s' % t
+    step(d, 'S09 平台汇总揭示', s09, '09-已揭示汇总')
+
+    logout(d)
+
+    # S10 钢厂查看比价并认可（全员认可 → 自动锁货锁价成单）
+    def s10():
+        login(d, *BUYER)
+        goto(d, 'inquiry')
         q_text(d, '详情').click(); time.sleep(0.6)
-        q_text(d, '截止揭示', 'button', 10).click()
-        q_text(d, '比价快照', 'div', 12)  # 等待揭示弹窗异步打开
+        q_text(d, '查看比价', 'button', 12).click()
+        q_text(d, '比价快照', 'div', 12)  # 等待快照弹窗异步打开
         m = top_modal(d)
         assert m and '比价快照' in m.text, '比价快照未渲染'
-    step(d, 'S09 截止揭示+比价快照', s09, '09-比价快照')
-
-    # S10 发出还价
-    def s10():
-        q_text(d, '议价').click(); time.sleep(0.6)
-        m = top_modal(d)
-        q_ph_in(d, m, '还价').send_keys('850')
-        q_text_in(d, m, '发出还价').click()
-        t, seen = poll_toast(d, '还价已发出')
-        assert t, 'toast未出现 | seen=%s' % seen
-        close_modals(d); close_modals(d)
-    step(d, 'S10 发出还价', s10, '10-还价已发出')
+        q_exact(d, '确认报价', 'button', 10).click()  # 比价快照弹窗按钮文案为「确认报价」
+        time.sleep(0.4)
+        confirm(d)
+        t, seen = poll_toast(d, '全员认可')
+        assert t, '认可toast未出现（应自动成单）| seen=%s' % seen
+    step(d, 'S10 钢厂比价认可自动成单', s10, '10-比价认可')
 
     logout(d)
 
-    # S11 中矿接受还价
+    # S11 供方确认订单（48h 期限）
     def s11():
-        login(d, *SUPPLIER); goto(d, 'bargain')
-        q_text(d, '接受', 'button', 12).click(); time.sleep(0.4)
-        confirm(d)
-        t, seen = poll_toast(d, '已接受')
-        assert t, 'toast未出现 | seen=%s' % seen
-    step(d, 'S11 供方接受还价', s11, '11-还价已接受')
-
-    logout(d)
-
-    # S12 需方定标
-    def s12():
-        login(d, *BUYER); goto(d, 'bargain')
-        q_text(d, '比价/议价', 'button', 12).click(); time.sleep(0.6)
-        q_text(d, '定标', 'button', 10).click(); time.sleep(0.4)
-        confirm(d)
-        t, seen = poll_toast(d, '定标成功')
-        assert t, 'toast未出现 | seen=%s' % seen
-    step(d, 'S12 需方定标', s12, '12-已定标')
-
-def _sign(d, btn_text):
-    """合同签署公共流程：勾选已核对条款 + 上传盖章件 + 签 署"""
-    q_text(d, btn_text, 'button', 12).click(); time.sleep(0.6)
-    m = modal(d)
-    cbs = [c for c in m.find_elements(By.CSS_SELECTOR, 'input[type=checkbox]') if _vis(c)]
-    assert cbs, '缺"已核对条款"勾选'
-    cbs[0].click()
-    f = [x for x in m.find_elements(By.CSS_SELECTOR, 'input[type=file]') if _vis(x)]
-    assert f, '缺盖章件上传控件'
-    f[0].send_keys(SEAL)
-    q_text_in(d, m, '签 署').click()
-    t, seen = poll_toast(d, '签署成功')
-    assert t, 'toast未出现 | seen=%s' % seen
-
-
-def _part3(d):
-    # S13 中矿确认订单
-    def s13():
-        login(d, *SUPPLIER); goto(d, 'order')
+        login(d, *SUPPLIER)
+        goto(d, 'order')
         q_text(d, '确认订单', 'button', 12).click(); time.sleep(0.4)
         confirm(d)
         t, seen = poll_toast(d, '订单已确认')
         assert t, 'toast未出现 | seen=%s' % seen
-    step(d, 'S13 供方确认订单', s13, '13-订单已确认')
+    step(d, 'S11 供方确认订单', s11, '11-订单已确认')
 
-    # S14 需方生成合同
-    def s14():
-        login(d, *BUYER); goto(d, 'order')
-        q_text(d, '生成合同', 'button', 12).click()
-        t, seen = poll_toast(d, '合同已生成')
+    logout(d)
+
+    # S12 钢厂提交提货计划（单成员全员提交后订单转待运输方案）
+    def s12():
+        login(d, *BUYER)
+        goto(d, 'order')
+        q_exact(d, '提货计划', 'button', 12).click(); time.sleep(0.6)
+        m = modal(d)
+        assert '提货计划' in m.text, '提货计划弹窗未出现'
+        dates = [e for e in m.find_elements(By.CSS_SELECTOR, 'input[type=date]') if _vis(e)]
+        assert dates, '缺开始提货日期'
+        set_val(d, dates[0], DS(0))
+        q_ph_in(d, m, '吨/天').send_keys('1000')
+        q_text_in(d, m, '保 存').click()
+        t, seen = poll_toast(d, '提货计划已提交')
         assert t, 'toast未出现 | seen=%s' % seen
-    step(d, 'S14 需方生成合同', s14, '14-合同已生成')
+    step(d, 'S12 钢厂提交提货计划', s12, '12-提货计划已提交')
 
-    # S15 订单详情渲染
+    logout(d)
+
+    # S13 平台制定物流方案 + 新增分段运单（按 3000 吨订单行定位按钮，避免命中旧订单）
+    def s13():
+        login(d, *ADMIN)
+        goto(d, 'logistics_dispatch')
+        q_text(d, '物流调度', 'button', 10).click()
+
+        def row_btn(txt, timeout=12):
+            """在订单表中定位「3000 吨订单」所在行的按钮（列表 id 倒序，首个匹配即本次订单）"""
+            end = time.time() + timeout
+            while True:
+                for b in d.find_elements(By.XPATH, "//button[normalize-space()='%s']" % txt):
+                    if not _vis(b):
+                        continue
+                    try:
+                        row = b.find_element(By.XPATH, 'ancestor::tr[1]')
+                    except Exception:
+                        continue
+                    if re.search(r'(?<!\d)3000(?!\d)', row.text.replace(',', '')):
+                        return b
+                if time.time() >= end:
+                    raise AssertionError('未找到 3000 吨订单行的「%s」按钮' % txt)
+                time.sleep(0.3)
+
+        row_btn('制定方案').click(); time.sleep(0.6)
+        m = modal(d)
+        assert '制定物流方案' in m.text, '方案弹窗未出现'
+        q_text_in(d, m, '提 交').click()
+        t, seen = poll_toast(d, '方案已制定')
+        assert t, 'toast未出现 | seen=%s' % seen
+        row_btn('新增分段运单').click(); time.sleep(0.6)
+        m2 = modal(d)
+        assert '新增分段运单' in m2.text, '分段运单弹窗未出现'
+        q_ph_in(d, m2, '如：钢厂厂区').send_keys('日照港')
+        eta = [e for e in m2.find_elements(By.CSS_SELECTOR, "input[type='datetime-local']") if _vis(e)]
+        assert eta, '缺预计船到港时间'
+        set_val(d, eta[0], DT(1, '09:00'))
+        dates = [e for e in m2.find_elements(By.CSS_SELECTOR, 'input[type=date]') if _vis(e)]
+        assert len(dates) >= 2, '缺计划发运/到达日'
+        set_val(d, dates[0], DS(1)); set_val(d, dates[1], DS(3))
+        q_ph_in(d, m2, '运费总额').send_keys('100')
+        pqs = [e for e in m2.find_elements(
+            By.XPATH, ".//div[contains(@class,'form-row')][label[contains(text(),'计划量')]]/input") if _vis(e)]
+        if pqs and not (pqs[0].get_attribute('value') or '').strip():
+            set_val(d, pqs[0], '3000')
+        shot('13-分段运单表单')
+        q_text_in(d, m2, '提 交').click()
+        t2, seen2 = poll_toast(d, '运单已创建')
+        assert t2, 'toast未出现 | seen=%s' % seen2
+    step(d, 'S13 平台方案+分段运单', s13, '13-方案与运单')
+
+    # S14 平台确认发运/到达（在途监控）
+    def s14():
+        close_modals(d)
+        q_text(d, '在途监控', 'button', 10).click()
+        q_text(d, '确认发运', 'button', 12).click(); time.sleep(0.6)
+        q_text(d, '提 交').click()
+        t, seen = poll_toast(d, '已发运')
+        assert t, '发运toast未出现 | seen=%s' % seen
+        q_text(d, '确认到达', 'button', 12).click(); time.sleep(0.6)
+        q_text(d, '提 交').click()
+        t2, seen2 = poll_toast(d, '已到达')
+        assert t2, '到达toast未出现 | seen=%s' % seen2
+    step(d, 'S14 平台确认发运/到达', s14, '14-发运到达')
+
+    logout(d)
+
+    # S15 钢厂签收（履约跟踪-运单）
     def s15():
+        login(d, *BUYER)
+        goto(d, 'track')
+        q_text(d, '签收', 'button', 12).click(); time.sleep(0.4)
+        confirm(d)
+        t, seen = poll_toast(d, '已签收')
+        assert t, 'toast未出现 | seen=%s' % seen
+    step(d, 'S15 钢厂签收', s15, '15-已签收')
+
+    # S16 钢厂订单详情渲染
+    def s16():
+        goto(d, 'order')
         q_text(d, '详情').click(); time.sleep(0.7)
         m = top_modal(d)
         assert m and '订单详情' in m.text, '订单详情未渲染'
         close_modals(d)
-    step(d, 'S15 订单详情渲染', s15, '15-订单详情')
+    step(d, 'S16 钢厂订单详情渲染', s16, '16-订单详情')
 
-    # S16 需方签署
-    def s16():
-        goto(d, 'contract')
-        # 等待列表异步加载完成（有行或出现"暂无合同"空态）
-        WebDriverWait(d, 12).until(lambda dd: [
-            r for r in dd.find_elements(By.CSS_SELECTOR, 'table tbody tr') if _vis(r)]
-            or [e for e in dd.find_elements(By.XPATH, "//div[contains(@class,'empty')][contains(.,'暂无合同')]") if _vis(e)])
-        rows = [r for r in d.find_elements(By.CSS_SELECTOR, 'table tbody tr') if _vis(r)]
-        assert rows, '合同列表无行'
-        _sign(d, '需方签署')
-    step(d, 'S16 需方签署合同', s16, '16-需方已签')
-
-    logout(d)
-
-    # S17 供方签署
+    # S17 履约跟踪渲染（五阶段进度 + 节点台账）
     def s17():
-        login(d, *SUPPLIER); goto(d, 'contract')
-        _sign(d, '供方签署')
-    step(d, 'S17 供方签署合同', s17, '17-供方已签')
-
-    logout(d)
-
-    # S18 平台核验合同（PR #9：双签后合同待平台核验，核验通过方生效并转履约）
-    def s18():
-        login(d, *ADMIN)
-        goto(d, 'contract_admin')
-        WebDriverWait(d, 12).until(lambda dd: [
-            r for r in dd.find_elements(By.CSS_SELECTOR, 'table tbody tr') if _vis(r)])
-        rows = [r for r in d.find_elements(By.CSS_SELECTOR, 'table tbody tr') if _vis(r)]
-        btns = [b for r in rows for b in r.find_elements(
-            By.XPATH, ".//button[contains(normalize-space(),'核验')]") if _vis(b)]
-        assert btns, '无待核验合同（列表无核验按钮）'
-        btns[0].click(); time.sleep(0.6)
-        m = top_modal(d)
-        assert m and '合同核验' in m.text, '核验弹窗未渲染'
-        shot('18-合同核验弹窗')
-        q_text_in(d, m, '提 交').click()
-        t, seen = poll_toast(d, '合同已生效并纳入台账')
-        assert t, 'toast未出现 | seen=%s' % seen
-        close_modals(d)
-        shot('18-合同已生效')
-    step(d, 'S18 平台核验合同', s18, None)
-
-    # S19 结算工作台渲染（合同生效后订单转履约，方可进入结算）
-    def s19():
-        login(d, *BUYER); goto(d, 'settlement')
-        assert q_text(d, '结算工作台', 'h3', 10), '结算工作台未渲染'
-        assert q_css(d, 'select', 8), '缺订单选择器'
-    step(d, 'S19 结算工作台渲染', s19, '19-结算工作台')
-
-    # S20 质检录入
-    def s20():
-        q_text(d, '质检录入').click(); time.sleep(0.6)
-        m = modal(d)
-        q_ph_in(d, m, '实收数量').send_keys('2980')
-        ta = q_ph_in(d, m, '检验指标', tag='textarea')
-        ta.send_keys('Fe 62.1%，水分 7.8%')
-        q_text_in(d, m, '保 存').click()
-        t, seen = poll_toast(d, '质检记录已保存')
-        assert t, 'toast未出现 | seen=%s' % seen
-    step(d, 'S20 质检录入', s20, '20-质检已录')
-
-    # S21 生成结算
-    def s21():
-        q_text(d, '生成结算').click(); time.sleep(0.6)
-        m = modal(d)
-        qty = q_ph_in(d, m, '结算数量'); qty.clear(); qty.send_keys('2980')
-        q_text_in(d, m, '生 成').click()
-        t, seen = poll_toast(d, '结算单已生成')
-        assert t, 'toast未出现 | seen=%s' % seen
-    step(d, 'S21 生成结算', s21, '21-结算已生成')
-
-    logout(d)
-
-    # S22 供应商确认结算
-    def s22():
-        login(d, *SUPPLIER); goto(d, 'settlement')
-        q_text(d, '供应商确认', 'button', 12).click(); time.sleep(0.4)
-        confirm(d)
-        t, seen = poll_toast(d, '已确认')
-        assert t, 'toast未出现 | seen=%s' % seen
-    step(d, 'S22 供应商确认结算', s22, '22-结算已确认')
-
-    logout(d)
-
-    # S23 需方确认+付款登记（供应商确认后状态为待需方确认，需方确认后方可付款登记）
-    def s23():
-        login(d, *BUYER); goto(d, 'settlement')
-        q_text(d, '需方确认', 'button', 12).click(); time.sleep(0.4)
-        confirm(d)
-        t, seen = poll_toast(d, '需方已确认')
-        assert t, '需方确认toast未出现 | seen=%s' % seen
-        time.sleep(0.6)
-        q_text(d, '付款登记', 'button', 12).click(); time.sleep(0.6)
-        m = modal(d)
-        q_text_in(d, m, '登 记').click()
-        t2, seen2 = poll_toast(d, '付款已登记')
-        assert t2, 'toast未出现 | seen=%s' % seen2
-    step(d, 'S23 需方确认+付款登记', s23, '23-付款已登记')
+        goto(d, 'track')
+        assert q_css(d, '.flow-steps', 8), '履约五阶段未渲染'
+        assert q_css(d, '.trace-line', 8), '节点台账未渲染'
+        assert q_text(d, '运单', 'button', 6), '缺运单节点筛选'
+    step(d, 'S17 履约跟踪渲染', s17, '17-履约跟踪')
 
     # S24 console 错误收集
     def s24():
@@ -547,7 +584,6 @@ def main():
     d = drv()
     try:
         run(d)
-        _part3(d)
     finally:
         try:
             d.quit()

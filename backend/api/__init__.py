@@ -1,7 +1,19 @@
 """API 蓝图聚合：/api/v1 前缀，各业务模块分包注册（PRD 8 工程约定）。"""
 from flask import Blueprint
 
+from ..common import ok
+from ..db import q1, with_db
+
 bp = Blueprint('api', __name__, url_prefix='/api/v1')
+
+
+@bp.get('/health')
+def health():
+    """健康检查（C12，部署适配方案 §5）：供负载均衡/监控探活，无鉴权，仅验证 DB 可达。"""
+    with with_db() as conn:
+        q1(conn, 'SELECT 1')
+    return ok({'status': 'UP'})
+
 
 # 导入即注册路由（保持与 PRD 6.2 接口清单一致）
 from . import auth      # noqa: E402,F401  登录注册

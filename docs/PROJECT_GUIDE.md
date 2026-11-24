@@ -395,7 +395,28 @@ python run.py          # → http://127.0.0.1:8000
 
 ### 5.6 生产部署注意
 
+**核心约束：生产环境严禁开启 `MINE_SEED_DEMO`**——种子数据含演示企业/账号/合同/消息，会污染真实业务数据。生产 `.env` 须按 `.env.example` 新建（不得拷贝本地开发 `.env`），且不包含 `MINE_SEED_DEMO`。
+
+生产数据初始化流程：
+
+1. **建库表（无种子）**：`docker compose up -d` → 注入环境变量（`MINE_PG_DSN`/`MINE_JWT_SECRET` 必填，Web 进程设 `MINE_DISABLE_JOBS=1`）→ `python run.py`。日志仅出现「数据库表结构已创建」；若出现 `MINE_SEED_DEMO` 告警说明配置有误，立即停止。
+2. **创建平台管理员（建表后、对外开放前）**：在服务器本机执行管理 CLI（不经 HTTP、不经公开注册路径，公开注册仅允许 STEEL/SUPPLIER 企业类型）：
+
+   ```bash
+   set -a; . ./.env; set +a
+   python manage.py create-admin            # 交互式：手机号 + getpass 双输密码（≥8位含字母数字）
+   python manage.py list-admins             # 审计核对
+   python manage.py reset-admin-password    # 管理员改密/应急重置
+   ```
+
+   已存在管理员时 `create-admin` 默认拒绝，增补需 `--force` 并输入 `YES` 二次确认；每次变更写 `sys_operation_log`（ip=CLI）留痕。
+3. **基础数据人工维护**：管理员登录运营端「基础数据」，维护品种档案与当日基准价/港口价（生产不写种子价格）。
+4. **真实用户接入**：企业经注册页提交（营业执照附件 + 审核状态 PENDING）→ 运营端「企业管理」准入审核 → 通过后可登录使用。
+
+其余注意事项：
+
 - 更换 WSGI 服务器（waitress/gunicorn），Flask 内置服务器仅限演示；
 - 通过环境变量注入 `MINE_PG_DSN` 与 `MINE_JWT_SECRET`，勿使用代码默认值；
+- 定时任务由独立进程调度（systemd timer + `python run.py --jobs`），Web 进程保持 `MINE_DISABLE_JOBS=1`；
 - 建议为 PostgreSQL 配置独立账号（最小权限）与定期备份策略；
 - 上传附件存于本地 `uploads/` 目录，多实例部署需改为对象存储。
