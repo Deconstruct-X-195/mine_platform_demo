@@ -58,7 +58,7 @@
     const rows = d.orders || [];
     const headRow = UI.h('div', { class: 'ov-row ov-head' },
       UI.h('span', {}, '订单号'), UI.h('span', {}, '品种'),
-      UI.h('span', { class: 'num' }, '数量(湿吨)'), UI.h('span', { class: 'num' }, '金额(元)'),
+      UI.h('span', { class: 'num' }, '数量(湿吨)'),
       UI.h('span', { class: 'num' }, '交货日'), UI.h('span', {}, '状态'));
     const listBox = UI.h('div', { class: 'scroll-box' });
     page.appendChild(UI.h('div', { class: 'card' },
@@ -73,7 +73,6 @@
       UI.h('span', {}, r.order_no),
       UI.h('span', {}, (r.varietyName || '-') + (r.grade != null ? ' ' + UI.fmtQty(r.grade) + '%' : '')),
       UI.h('span', { class: 'num' }, UI.fmtQty(r.myQty != null ? r.myQty : r.quantity)),
-      UI.h('span', { class: 'num' }, UI.fmtMoney(r.amount)),
       UI.h('span', { class: 'num' }, UI.fmtDate(r.delivery_date)),
       UI.h('span', {}, UI.statusTag('ORDER', r.status)));
     // 两份相同内容交替滚动实现无缝循环；数据少时按容器高度补齐份数
@@ -93,7 +92,7 @@
     /* 1. KPI 面板（五卡） */
     const kpis = [
       ['总订单数', d.kpi.orderTotal, '单', '#/order'],
-      ['总交易额', UI.fmtMoney(d.kpi.totalAmount), '元', '#/order'],
+      ['总吨数', UI.fmtQty(d.kpi.totalQty), '湿吨', '#/order'],
       ['待报价单数', d.kpi.pendingQuote, '条', '#/inquiry'],
       ['运输中单数', d.kpi.inTransit, '票', '#/track'],
       ['已完成订单', d.kpi.completed, '单', '#/order'],
@@ -120,14 +119,13 @@
             onclick: () => { location.hash = SUP_TODO_HASH[t.kind] || '#/'; } }, '去处理') },
       ], todos) : UI.h('div', { class: 'empty' }, '暂无待办事项，一切进展顺利')));
 
-    /* 3. 近期动态（运营端发布的信息，最近 10 条；需要本端后续操作的归类为「任务」） */
+    /* 3. 近期动态（运营端发布的公告/活动信息，最近 10 条；订单相关的任务/消息在小铃铛中显示） */
     const recent = d.recent || [];
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('h3', { class: 'bar-title' }, '近期动态'),
       recent.length ? UI.table([
-        { label: '分类', render: (r) => r.needAction
-          ? UI.h('span', { class: 'tag red' }, '任务')
-          : UI.h('span', { class: 'tag' }, '消息') },
+        { label: '分类', render: (r) => UI.h('span', { class: 'tag' },
+          ({ ANNOUNCE: '公告', ACTIVITY: '活动' }[r.msgCategory || r.category] || '消息')) },
         { label: '动态', render: (r) => UI.h('span', {}, r.title,
             UI.h('div', { class: 'hint' }, r.content)) },
         { label: '时间', render: (r) => UI.fmtDateTime(r.created_at) },

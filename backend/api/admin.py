@@ -715,7 +715,8 @@ def create_aggregated_order():
         raise ApiError(40401, '部分需求明细不存在')
     base = items[0]
     # 周期分组：一次性订单归集 →「订单归集」；月度/季度计划归集 →「需求归集」，两类不可混合
-    kinds = {'ONE_TIME' if it['cycle_type'] == 'ONE_TIME' or not it['cycle_type'] else 'DEMAND'
+    # 注意：落库 agg_kind 必须是 ORDER（与列默认值/文档/订单归集列表过滤一致），ONE_TIME 是需求周期类型，不可直接落库
+    kinds = {'ORDER' if it['cycle_type'] == 'ONE_TIME' or not it['cycle_type'] else 'DEMAND'
              for it in items}
     if len(kinds) > 1:
         raise ApiError(40001, '一次性订单与月度/季度计划不可混合归集，请分开勾选分别归集')
@@ -1214,8 +1215,12 @@ def platform_quote_summary(iid):
                q.tax_type AS "taxType", q.freight_price AS "freightPrice",
                q.delivery_place AS "deliveryPlace", q.pay_terms AS "payTerms",
                q.quality_commit AS "qualityCommit", q.remark, q.valid_until AS "validUntil",
-               q.status, q.version
+               q.status, q.version,
+               q.variety_id AS "varietyId", qv.variety_name AS "varietyName",
+               q.origin, q.grade,
+               q.price_sign AS "priceSign", q.price_float AS "priceFloat"
         FROM biz_quote q JOIN ent_company c ON c.id=q.supplier_id
+        LEFT JOIN base_variety qv ON qv.id=q.variety_id
         WHERE q.inquiry_id=%s AND q.is_deleted=0 AND q.status != 'REJECTED'
         ORDER BY q.price ASC
         """, (iid,))
@@ -1409,6 +1414,10 @@ def _admin_order_select():
                  WHERE q.id=o.quote_id AND q.is_deleted=0 LIMIT 1) AS "freightPrice",
                (SELECT q.tax_type FROM biz_quote q
                  WHERE q.id=o.quote_id AND q.is_deleted=0 LIMIT 1) AS "taxType",
+               (SELECT q.price_sign FROM biz_quote q
+                 WHERE q.id=o.quote_id AND q.is_deleted=0 LIMIT 1) AS "priceSign",
+               (SELECT q.price_float FROM biz_quote q
+                 WHERE q.id=o.quote_id AND q.is_deleted=0 LIMIT 1) AS "priceFloat",
                o.delivery_type AS "deliveryType", o.delivery_place AS "deliveryPlace",
                o.delivery_date AS "deliveryDate", o.settle_type AS "settleType",
                s.company_name AS "supplierName",

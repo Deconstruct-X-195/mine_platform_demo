@@ -29,6 +29,9 @@ def list_messages():
     if p.get('category') in MSG_CATEGORIES:
         where += ' AND msg_category=%s'
         args.append(p['category'])
+    if p.get('scope') == 'bell':
+        # 小铃铛列表：已被「清除」的消息不再显示（全部消息页不带 scope，不受影响）
+        where += ' AND bell_cleared=0'
     total = q1(g.conn, "SELECT count(*) AS c FROM sys_message WHERE " + where, args)['c']
     unread = q1(g.conn,
                 "SELECT count(*) AS c FROM sys_message WHERE " + where + ("" if p.get('isRead') in ('0', '1') else " AND is_read=0"),
@@ -42,6 +45,43 @@ def list_messages():
     data = page_data(rows, total, page, size)
     data['unread'] = unread
     return ok(data)
+
+
+@bp.get('/messages/<int:mid>')
+@auth_required
+def message_detail(mid):
+    """消息完整信息（消息详情页）：仅接收方可查看。"""
+    row = q1(g.conn, """
+        SELECT id, receiver_company_id AS "receiverCompanyId", title, content,
+               biz_type AS "bizType", biz_id AS "bizId", is_read AS "isRead",
+               msg_category AS "msgCategory", need_action AS "needAction",
+               created_at AS "createdAt"
+        FROM sys_message WHERE id=%s""", (mid,))
+    if not row:
+        raise ApiError(40401, '消息不存在')
+    if (not g.ctx.is_plat and row['receiverCompanyId'] is not None
+            and (not g.ctx.company or g.ctx.company['id'] != row['receiverCompanyId'])):
+        raise ApiError(40301, '无权限查看该消息')
+    if not row['isRead'] and (g.ctx.is_plat or row['receiverCompanyId'] is None
+                              or (g.ctx.company and g.ctx.company['id'] == row['receiverCompanyId'])):
+        execute(g.conn, "UPDATE sys_message SET is_read=1 WHERE id=%s", (mid,))
+        row['isRead'] = 1
+    return ok(row)
+
+
+@bp.put('/messages/clear-bell')
+@auth_required
+def clear_bell():
+    """清除小铃铛消息列表：当前消息不再显示在铃铛列表；「全部消息」页保留全部记录。"""
+    if g.ctx.is_plat:
+        n = execute(g.conn, "UPDATE sys_message SET bell_cleared=1 WHERE receiver_company_id IS NULL AND bell_cleared=0")
+        return ok({'updated': n})
+    if not g.ctx.company:
+        return ok({'updated': 0})
+    n = execute(g.conn, ("UPDATE sys_message SET bell_cleared=1 WHERE"
+                         " (receiver_company_id=%s OR receiver_company_id IS NULL) AND bell_cleared=0"),
+                (g.ctx.company['id'],))
+    return ok({'updated': n})
 
 
 @bp.put('/messages/<int:mid>/read')

@@ -606,6 +606,34 @@
   function fmtMoney(v) { return v == null || v === '' ? '-' : Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   const fmtQty = fmtMoney; /* 吨数同样保留两位小数 */
 
+  /* 报价模式单价展示辅助：单价 = 品种港口现货价 ± 上下浮（如 663.00 +23.00）。
+     spotPrices() 拉取一次品种→现货价映射（黄骅港基准）；spotDiff() 按行反推上下浮分解，
+     无基准价时回退显示绝对单价 */
+  async function spotPrices() {
+    try {
+      const r = await API.get('/base-prices/ports' + API.qs({ port: '黄骅港' }));
+      const map = {};
+      (r.list || []).forEach((x) => { map[x.varietyName] = Number(x.price); });
+      return map;
+    } catch (e) { return {}; }
+  }
+  function spotDiff(base, price) {
+    if (price == null || isNaN(Number(price))) return '-';
+    if (base == null || isNaN(Number(base))) return fmtMoney(price);
+    const diff = Number(price) - Number(base);
+    /* 固定字样展示：不显示当日基准价数字，仅「港口现货价格 ± 上下浮」 */
+    return diff === 0 ? '港口现货价格' : '港口现货价格 ' + (diff >= 0 ? '+' : '-') + fmtMoney(Math.abs(diff));
+  }
+  /* 优先展示报价落库时供应商申报的 ±方向与浮金额（spotShown）；
+     无存储值（旧数据）时回退 spotDiff 按当前基准价反推 */
+  function spotShown(sign, float) {
+    const f = Number(float);
+    if ((sign === '+' || sign === '-') && !isNaN(f)) {
+      return f === 0 ? '港口现货价格' : '港口现货价格 ' + sign + fmtMoney(Math.abs(f));
+    }
+    return null;
+  }
+
   /* 行首勾选框列：picked 为选中键 Set（默认键为行 id，无 id 时取整行 JSON）；
      仅作行选择展示，click 阻止冒泡（避免触发行点击，如运输调度选单） */
   function selCol(picked, keyFn) {
@@ -628,6 +656,6 @@
   window.UI = {
     h, toast, modal, confirmBox, table, pager, statusTag, kv, formRow, selectField, dropdown,
     trendChart, multiTrendChart, donutChart, hbarChart, input, statusFilter, timeline, STATUS,
-    fmtDate, fmtDateTime, fmtMoney, fmtQty, selCol,
+    fmtDate, fmtDateTime, fmtMoney, fmtQty, selCol, spotPrices, spotDiff, spotShown,
   };
 })();

@@ -230,10 +230,14 @@
       let existing = null;
       if (row) existing = await API.get('/demands/' + row.id);
       const allVarieties = (await API.get('/base/varieties')).list;
-      /* 需求产品限定：仅可选择 PB粉 和 中华混一号 */
-      const ALLOWED_VARIETIES = ['PB粉', '中华混一号'];
+      /* 需求产品限定：PB粉 / 中华混一号 / 其它（其它仅做需求归集，不形成实际订单） */
+      const ALLOWED_VARIETIES = ['PB粉', '中华混一号', '其它'];
       const varieties = allVarieties.filter((v) => ALLOWED_VARIETIES.indexOf(v.varietyName) >= 0);
-      const vOpts = varieties.map((v) => [v.id, v.varietyName + '(' + v.varietyCode + ')']);
+      const otherVariety = varieties.find((v) => v.varietyCode === 'OTHER') || null;
+      /* 「其它」固定排在选项末尾，避免空值时被浏览器默认选中 */
+      const vOpts = varieties.filter((v) => v !== otherVariety)
+        .map((v) => [v.id, v.varietyName + '(' + v.varietyCode + ')']);
+      if (otherVariety) vOpts.push([otherVariety.id, otherVariety.varietyName + '(' + otherVariety.varietyCode + ')']);
       const firstItem = (existing && existing.items && existing.items[0]) || {};
       /* 采购周期：品位之后新增「周期类型」+「周期」（两个框）。
          月度 → 周期显示 年 + 月份；季度 → 周期显示 年 + 季度 */
@@ -292,8 +296,13 @@
       }
       deliveryTypeSel.addEventListener('change', renderPlace);
       renderPlace();
+      const isOtherSel = (val) => !!(otherVariety && String(val) === String(otherVariety.id));
       const f = {
         variety: UI.selectField(vOpts, firstItem.varietyId == null ? '' : String(firstItem.varietyId)),
+        /* 「其它」产品名称：编辑已有「其它」需求时回填（存于需求名称） */
+        otherName: UI.input('text',
+          (existing && isOtherSel(firstItem.varietyId)) ? (existing.demand_name || '') : '',
+          { placeholder: '请输入其它产品名称' }),
         grade: UI.input('number', firstItem.grade == null ? '' : String(firstItem.grade), { placeholder: '品位%，如 62' }),
         quantity: UI.input('number', firstItem.quantity == null ? '' : Number(firstItem.quantity).toFixed(2),
           { placeholder: '数量（湿吨）', step: '0.01' }),
@@ -316,6 +325,29 @@
       f.settleType.addEventListener('change', updateSettleReq);
       updateSettleReq();
 
+      /* 「其它」品种模式：仅 产品名称/其它产品名称/品位/周期类型/周期/数量 必填，
+         交货、到货、结算等字段转为选填；切换产品名称时同步红星标记 */
+      const otherNameRow = UI.formRow('其它产品名称', f.otherName, true,
+        '此产品暂只做需求归集，不形成实际订单');
+      const deliveryRow = UI.h('div', { class: 'form-row' },
+        UI.h('label', { class: 'req' }, '交货方式'), f.deliveryType);
+      const placeRow = UI.h('div', { class: 'form-row' },
+        UI.h('label', { class: 'req' }, '交货地点'), f.place);
+      const expectStartRow = UI.formRow('期望到货起', f.expectStart, true);
+      const expectEndRow = UI.formRow('期望到货止', f.expectEnd, true);
+      const settleRow = UI.formRow('结算方式', f.settleType, true);
+      const otherMode = () => isOtherSel(f.variety.value);
+      function updateOtherMode() {
+        const other = otherMode();
+        otherNameRow.style.display = other ? '' : 'none';
+        [deliveryRow, placeRow, expectStartRow, expectEndRow, settleRow].forEach((r) => {
+          const lab = r.querySelector('label');
+          if (lab) lab.classList.toggle('req', !other);
+        });
+      }
+      f.variety.addEventListener('change', updateOtherMode);
+      updateOtherMode();
+
       /* 变更申请（已提交/待询价/已归集未询价）：先填信息后写理由——变更理由字段置于表单末尾，保存一次性提交 */
       const isChange = row && (row.status === 'SUBMITTED' || row.status === 'TO_INQUIRY'
         || (row.status === 'INQUIRING' && row.aggOpen));
@@ -325,20 +357,19 @@
       }
 
       const body = UI.h('form', { onsubmit: (e) => e.preventDefault() },
+        UI.h('div', { class: 'hint', style: 'grid-column: 1 / -1; margin-bottom: 8px' },
+          '若提报需求，周期类型请选择“月度”、“季度”；若进行实际订单询价，周期类型请选择“一次性订单”。'),
         UI.h('div', { class: 'form-grid' },
           UI.formRow('产品名称', f.variety, true),
           UI.formRow('品位(%)', f.grade, true),
+          otherNameRow,
           UI.formRow('周期类型', cycleTypeSel, true),
           UI.formRow('周期', cycleBox, true),
           UI.formRow('数量(湿吨)', f.quantity, true),
-          UI.h('div', { class: 'form-duo' },
-            UI.h('div', { class: 'form-row' },
-              UI.h('label', { class: 'req' }, '交货方式'), f.deliveryType),
-            UI.h('div', { class: 'form-row' },
-              UI.h('label', { class: 'req' }, '交货地点'), f.place)),
-          UI.formRow('期望到货起', f.expectStart, true),
-          UI.formRow('期望到货止', f.expectEnd, true),
-          UI.formRow('结算方式', f.settleType, true),
+          UI.h('div', { class: 'form-duo' }, deliveryRow, placeRow),
+          expectStartRow,
+          expectEndRow,
+          settleRow,
           settleDaysRow,
           UI.h('div', { class: 'form-row full' }, UI.h('label', {}, '质量要求（含备注）'), f.qualityReq),
           isChange ? UI.h('div', { class: 'form-row full' }, UI.h('label', { class: 'req' }, '变更理由'), f.changeReason) : null));
@@ -360,18 +391,24 @@
           }
           if (!f.variety.value) { UI.toast('请选择产品名称', 'err'); return; }
             if (!f.grade.value || !f.quantity.value) { UI.toast('品位、数量为必填', 'err'); return; }
-            if (PLACE_OPTIONS[deliveryTypeSel.value] && !placeVal) { UI.toast('请选择交货地点', 'err'); return; }
+            /* 「其它」品种：其它产品名称必填，交货/到货信息选填 */
+            if (otherMode() && !String(f.otherName.value || '').trim()) { UI.toast('请填写其它产品名称', 'err'); return; }
+            if (!otherMode()) {
+              if (PLACE_OPTIONS[deliveryTypeSel.value] && !placeVal) { UI.toast('请选择交货地点', 'err'); return; }
+              if (!f.expectStart.value || !f.expectEnd.value) { UI.toast('期望到货日期为必填', 'err'); return; }
+              if (f.expectEnd.value < f.expectStart.value) { UI.toast('期望到货截止日不能早于起始日', 'err'); return; }
+            }
             if (f.settleType.value === 'CREDIT' && !f.settleDays.value) { UI.toast('选择账期结算必须填写账期天数', 'err'); return; }
-            if (!f.expectStart.value || !f.expectEnd.value) { UI.toast('期望到货日期为必填', 'err'); return; }
-            if (f.expectEnd.value < f.expectStart.value) { UI.toast('期望到货截止日不能早于起始日', 'err'); return; }
             const vName = (varieties.find((v) => String(v.id) === f.variety.value) || {}).varietyName || '矿产品';
             const payload = {
-              /* 变更/编辑保留原需求名称，仅新建时按品类自动生成 */
-              demandName: (row && existing && existing.demand_name) || (vName + '采购需求'),
+              /* 变更/编辑保留原需求名称；「其它」品种以填写的其它产品名称作为需求名称 */
+              demandName: otherMode()
+                ? (String(f.otherName.value || '').trim() || '其它采购需求')
+                : ((row && existing && existing.demand_name) || (vName + '采购需求')),
               deliveryType: deliveryTypeSel.value,
-              deliveryPlace: placeVal,
-              expectArriveStart: f.expectStart.value,
-              expectArriveEnd: f.expectEnd.value,
+              deliveryPlace: placeVal || null,
+              expectArriveStart: f.expectStart.value || null,
+              expectArriveEnd: f.expectEnd.value || null,
               settleType: f.settleType.value,
               settleDays: f.settleDays.value ? Number(f.settleDays.value) : null,
               qualityReq: f.qualityReq.value,

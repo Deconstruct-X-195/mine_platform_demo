@@ -10,12 +10,6 @@
     return mode === 'ROAD' ? (short ? '全程' : '全程持续运输') : '第 ' + seg + ' 列';
   }
 
-  /* 金额 = 总价 × 数量（总价 = 单价 + 运费；钢厂端按本厂份额 myQty，供应商/运营端按订单总量） */
-  function amountOf(r) {
-    return (Number(r.unit_price) + Number(r.freight_price || 0))
-      * Number(r.myQty != null ? r.myQty : (r.quantity != null ? r.quantity : 0));
-  }
-
   /* -------- 共享：运单列 -------- */
   function waybillCols(mode, onChanged, carriers) {
     return [
@@ -54,6 +48,7 @@
 
     async function load() {
       const d = await API.get('/orders' + API.qs({ page: pageNo, size: SIZE }));
+      const spotMap = await UI.spotPrices();   // 报价模式单价：品种→港口现货价
       pageRows = d.list || [];
       pageRows.forEach((r) => rowCache.set(r.id, r));
       listBox.innerHTML = '';
@@ -77,8 +72,9 @@
         { key: 'varietyName', label: '品种' },
         { key: 'grade', label: '品位(%)' },
         { key: 'quantity', label: '数量(湿吨)', num: true, render: (r) => UI.fmtMoney(r.myQty != null ? r.myQty : r.quantity) },
-        { label: '总价(元/湿吨)', num: true, render: (r) => UI.fmtMoney(Number(r.unit_price) + Number(r.freight_price || 0)) },
-        { key: 'amount', label: '金额', num: true, render: (r) => UI.fmtMoney(amountOf(r)) },
+        { label: '单价(元/湿吨)', num: true,
+          render: (r) => UI.spotShown(r.priceSign, r.priceFloat) || UI.spotDiff(spotMap[r.varietyName], r.unit_price) },
+        { label: '运费(元/湿吨)', num: true, render: (r) => (r.freight_price != null ? UI.fmtMoney(r.freight_price) : '-') },
         { key: 'delivery_date', label: '预计交货日', render: (r) => UI.fmtDate(r.delivery_date) },
         { key: 'status', label: '状态', render: (r) => UI.statusTag('ORDER', r.status) },
         { key: 'supplierName', label: '供方' },
@@ -96,19 +92,21 @@
       const hb = listCard.querySelector('thead input[type=checkbox]');
       if (hb) hb.checked = pageRows.length > 0 && pageRows.every((r) => selected.has(r.id));
     }
-    function batchExport() {
+    async function batchExport() {
       const rows = selRows();
       if (!rows.length) { UI.toast('请先勾选订单', 'err'); return; }
+      const spotMap = await UI.spotPrices();   // 报价模式单价：品种→港口现货价
+      const priceShown = (r) => UI.spotShown(r.priceSign, r.priceFloat) || UI.spotDiff(spotMap[r.varietyName], r.unit_price);
       const ORDER_TXT = { PENDING_PICKUP: '待收集提货计划', PENDING_TRANSPORT: '待制定运输方案', PENDING_CONFIRM: '待确认', PENDING_CONTRACT: '待签合同', PENDING_EFFECT: '待合同生效', PERFORMING: '履约中', COMPLETED: '已完成', CANCELLED: '已失效' };
       const esc = (s) => '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"';
-      const lines = [['订单号', '品种', '品位(%)', '数量(湿吨)', '总价(元/湿吨)', '金额', '预计交货日', '状态', '供方', '确认截止'].map(esc)]
+      const lines = [['订单号', '品种', '品位(%)', '数量(湿吨)', '单价(元/湿吨)', '运费(元/湿吨)', '预计交货日', '状态', '供方', '确认截止'].map(esc)]
         .concat(rows.map((r) => [
           r.order_no,
           r.varietyName,
           r.grade,
           UI.fmtMoney(r.myQty != null ? r.myQty : r.quantity),
-          UI.fmtMoney(Number(r.unit_price) + Number(r.freight_price || 0)),
-          UI.fmtMoney(amountOf(r)),
+          priceShown(r),
+          r.freight_price != null ? UI.fmtMoney(r.freight_price) : '-',
           UI.fmtDate(r.delivery_date),
           ORDER_TXT[r.status] || r.status,
           r.supplierName,
@@ -174,16 +172,17 @@
     async function detail(oid) {
       const d = await API.get('/orders/' + oid);
       const pk = d.myPickupPlan;
+      const spotBase = (await UI.spotPrices())[d.varietyName] ?? null;   // 报价模式单价
       const body = UI.h('div', {},
         UI.kv([
           ['订单号', d.order_no], ['状态', UI.statusTag('ORDER', d.status)],
           ['品种', d.varietyName], ['品位(%)', d.grade],
           ['数量', UI.fmtMoney(d.myQty != null ? d.myQty : d.quantity) + ' 湿吨'],
-          ['总价(元/湿吨)', UI.fmtMoney(Number(d.unit_price) + Number(d.freight_price || 0))],
+          ['单价(元/湿吨)', UI.spotShown(d.priceSign, d.priceFloat) || UI.spotDiff(spotBase, d.unit_price)],
+          ['运费(元/湿吨)', d.freight_price != null ? UI.fmtMoney(d.freight_price) : '-'],
           ['是否含税', ({ INC_TAX: '含税', EX_TAX: '不含税' }[d.tax_type]) || '-'],
-          ['金额', UI.fmtMoney(amountOf(d))],
           ['交货方式', DELIVERY[d.delivery_type] || d.delivery_type], ['交货地点', d.delivery_place],
-          ['交货日', UI.fmtDate(d.delivery_date)],
+          ['预计到港时间', UI.fmtDate(d.delivery_date)],
           ['结算', (SETTLE[d.settle_type] || d.settle_type || '-') + (d.settle_days ? ' ' + d.settle_days + '天' : '')],
           ['供方', d.supplierName],
           ['确认截止', UI.fmtDateTime(d.confirm_deadline)],
@@ -233,6 +232,7 @@
     async function supplierOrderView() {
       let pageNo = 1;
       const SIZE = 10;
+      const spotMap = await UI.spotPrices();   // 报价模式单价：品种→港口现货价
       const listCard = UI.h('div', { class: 'card' });
       const listBox = UI.h('div', { class: 'list-fixed' });   // 定高列表区（同运营端）：表头39px+10行，超出滚动
       const pagerBox = UI.h('div', {});
@@ -268,10 +268,10 @@
         { key: 'varietyName', label: '品种' },
         { key: 'grade', label: '品位(%)' },
         { key: 'quantity', label: '数量(湿吨)', num: true, render: (r) => UI.fmtMoney(r.myQty != null ? r.myQty : r.quantity) },
-        { label: '单价(元/湿吨)', num: true, render: (r) => UI.fmtMoney(r.unit_price) },
+        { label: '单价(元/湿吨)', num: true,
+          render: (r) => UI.spotShown(r.priceSign, r.priceFloat) || UI.spotDiff(spotMap[r.varietyName], r.unit_price) },
         { label: '运费(元/湿吨)', num: true, render: (r) => (r.freight_price != null ? UI.fmtMoney(r.freight_price) : '-') },
-        { key: 'amount', label: '金额', num: true, render: (r) => UI.fmtMoney(amountOf(r)) },
-        { key: 'delivery_date', label: '交货日', render: (r) => UI.fmtDate(r.delivery_date) },
+        { key: 'delivery_date', label: '预计到港时间', render: (r) => UI.fmtDate(r.delivery_date) },
         { key: 'status', label: '状态', render: (r) => UI.statusTag('ORDER', r.status) },
         { label: '需方', render: (r) => r.buyerNames || r.buyerName || '-' },
         { key: 'confirm_deadline', label: '确认截止', render: (r) => UI.fmtDateTime(r.confirm_deadline) },
@@ -298,20 +298,21 @@
       /* 订单详情：分区展示（基本信息/交货与结算/需供双方）；需方为参与该归集单的全部钢厂 */
       async function supplierDetail(oid) {
         const d = await API.get('/orders/' + oid);
+        const spotBase = (await UI.spotPrices())[d.varietyName] ?? null;   // 报价模式单价
         const body = UI.h('div', {},
           UI.h('div', { class: 'sec-title' }, '基本信息'),
           UI.kv([
             ['订单号', d.order_no], ['状态', UI.statusTag('ORDER', d.status)],
             ['品种', d.varietyName], ['品位(%)', d.grade],
-            ['数量', UI.fmtMoney(d.quantity) + ' 湿吨'], ['单价', UI.fmtMoney(d.unit_price)],
-            ['运费', d.freight_price != null ? UI.fmtMoney(d.freight_price) : '-'],
+            ['数量', UI.fmtMoney(d.quantity) + ' 湿吨'],
+            ['单价(元/湿吨)', UI.spotShown(d.priceSign, d.priceFloat) || UI.spotDiff(spotBase, d.unit_price)],
+            ['运费(元/湿吨)', d.freight_price != null ? UI.fmtMoney(d.freight_price) : '-'],
             ['是否含税', ({ INC_TAX: '含税', EX_TAX: '不含税' }[d.tax_type]) || '-'],
-            ['金额', UI.fmtMoney(amountOf(d))],
           ]),
           UI.h('div', { class: 'sec-title' }, '交货与结算'),
           UI.kv([
             ['交货方式', DELIVERY[d.delivery_type] || d.delivery_type], ['交货地点', d.delivery_place],
-            ['交货日', UI.fmtDate(d.delivery_date)],
+            ['预计到港时间', UI.fmtDate(d.delivery_date)],
             ['结算', (SETTLE[d.settle_type] || d.settle_type || '-') + (d.settle_days ? ' ' + d.settle_days + '天' : '')],
           ]),
           UI.h('div', { class: 'sec-title' }, '需供双方'),
@@ -527,8 +528,7 @@
           UI.h('div', { class: 'wb-head-item' }, UI.h('span', { class: 'wb-k' }, '到站'), UI.h('span', { class: 'wb-v' }, w.arrivePlace || '-'))),
         UI.h('div', { class: 'trace-body' },
           UI.h('div', { class: 'trace-panel' },
-            UI.h('div', { class: 'trace-title' }, '物流轨迹',
-              UI.h('span', { class: 'trace-state' }, '【' + (WB_STATE_TXT[w.status] || w.status) + '】')),
+            UI.h('div', { class: 'trace-title' }, '物流轨迹'),
             trace),
           UI.h('div', { class: 'trace-side' },
             UI.h('div', { class: 'trace-title' }, '货物信息'),
@@ -679,8 +679,9 @@
           API.get('/orders/' + oid + '/fulfillment'),
         ]);
         allNodesRaw = t.list || [];
+        const spotMap = await UI.spotPrices();   // 报价模式单价：品种→港口现货价
         renderStages(order, f.waybills || []);
-        renderFulfillment(f);
+        renderFulfillment(f, spotMap[order.varietyName] ?? null);
         return;
       }
       const [t, wb] = await Promise.all([
@@ -806,18 +807,19 @@
         createdAt: act[0].created_at,
       };
     }
-    function renderFulfillment(f) {
+    function renderFulfillment(f, spotBase) {
       fulfillBody.innerHTML = '';
       const rows = [];
       const inq = f.inquiry;
       if (inq) {
-        /* 钢厂需求品类/吨数 + 报价单价（每湿吨：中标 WIN 报价优先，无则取订单单价兜底） */
+        /* 钢厂需求品类/吨数 + 报价单价（报价模式：港口现货价格±上下浮；中标 WIN 报价优先，无则取订单单价兜底） */
         const price = inq.winPrice != null && inq.winPrice !== ''
           ? Number(inq.winPrice)
           : (f.unit_price != null ? Number(f.unit_price) : null);
         rows.push(['询价', inq.inquiry_no || '-',
           '需求品类 ' + (inq.varietyName || '-') + ' · 需求吨数 ' + UI.fmtQty(inq.quantity) + ' 湿吨'
-            + ' · 报价 ' + (price != null ? UI.fmtMoney(price) + ' 元/湿吨' : '-'),
+            + ' · 报价 ' + (price != null
+              ? (UI.spotShown(inq.priceSign, inq.priceFloat) || UI.spotDiff(spotBase, price)) : '-'),
           inq.created_at, UI.statusTag('INQUIRY', inq.status)]);
       }
       const fb = f.feedback;
@@ -826,8 +828,7 @@
         fb.created_at, UI.h('span', { class: 'tag ' + (fb.decision === 'ACCEPTED' ? 'green' : 'red') },
           fb.decision === 'ACCEPTED' ? '已认可' : '已反馈')]);
       rows.push(['订单', f.order_no || '-',
-        UI.fmtQty(f.quantity) + ' 湿吨 · 供应商 ' + (f.supplierName || '-')
-          + (f.amount != null ? ' · 金额 ' + UI.fmtMoney(f.amount) : ''),
+        UI.fmtQty(f.quantity) + ' 湿吨 · 供应商 ' + (f.supplierName || '-'),
         f.created_at, UI.statusTag('ORDER', f.status)]);
       const pk = f.pickup;
       const isAgg = f.buyer_id == null; // 集采聚合订单才有提货计划收集环节，普通订单按合同约定交付

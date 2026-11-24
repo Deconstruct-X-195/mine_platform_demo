@@ -98,6 +98,9 @@ def init_schema(conn):
             ALTER TABLE biz_demand_item ADD COLUMN IF NOT EXISTS cycle_value INT;
             -- 港口自提交货地点可为空（港口由供应商报价确定）
             ALTER TABLE biz_demand ALTER COLUMN delivery_place DROP NOT NULL;
+            -- 「其它」品种需求（仅需求归集，不形成实际订单）：期望到货时间可空
+            ALTER TABLE biz_demand ALTER COLUMN expect_arrive_start DROP NOT NULL;
+            ALTER TABLE biz_demand ALTER COLUMN expect_arrive_end DROP NOT NULL;
             ALTER TABLE biz_inquiry ADD COLUMN IF NOT EXISTS source VARCHAR(16) NOT NULL DEFAULT 'STEEL';
             ALTER TABLE biz_inquiry ADD COLUMN IF NOT EXISTS batch_no VARCHAR(32);
             -- 按钢厂询价单归集：归集成员明细回链来源询价单
@@ -173,11 +176,21 @@ def init_schema(conn):
             ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS tax_type VARCHAR(10);
             ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS freight_price NUMERIC(18,2);
             ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS delivery_type VARCHAR(20);
+            -- 报价产品申报：矿种/产地/品位（供应商申报实际所报货物，均必填）
+            ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS variety_id BIGINT;
+            ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS origin VARCHAR(100);
+            ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS grade NUMERIC(5,2);
+            -- 供应商申报的上下浮方向与金额（展示「港口现货价格±上下浮」用存储值，
+            -- 避免基准价变动后按绝对价反推失真）
+            ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS price_sign VARCHAR(2);
+            ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS price_float NUMERIC(18,2);
             ALTER TABLE sys_message ALTER COLUMN receiver_company_id DROP NOT NULL;
             ALTER TABLE sys_message ADD COLUMN IF NOT EXISTS msg_category VARCHAR(20) NOT NULL DEFAULT 'NOTICE';
             -- 消息提醒板块：need_action=需要接收端后续操作（任务）；sender_company_id=发布企业（空=运营端发布）
             ALTER TABLE sys_message ADD COLUMN IF NOT EXISTS need_action BOOLEAN NOT NULL DEFAULT FALSE;
             ALTER TABLE sys_message ADD COLUMN IF NOT EXISTS sender_company_id INTEGER;
+            -- 小铃铛消息列表清除标记：=1 不再出现在铃铛列表；「全部消息」页不受影响
+            ALTER TABLE sys_message ADD COLUMN IF NOT EXISTS bell_cleared SMALLINT NOT NULL DEFAULT 0;
             CREATE TABLE IF NOT EXISTS biz_agg_inquiry_feedback (
               id BIGSERIAL PRIMARY KEY,
               inquiry_id BIGINT NOT NULL,

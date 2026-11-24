@@ -144,7 +144,10 @@
             '任务', UI.h('span', { class: 'tab-badge', id: 'tab-badge-task', style: 'display:none' }, '0')),
           UI.h('button', { class: 'drawer-tab', 'data-dtab': 'msg', onclick: () => switchDrawerTab('msg') },
             '消息', UI.h('span', { class: 'tab-badge', id: 'tab-badge-msg', style: 'display:none' }, '0'))),
-        UI.h('a', { class: 'drawer-more', href: '#/messages', onclick: () => closeDrawer() }, '更多')),
+        UI.h('div', { class: 'inline-flex', style: 'gap:8px;align-items:center;margin-left:auto' },
+          /* 清除小铃铛消息列表：「更多-全部消息」保留全部记录 */
+          UI.h('button', { class: 'sm danger', style: 'margin:0', onclick: clearBellList }, '清 除'),
+          UI.h('a', { class: 'drawer-more', href: '#/messages', onclick: () => closeDrawer() }, '更多'))),
       UI.h('div', { class: 'drawer-body', id: 'drawer-body' }));
     root.appendChild(shell);
     root.appendChild(mask);
@@ -154,6 +157,15 @@
 
   /* -------- 消息抽屉逻辑 -------- */
   let drawerTab = 'task';
+  /* 清除小铃铛消息列表：当前消息不再显示在铃铛中；「更多-全部消息」保留全部记录 */
+  async function clearBellList() {
+    try {
+      const res = await API.put('/messages/clear-bell');
+      App.refreshMsgBadge();
+      await loadDrawerBody();
+      UI.toast('已清除小铃铛消息列表 ' + (res.updated || 0) + ' 条（「更多-全部消息」保留全部记录）', 'ok');
+    } catch (e) { /* toast 已提示 */ }
+  }
   function toggleDrawer() {
     if (document.body.classList.contains('drawer-open')) closeDrawer();
     else openDrawer();
@@ -175,7 +187,7 @@
     try {
       const [t, msg] = await Promise.all([
         API.get('/tasks/todos', { silent: true }),
-        API.get('/messages?page=1&size=1', { silent: true }),
+        API.get('/messages?page=1&size=1&scope=bell', { silent: true }),
       ]);
       setTabBadge('tab-badge-task', t && t.list ? t.list.length : 0);
       setTabBadge('tab-badge-msg', msg && msg.unread ? Number(msg.unread) : 0);
@@ -212,7 +224,7 @@
             UI.h('div', { class: 'drawer-item-time' }, UI.fmtDateTime(r.createdAt))));
         });
       } else {
-        const d = await API.get('/messages?page=1&size=8');
+        const d = await API.get('/messages?page=1&size=8&scope=bell');
         const list = d.list || [];
         setTabBadge('tab-badge-msg', d.unread ? Number(d.unread) : 0);
         body.innerHTML = '';
@@ -230,8 +242,9 @@
                   App.refreshMsgBadge();
                 }
                 closeDrawer();
-                const t = window.msgJumpTarget ? window.msgJumpTarget(r) : '';
-                if (t && t !== location.hash) location.hash = t;
+                /* 消息点击进入消息详情页（完整信息 + 清除入口）；任务类点击直接跳转对应页面 */
+                const t = '#/msg-detail?id=' + r.id;
+                if (t !== location.hash) location.hash = t;
               } catch (e) { /* toast 已提示 */ }
             },
           },
@@ -349,7 +362,7 @@
     const badge = document.getElementById('msg-badge');
     if (!badge || !API.currentUser()) return;
     try {
-      const d = await API.get('/messages?page=1&size=1', { silent: true });
+      const d = await API.get('/messages?page=1&size=1&scope=bell', { silent: true });
       const n = d && d.unread ? Number(d.unread) : 0;
       badge.textContent = String(n);
       badge.style.display = n > 0 ? '' : 'none';
