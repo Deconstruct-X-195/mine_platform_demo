@@ -230,9 +230,16 @@
     // 今日港口价：与钢厂端基准价行情同源同格式（产品名称/品位/港口/行业价格/计价口径/价格日期/来源）
     const cur = await API.get('/base-prices/current');
     const GRADE_OF = { 'PB粉': 61.5, '中华混一号': 61.5 };
-    page.appendChild(UI.h('div', { class: 'card' },
-      UI.h('h3', {}, '今日港口价'),
-      UI.table([
+    /* 港口筛选：今日港口价与行业价格走势同步过滤（默认全部港口） */
+    let curPort = '';
+    const todayPorts = Array.from(new Set(
+      (cur.today || []).map((r) => r.port || r.portName).filter(Boolean))).sort();
+    const portSel = UI.selectField([['', '全部港口']].concat(todayPorts.map((p) => [p, p])), '',
+      { onchange: (e) => { curPort = e.target.value; renderToday(); renderTrend(); } });
+    const todayBox = UI.h('div', {});
+    function renderToday() {
+      const rows = (cur.today || []).filter((r) => !curPort || (r.port || r.portName) === curPort);
+      todayBox.replaceChildren(UI.table([
         { key: 'varietyName', label: '产品名称' },
         { label: '品位', render: (r) => { const g = r.grade != null ? r.grade : GRADE_OF[r.varietyName]; return g != null ? String(g).replace(/\.?0+$/, '') + '%' : '-'; } },
         { label: '港口', render: (r) => r.port || r.portName || '-' },
@@ -240,48 +247,61 @@
         { key: 'priceBasis', label: '计价口径', render: (r) => r.priceBasis === 'DRY' ? '干基' : (r.priceBasis === 'WET' ? '湿基' : (r.priceBasis || '-')) },
         { key: 'priceDate', label: '价格日期', render: (r) => UI.fmtDate(r.priceDate) },
         { key: 'sourceDesc', label: '来源' },
-      ], cur.today || [], '暂无港口价格，请在下方录入')));
+      ], rows, '暂无港口价格，请在下方录入'));
+    }
+    renderToday();
+    page.appendChild(UI.h('div', { class: 'card' },
+      UI.h('h3', {}, '今日港口价',
+        UI.h('label', { class: 'field', style: 'margin-left:auto' }, '港口筛选 ', portSel)),
+      todayBox));
 
-    // 行业价格走势：每港口一张图（多图）
-    const byPort = {};
-    portRows.forEach((r) => { (byPort[r.portName] = byPort[r.portName] || []).push(r); });
-    const trendCard = UI.h('div', { class: 'card' }, UI.h('h3', {}, '行业价格走势（分港口）'));
-    Object.keys(byPort).sort().forEach((p) => {
-      const rows = byPort[p].slice().sort((a, b) => String(a.priceDate).localeCompare(String(b.priceDate)));
-      /* 按品位分组（PB粉 61.5% / 60.8%，不同品位价格不同），名称行下方右侧品位切换 */
-      const byGrade = {};
-      rows.forEach((r) => {
-        const g = r.grade != null ? Number(r.grade) : 61.5;
-        (byGrade[g] = byGrade[g] || []).push(r);
-      });
-      const grades = Object.keys(byGrade).map(Number).sort((a, b) => b - a);
-      if (!grades.length) return;
-      let cur = grades.includes(61.5) ? 61.5 : grades[0];
-      const chartBox = UI.h('div', {});
-      const gradeBtns = grades.map((g) => UI.h('button', {
-        class: 'sm',
-        style: 'margin-left:6px;padding:2px 10px;font-size:12px',
-        onclick: () => { cur = g; render(); },
-      }, String(g).replace(/\.?0+$/, '') + '%'));
-      function render() {
-        gradeBtns.forEach((b, i) => {
-          const on = grades[i] === cur;
-          b.style.background = on ? '#1a5cb0' : '#f2f2f7';
-          b.style.color = on ? '#fff' : '#1d1d1f';
-          b.style.borderColor = on ? '#1a5cb0' : '#e5e5ea';
+    // 行业价格走势：每港口一张图（多图），随港口筛选过滤
+    const trendBox = UI.h('div', {});
+    function renderTrend() {
+      trendBox.replaceChildren();
+      const byPort = {};
+      portRows.forEach((r) => { (byPort[r.portName] = byPort[r.portName] || []).push(r); });
+      const portKeys = Object.keys(byPort).filter((p) => !curPort || p === curPort).sort();
+      portKeys.forEach((p) => {
+        const rows = byPort[p].slice().sort((a, b) => String(a.priceDate).localeCompare(String(b.priceDate)));
+        /* 按品位分组（PB粉 61.5% / 60.8%，不同品位价格不同），名称行下方右侧品位切换 */
+        const byGrade = {};
+        rows.forEach((r) => {
+          const g = r.grade != null ? Number(r.grade) : 61.5;
+          (byGrade[g] = byGrade[g] || []).push(r);
         });
-        chartBox.innerHTML = '';
-        chartBox.appendChild(UI.trendChart(
-          byGrade[cur].map((r) => ({ priceDate: r.priceDate, price: r.price })), 'price'));
-      }
-      render();
-      trendCard.appendChild(UI.h('div', { style: 'margin-bottom:16px' },
-        UI.h('div', { class: 'dash-trend-name' }, p + ' · 行业价格'),
-        UI.h('div', { style: 'text-align:right;margin:-4px 0 4px' }, ...gradeBtns),
-        chartBox));
-    });
-    if (!Object.keys(byPort).length) trendCard.appendChild(UI.h('div', { class: 'empty' }, '暂无走势数据'));
-    page.appendChild(trendCard);
+        const grades = Object.keys(byGrade).map(Number).sort((a, b) => b - a);
+        if (!grades.length) return;
+        let cur = grades.includes(61.5) ? 61.5 : grades[0];
+        const chartBox = UI.h('div', {});
+        const gradeBtns = grades.map((g) => UI.h('button', {
+          class: 'sm',
+          style: 'margin-left:6px;padding:2px 10px;font-size:12px',
+          onclick: () => { cur = g; render(); },
+        }, String(g).replace(/\.?0+$/, '') + '%'));
+        function render() {
+          gradeBtns.forEach((b, i) => {
+            const on = grades[i] === cur;
+            b.style.background = on ? '#1a5cb0' : '#f2f2f7';
+            b.style.color = on ? '#fff' : '#1d1d1f';
+            b.style.borderColor = on ? '#1a5cb0' : '#e5e5ea';
+          });
+          chartBox.innerHTML = '';
+          chartBox.appendChild(UI.trendChart(
+            byGrade[cur].map((r) => ({ priceDate: r.priceDate, price: r.price })), 'price'));
+        }
+        render();
+        trendBox.appendChild(UI.h('div', { style: 'margin-bottom:16px' },
+          UI.h('div', { class: 'dash-trend-name' }, p + ' · 行业价格'),
+          UI.h('div', { style: 'text-align:right;margin:-4px 0 4px' }, ...gradeBtns),
+          chartBox));
+      });
+      if (!portKeys.length) trendBox.appendChild(UI.h('div', { class: 'empty' }, '暂无走势数据'));
+    }
+    renderTrend();
+    page.appendChild(UI.h('div', { class: 'card' },
+      UI.h('h3', {}, '行业价格走势（分港口）'),
+      trendBox));
 
     // 交易价格走势（平台成交均价，钢厂端不可见）：按品位分组（订单品位归并到 61.5/60.8），品位切换同行业价格卡片
     const dealRaw = ((await API.get('/base-prices/deal-trend?varietyId=' + pb.id)).list || []);
@@ -330,7 +350,7 @@
       page.appendChild(UI.h('div', { class: 'card' }, UI.h('div', { class: 'empty' }, '品种库缺少 PB粉，请先在基础数据中添加')));
       return;
     }
-    const portRows = ((await API.get('/base-prices/ports')).list || []).filter((r) => r.varietyName === 'PB粉');
+    const portRows = (await API.get('/base-prices/ports')).list || [];
 
     // 全部价格数据：港口价记录（产品名称/品位/港口/行业价格/计价口径/价格日期/来源 + 涨跌按港口逐日计算）
     const GRADE_OF = { 'PB粉': 61.5, '中华混一号': 61.5 };
@@ -353,21 +373,27 @@
 
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('div', { class: 'toolbar' },
-        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, 'PB粉 价格行情详情'),
+        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '价格行情详情'),
         UI.h('div', { class: 'spacer' }),
         UI.h('button', { class: 'sm', onclick: () => { location.hash = '#/dashboard'; } }, '返回看板'))));
 
-    /* 筛选框（品位/港口）+ 价格录入按钮，筛选变化即重渲染表格；每页 10 条分页 */
+    /* 筛选框（品类/港口/日期范围）独立一行置于标题下方，变化即重渲染表格；每页 10 条分页 */
     const ports = Array.from(new Set(portRows.map((r) => r.portName || r.port || ''))).filter(Boolean).sort();
-    let fGrade = '';
+    let fVariety = '';
     let fPort = '';
+    let fFrom = '';
+    let fTo = '';
     let pageNo = 1;
-    const picked = new Set(); // 行首勾选框（仅行选择展示）
+    const picked = new Set(); // 行首勾选框（批量删除/导出）
     const pageSize = 10;
-    const gradeSel = UI.selectField([['', '全部品位'], ['61.5', '61.5%'], ['60.8', '60.8%']], '',
-      { onchange: (e) => { fGrade = e.target.value; pageNo = 1; renderTable(); } });
+    const varietySel = UI.selectField([['', '全部品类']].concat(
+      varieties.filter((v) => v.varietyName === 'PB粉' || v.varietyName === '中华混一号')
+        .map((v) => [String(v.id), v.varietyName])), '',
+      { onchange: (e) => { fVariety = e.target.value; pageNo = 1; renderTable(); } });
     const portSel = UI.selectField([['', '全部港口']].concat(ports.map((p) => [p, p])), '',
       { onchange: (e) => { fPort = e.target.value; pageNo = 1; renderTable(); } });
+    const dateFromInp = UI.input('date', '', { onchange: (e) => { fFrom = e.target.value; pageNo = 1; renderTable(); } });
+    const dateToInp = UI.input('date', '', { onchange: (e) => { fTo = e.target.value; pageNo = 1; renderTable(); } });
 
     const COLS = [
       UI.selCol(picked),
@@ -382,11 +408,18 @@
       { label: '操作', render: (r) => UI.h('button', { class: 'sm', onclick: () => openEntryModal(r) }, '重新录入') },
     ];
     /* 定高列表区 + 分页行同卡片（同需求归集）：横向滚动条固定在分页行上方 */
+    /* 当前筛选条件下的全部行（列表渲染与导出共用） */
+    function filteredRows() {
+      return allRows.filter((r) =>
+        (!fVariety || String(r.varietyId) === fVariety)
+        && (!fPort || (r.portName || r.port) === fPort)
+        && (!fFrom || String(r.priceDate).slice(0, 10) >= fFrom)
+        && (!fTo || String(r.priceDate).slice(0, 10) <= fTo));
+    }
     const tableBox = UI.h('div', { class: 'list-fixed' });
     const pagerBox = UI.h('div', {});
     function renderTable() {
-      const rows = allRows.filter((r) =>
-        (!fGrade || String(gradeOf(r)) === fGrade) && (!fPort || (r.portName || r.port) === fPort));
+      const rows = filteredRows();
       const pages = Math.max(1, Math.ceil(rows.length / pageSize));
       if (pageNo > pages) pageNo = pages;
       tableBox.innerHTML = '';
@@ -446,7 +479,7 @@
           UI.formRow('价格日期', dateInp, true),
           UI.formRow('计价口径', UI.input('text', '湿基', {}), false),
           UI.formRow('来源', UI.input('text', 'Mysteel', {}), false)),
-        UI.h('div', { class: 'hint', style: 'margin-top:8px' },
+        row ? null : UI.h('div', { class: 'hint', style: 'margin-top:8px' },
           '同一品种×港口×日期×品位已有价格时，不覆盖原记录，提醒后新增一条记录')), [
         UI.h('button', { class: 'sm', onclick: () => m.close() }, '取 消'),
         UI.h('button', { class: 'primary', onclick: async () => {
@@ -455,17 +488,27 @@
           if (!(Number(priceInp.value) > 0)) { UI.toast('价格需大于 0', 'err'); return; }
           if (!dateInp.value) { UI.toast('请选择价格日期', 'err'); return; }
           try {
-            /* 重复录入规则：同键已有价格时不覆盖，仅提醒并新增一条 */
-            const res = await API.post('/base-prices/ports', {
-              varietyId: Number(varietySel.value), portName,
-              priceDate: dateInp.value, price: Number(priceInp.value), grade: curGrade,
-            });
-            m.close();
-            if (res && res.duplicated) {
-              UI.toast('同品种/港口/日期/品位已有价格记录（'
-                + Number(res.existingPrice).toFixed(2) + ' 元/湿吨），未覆盖原记录，已新增一条');
+            if (row) {
+              /* 重新录入：按记录 id 原地更新该条内容，不新增 */
+              await API.put('/base-prices/ports/' + row.id, {
+                varietyId: Number(varietySel.value), portName,
+                priceDate: dateInp.value, price: Number(priceInp.value), grade: curGrade,
+              });
+              m.close();
+              UI.toast('已更新该条价格记录，页面数据已自动更新', 'ok');
             } else {
-              UI.toast('已保存，页面数据已自动更新', 'ok');
+              /* 价格录入：总是新增一条，不覆盖已有记录 */
+              const res = await API.post('/base-prices/ports', {
+                varietyId: Number(varietySel.value), portName,
+                priceDate: dateInp.value, price: Number(priceInp.value), grade: curGrade,
+              });
+              m.close();
+              if (res && res.duplicated) {
+                UI.toast('同品种/港口/日期/品位已有价格记录（'
+                  + Number(res.existingPrice).toFixed(2) + ' 元/湿吨），未覆盖原记录，已新增一条');
+              } else {
+                UI.toast('已保存，页面数据已自动更新', 'ok');
+              }
             }
             /* 整页重渲染：全部价格数据/今日港口价/趋势图按录入的新数据自动更新 */
             window.App.route();
@@ -474,19 +517,63 @@
       ], { noAutoClose: true });
     }
 
+    /* 批量删除：按行首勾选框选择，确认后软删除 */
+    async function batchDelete() {
+      if (!picked.size) { UI.toast('请先勾选要删除的行', 'err'); return; }
+      const yes = await UI.confirmBox('确定删除选中的 ' + picked.size + ' 条价格记录吗？删除后不可恢复。');
+      if (!yes) return;
+      const ids = Array.from(picked);
+      const rs = await Promise.allSettled(ids.map((id) => API.del('/base-prices/ports/' + id)));
+      const failN = rs.filter((r) => r.status === 'rejected').length;
+      if (!failN) UI.toast('已删除 ' + ids.length + ' 条记录', 'ok');
+      else UI.toast('删除完成：成功 ' + (ids.length - failN) + ' 条，失败 ' + failN + ' 条',
+        failN === ids.length ? 'err' : 'ok');
+      picked.clear();
+      window.App.route();
+    }
+
+    /* 导出 CSV：勾选了行则导出勾选行，否则导出当前筛选结果的全部行 */
+    function exportRows() {
+      const rows = filteredRows();
+      const chosen = picked.size ? rows.filter((r) => picked.has(r.id)) : rows;
+      if (!chosen.length) { UI.toast('暂无可导出的数据', 'err'); return; }
+      const esc = (s) => { s = String(s == null ? '' : s); return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+      const lines = [['产品名称', '品位', '港口', '行业价格(元/湿吨)', '计价口径', '价格日期', '来源', '涨跌']]
+        .concat(chosen.map((r) => [
+          r.varietyName, gradeTxt(gradeOf(r)), r.portName || r.port || '-',
+          Number(r.price).toFixed(2), r.priceBasis === 'DRY' ? '干基' : '湿基',
+          String(r.priceDate).slice(0, 10), 'Mysteel',
+          r.chg == null ? '' : (r.chg > 0 ? '+' : '') + Number(r.chg).toFixed(2),
+        ]));
+      const blob = new Blob(['\uFEFF' + lines.map((l) => l.map(esc).join(',')).join('\r\n')],
+        { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = '价格数据_' + todayStr.replace(/-/g, '') + '.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 4000);
+      UI.toast('已导出 ' + chosen.length + ' 条记录', 'ok');
+    }
+
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('div', { class: 'toolbar' },
         UI.h('h3', {}, '全部价格数据'),
         UI.h('div', { class: 'spacer' }),
-        UI.h('span', { style: 'font-size:12px;color:#6e6e73;margin-right:6px' }, '品位'),
-        gradeSel,
+        UI.h('button', { class: 'sm', onclick: () => openEntryModal() }, '价格录入'),
+        UI.h('button', { class: 'sm', style: 'margin-left:8px', onclick: batchDelete }, '删除'),
+        UI.h('button', { class: 'sm', style: 'margin-left:8px', onclick: exportRows }, '导出')),
+      UI.h('div', { class: 'toolbar' },
+        UI.h('span', { style: 'font-size:12px;color:#6e6e73;margin-right:6px' }, '品类'),
+        varietySel,
         UI.h('span', { style: 'font-size:12px;color:#6e6e73;margin:0 6px 0 12px' }, '港口'),
         portSel,
-        UI.h('button', {
-          class: 'sm',
-          style: 'margin-left:12px',
-          onclick: () => openEntryModal(),
-        }, '价格录入')),
+        UI.h('span', { style: 'font-size:12px;color:#6e6e73;margin:0 6px 0 12px' }, '日期'),
+        dateFromInp,
+        UI.h('span', { style: 'font-size:12px;color:#6e6e73;margin:0 6px' }, '至'),
+        dateToInp),
       tableBox,
       pagerBox));
     renderTable();

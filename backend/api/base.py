@@ -177,6 +177,67 @@ def save_port_price():
                'existingPrice': str(dup['price']) if dup is not None else None})
 
 
+@bp.put('/base-prices/ports/<int:pid>')
+@auth_required
+def update_port_price(pid):
+    """修改港口现货价（平台运营专用；按记录 id 原地更新，不新增）。"""
+    if not g.ctx.is_plat:
+        raise ApiError(40301, '仅平台运营可维护港口价格')
+    old = q1(g.conn, "SELECT id FROM base_port_price WHERE id=%s AND is_deleted=0", (pid,))
+    if not old:
+        raise ApiError(40401, '记录不存在')
+    p = get_params()
+    require_fields(p, 'varietyId', 'portName', 'priceDate', 'price')
+    v = q1(g.conn, "SELECT id FROM base_variety WHERE id=%s AND is_deleted=0", (p['varietyId'],))
+    if not v:
+        raise ApiError(40401, '品种不存在')
+    try:
+        price = float(p['price'])
+    except (TypeError, ValueError):
+        raise ApiError(40001, '价格必须是数字')
+    if price <= 0:
+        raise ApiError(40001, '价格必须大于0')
+    try:
+        grade = float(str(p.get('grade') or '').replace('%', '').strip() or 61.5)
+    except (TypeError, ValueError):
+        raise ApiError(40001, '品位必须是数字')
+    if not 0 < grade <= 100:
+        raise ApiError(40001, '品位需在 0-100 之间')
+    d = parse_date(p, 'priceDate')
+    port_name = str(p['portName']).strip()
+    if not port_name or len(port_name) > 50:
+        raise ApiError(40001, '港口名称必填且不超过50字')
+    execute(g.conn, """
+        UPDATE base_port_price
+        SET variety_id=%s, port_name=%s, price_date=%s, price=%s, grade=%s
+        WHERE id=%s AND is_deleted=0
+    """, (p['varietyId'], port_name, d, price, grade, pid))
+    op_log(g.conn, g.ctx, 'base_port_price', pid, 'UPDATE', None,
+           {'portName': port_name, 'priceDate': str(d), 'price': price, 'grade': grade})
+    return ok({'id': pid})
+
+
+@bp.post('/base-prices/ports/batch-delete')
+@auth_required
+def batch_remove_port_prices():
+    """批量删除港口现货价（平台运营专用，软删除）。JSON 体：{ids: [记录id, ...]}。"""
+    if not g.ctx.is_plat:
+        raise ApiError(40301, '仅平台运营可维护港口价格')
+    p = get_params()
+    ids = p.get('ids')
+    if not isinstance(ids, list) or not ids:
+        raise ApiError(40001, 'ids 必填且为非空数组')
+    try:
+        ids = [int(x) for x in ids]
+    except (TypeError, ValueError):
+        raise ApiError(40001, 'ids 必须为整数数组')
+    n = 0
+    for pid in ids:
+        n += execute(g.conn, "UPDATE base_port_price SET is_deleted=1 WHERE id=%s AND is_deleted=0", (pid,)) or 0
+    op_log(g.conn, g.ctx, 'base_port_price', 0, 'BATCH_DELETE', None, {'count': n, 'ids': ids})
+    return ok({'deleted': n})
+
+
 @bp.delete('/base-prices/ports/<int:pid>')
 @auth_required
 def remove_port_price(pid):
