@@ -17,8 +17,13 @@ from flask import g, request
 from .common import ApiError
 from .db import q1
 
-# TODO(PRD待确认): 演示环境使用固定密钥，生产必须从环境变量/密管注入。
-JWT_SECRET = os.environ.get('MINE_JWT_SECRET', 'mine-platform-demo-secret-2026')
+# C3（部署适配方案 §5）：JWT 密钥不再提供代码默认值（原演示密钥随代码公开，
+# 可被离线伪造任意角色 token），一律经 MINE_JWT_SECRET 注入，模块加载即校验。
+JWT_SECRET = os.environ.get('MINE_JWT_SECRET', '')
+if not JWT_SECRET:
+    raise RuntimeError(
+        '环境变量 MINE_JWT_SECRET 未设置：请注入随机密钥'
+        '（生成：python -c "import secrets;print(secrets.token_urlsafe(48))"）')
 JWT_TTL_SECONDS = 8 * 3600
 
 ROLES_PLAT = ['PLAT_ADMIN']

@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""E2E 全链路测试（PRD 10.2 + AC 验收清单）：注册→准入→基准价→需求→询价→密封报价→揭示→
-议价→定标→订单确认→合同（作废重签）→物流→质检预警→结算→付款→归档→导出→越权隔离。
+"""E2E 全链路测试（PRD 10.2 + AC 验收清单）：注册→准入→基准价→需求→需求归集→平台代发询价→
+密封报价→平台汇总揭示→钢厂反馈（全员认可自动成单）→订单确认→提货计划→平台物流方案与
+分段运单→物流节点→签收→质检预警→结算→付款→归档→导出→越权隔离。
 
 前置：Flask 运行于 127.0.0.1:8000（PostgreSQL 14 可达），库内存在已审批的
 钢厂/供应商/承运商基线账号（清理后基线或 seed 演示数据均可，账号动态发现）。
 运行：python tests/e2e_full_chain.py
 """
-import hashlib
 import io
 import os
 import sys
@@ -19,7 +19,6 @@ from e2e_helpers import (ADMIN, BASE, PASS, Client, check, discover_accounts,
 # E2E 直连库必须与被测服务一致：默认本机演示库，多环境验证时用 MINE_PG_DSN 覆盖
 PG_DSN = os.environ.get('MINE_PG_DSN', 'postgresql://postgres:Langchain2026@127.0.0.1:5432/mine_platform')
 PDF = b'%PDF-1.4\nE2E test file\n%%EOF'
-PNG = b'\x89PNG\r\n\x1a\nE2E-FAKE-STAMP-IMAGE'
 
 MIN_SUPPLIERS = 3  # 密封报价/揭示比价的最少供应商数
 
@@ -29,14 +28,6 @@ def pg_exec(sql, args=()):
     import psycopg
     with psycopg.connect(PG_DSN) as conn:
         conn.execute(sql, args)
-
-
-def upload(client, filename, data, ctype):
-    r = client.s.post(BASE + '/files', files={'file': (filename, data, ctype)}, timeout=15)
-    b = r.json()
-    assert r.status_code == 200 and b.get('code') == 0, \
-        '上传 %s 失败：HTTP %s %s' % (filename, r.status_code, b)
-    return b['data']['fileId']
 
 
 def upload_license(anon, tag, suffix='pdf'):
@@ -68,16 +59,15 @@ def run():
     anon = Client()  # 未登录客户端：验证注册链路为公开接口
 
     # 自适应发现基线账号（兼容"清理后基线"与"seed 演示数据"两种环境）
+    # 承运商端已下线（2026-11-13 起）：承运商账号仅作运单归属展示，不再登录
     acc = discover_accounts()
-    assert acc['steel'] and acc['suppliers'] and acc['carrier'], \
+    assert acc['steel'] and acc['suppliers'], \
         '基线账号缺失：钢厂 %s / 供应商 %s / 承运商 %s' % acc
-    print('[基线] 钢厂 %s | 供应商 %d 家 | 承运商 %s'
-          % (acc['steel'][0], len(acc['suppliers']), acc['carrier'][0]))
+    print('[基线] 钢厂 %s | 供应商 %d 家 | 承运商 %s（承运商端已下线，不登录）'
+          % (acc['steel'][0], len(acc['suppliers']), acc['carrier'][0] if acc['carrier'] else '-'))
     steel = login_user(acc['steel'][0])
     sup1 = login_user(acc['suppliers'][0])
-    carrier = login_user(acc['carrier'][0])
     sup1_cid = sup1.user['company']['id']
-    carrier_cid = carrier.user['company']['id']
 
     # ---- AC-01 企业注册（免登录执照上传 + 类型别名归一）----
     print('\n[AC-01] 企业注册')
@@ -87,7 +77,8 @@ def run():
     reg1 = {'companyName': 'E2E钢厂二' + tag, 'creditCode': credit1,
             'companyTypes': 'STEEL_BUYER', 'province': '河北省', 'city': '唐山市',
             'contactName': 'E2E 联系人一', 'contactPhone': '13900000001',
-            'username': u1, 'password': 'new123456', 'licenseFileId': lic}
+            'username': u1, 'password': 'new123456', 'legalPerson': 'E2E 法定代表人',
+            'licenseFileId': lic}
     r1 = anon.post('/auth/register', reg1)
     check('AC-01 注册成功待准入', r1['auditStatus'] == 'PENDING', r1)
     t1 = pg_one("SELECT company_types FROM ent_company WHERE id=%s", (r1['companyId'],))[0]
@@ -114,7 +105,8 @@ def run():
         regi = {'companyName': 'E2E补位供应商%s%s' % (i + 1, tag), 'creditCode': credit_i,
                 'companyTypes': 'SUPPLIER', 'province': '山东省', 'city': '青岛市',
                 'contactName': 'E2E 供应商联系人', 'contactPhone': '1390000%04d' % (i + 1),
-                'username': ui, 'password': 'new123456', 'licenseFileId': lic_i}
+                'username': ui, 'password': 'new123456', 'legalPerson': 'E2E 供应商法人%s' % (i + 1),
+                'licenseFileId': lic_i}
         ri = anon.post('/auth/register', regi)
         ti = pg_one("SELECT company_types FROM ent_company WHERE id=%s", (ri['companyId'],))[0]
         check('AC-01 补位供应商注册并归一(SUPPLIER)', ti == 'SUPPLIER', ti)
@@ -164,6 +156,11 @@ def run():
     check('AC-05 默认牌号非数值被拦截(40001)', c == 40001, m)
     s, c, m = plat.try_code('PUT', '/admin/varieties/%d' % pb['id'], {'defaultGrade': 999})
     check('AC-05 默认牌号超范围被拦截(40001)', c == 40001, m)
+    # 新建无港口价的校验品种：/base-prices/current 对无港口价品种回退展示锚点基准价
+    v2 = plat.post('/admin/varieties', {'varietyCode': 'E2EGRD%s' % tag,
+                                        'varietyName': 'E2E 基准价校验品种',
+                                        'defaultGrade': 61.5})
+    check('AC-05 新建品种成功', bool(v2.get('id')), v2)
     # 幂等：清掉上次运行当日基准价残留（验收要求"首次录入为新增"）
     pg_exec("DELETE FROM base_price WHERE variety_id=%s AND price_date=%s", (pb['id'], today))
     b1 = plat.post('/admin/base-prices', {'varietyId': pb['id'], 'priceDate': today,
@@ -177,8 +174,12 @@ def run():
     s, c, m = steel.try_code('POST', '/admin/base-prices',
                              {'varietyId': pb['id'], 'priceDate': today, 'price': 1})
     check('AC-05 非平台无权录入(40301)', c == 40301, m)
-    cur = steel.get('/base-prices/current', varietyId=pb['id'])
-    trow = next((x for x in cur['today'] if x['varietyId'] == pb['id']), None)
+    pg_exec("DELETE FROM base_price WHERE variety_id=%s AND price_date=%s", (v2['id'], today))
+    plat.post('/admin/base-prices', {'varietyId': v2['id'], 'priceDate': today,
+                                     'price': 830.5, 'priceBasis': 'WET',
+                                     'sourceDesc': 'E2E 锚点价校验'})
+    cur = steel.get('/base-prices/current', varietyId=v2['id'])
+    trow = next((x for x in cur['today'] if x['varietyId'] == v2['id']), None)
     check('AC-05 当日报价已生效', trow is not None and trow['price'] == '830.50', cur['today'])
     check('AC-05 近30日走势非空', len(cur['trend']) >= 1, cur['trend'])
 
@@ -212,7 +213,7 @@ def run():
     bad2 = dict(base_body)
     bad2['demandName'] = '提交后改名尝试'
     s, c, m = steel.try_code('PUT', '/demands/%d' % dem_id, bad2)
-    check('AC-03 提交后关键字段锁定(40901)', c == 40901, m)
+    check('AC-03 提交后更改须填更改理由(40001)', c == 40001, m)
     w = steel.post('/demands/%d/withdraw' % dem_id)
     check('AC-03 撤回 WITHDRAWN', w['status'] == 'WITHDRAWN', w)
     r = steel.post('/demands/%d/submit' % dem_id)
@@ -229,84 +230,112 @@ def run():
           row is not None and float(row['totalQty']) == 30000
           and row['deliveryRegion'] == '青岛港', row)
 
-    # ---- AC-07 询价创建与发出 ----
-    print('\n[AC-07] 询价创建与发出')
+    # ---- AC-07 需求归集与平台代发询价 ----
+    print('\n[AC-07] 需求归集与平台代发询价')
     deadline = (now + timedelta(hours=2, minutes=10)).strftime('%Y-%m-%d %H:%M:%S')
     arrive = (now + timedelta(days=9)).strftime('%Y-%m-%d')
-    inq_body = {'demandId': dem_id, 'demandItemId': item_id, 'quantity': 20000,
-                'arriveDate': arrive, 'deadline': deadline, 'minResponse': 3,
-                'inviteSupplierIds': [sup1_cid, sup2_cid, sup3_cid], 'remark': 'E2E 询价'}
-    bad = dict(inq_body)
-    bad['deadline'] = now.strftime('%Y-%m-%d %H:%M:%S')
-    s, c, m = steel.try_code('POST', '/inquiries', bad)
-    check('AC-07 截止须至少当前+2h(40001)', c == 40001, m)
-    q = steel.post('/inquiries', inq_body)
-    inq_id = q['id']
-    check('AC-07 创建询价 DRAFT', q['status'] == 'DRAFT', q)
-    r = steel.post('/inquiries/%d/send' % inq_id)
-    check('AC-07 发出后 SENT', r['status'] == 'SENT', r)
+    # 钢厂自发询价恢复为完整端点（对齐 2026-11-24 迭代）：缺 quantity/arriveDate 被参数校验拦截
+    s, c, m = steel.try_code('POST', '/inquiries', {'demandId': dem_id, 'demandItemId': item_id})
+    check('AC-07 自发询价必填参数拦截(40001)', c == 40001, m)
+    # 钢厂二创建同品种同品位需求并提交，供平台归集
+    d2body = dict(base_body, demandName='E2E 归集需求-钢厂二' + tag,
+                  items=[dict(base_body['items'][0], quantity=15000)])
+    d2 = steel2.post('/demands', d2body)
+    steel2.post('/demands/%d/submit' % d2['id'])
+    # 平台需求池按本次两条需求匹配可归集明细（agg_flow 口径：itemId 优先）
+    pool = plat.get('/admin/demand-pool', size=50)['list']
+    match = [it for it in pool
+             if it.get('demandId') in (dem_id, d2['id']) and it.get('status') == 'SUBMITTED'
+             and float(it['quantity']) - float(it.get('inquiredQty') or 0) > 0]
+    item_ids = [it['itemId'] if 'itemId' in it else it['id'] for it in match]
+    check('AC-07 需求池匹配两条可归集明细', len(item_ids) == 2, match)
+    agg = plat.post('/admin/aggregated-orders', {'itemIds': item_ids})
+    check('AC-07 归集订单生成 45000 吨',
+          bool(agg.get('aggNo')) and float(agg['totalQty']) == 45000.0, agg)
+    # 报价截止由平台自动设定（到货日前 7 天 18:00，下限当前 +2h），调用方不再传 deadline
+    bad = {'aggOrderId': agg['id'], 'arriveDate': arrive, 'minResponse': 3,
+           'inviteSupplierIds': []}
+    s, c, m = plat.try_code('POST', '/admin/quote-inquiries', bad)
+    check('AC-07 至少邀请一家供应商(40001)', c == 40001, m)
+    qi = plat.post('/admin/quote-inquiries',
+                   {'aggOrderId': agg['id'], 'arriveDate': arrive,
+                    'minResponse': 3, 'inviteSupplierIds': [sup1_cid, sup2_cid, sup3_cid],
+                    'remark': 'E2E 平台代发询价'})
+    inq_id = qi['inquiryId']
+    check('AC-07 平台代发询价 batchNo/aggNo',
+          str(qi.get('batchNo', '')).startswith('PC') and qi.get('aggNo') == agg['aggNo'], qi)
     det = steel.get('/inquiries/%d' % inq_id)
-    check('AC-07 已邀请 3 家供应商', len(det.get('invites', [])) == 3, det.get('invites'))
+    check('AC-07 成员钢厂归集视图与份额',
+          det.get('aggView') is True and float(det.get('shareQty')) == 30000.0, det)
 
-    # ---- AC-08 密封报价与揭示 ----
-    print('\n[AC-08] 密封报价与揭示')
+    # ---- AC-08 密封报价与平台汇总揭示 ----
+    print('\n[AC-08] 密封报价与平台汇总揭示')
     s, c, m = sup1.try_code('POST', '/inquiries/%d/reveal' % inq_id, {})
     check('AC-08 供应商不可揭示(40301)', c == 40301, m)
+    s, c, m = plat.try_code('POST', '/admin/quote-inquiries/%d/return' % inq_id, {})
+    check('AC-08 无报价不可汇总揭示(40001)', c == 40001, m)
     deliver = (now + timedelta(days=8)).strftime('%Y-%m-%d')
+    # 报价新契约（2026-11-24 迭代）：产品申报必填矿种 varietyId
+    var_id = pg_one("SELECT variety_id FROM biz_inquiry WHERE id=%s", (inq_id,))[0]
     for cli, price in ((sup1, 818.00), (sup2, 815.00), (sup3, 812.00)):
         cli.post('/inquiries/%d/quotes' % inq_id,
-                 {'price': price, 'quantity': 20000, 'deliveryDate': deliver, 'payTerms': 'T/T',
-                  'taxType': 'INC_TAX', 'freightPrice': 30.0, 'deliveryType': 'PORT_FOB'})
+                 {'price': price, 'quantity': 45000, 'deliveryDate': deliver, 'payTerms': 'T/T',
+                  'taxType': 'INC_TAX', 'freightPrice': 30.0, 'deliveryType': 'PORT_FOB',
+                  'varietyId': var_id, 'origin': '澳大利亚', 'grade': 61.5})
         det = cli.get('/inquiries/%d' % inq_id)
         check('AC-08 供应商可见自己报价',
               det.get('myQuote', {}).get('status') == 'SUBMITTED', det.get('myQuote'))
     s, c, m = sup1.try_code('POST', '/inquiries/%d/quotes' % inq_id,
-                            {'price': 810, 'quantity': 20000, 'deliveryDate': deliver,
-                             'taxType': 'INC_TAX', 'freightPrice': 30.0, 'deliveryType': 'PORT_FOB'})
+                            {'price': 810, 'quantity': 45000, 'deliveryDate': deliver,
+                             'taxType': 'INC_TAX', 'freightPrice': 30.0, 'deliveryType': 'PORT_FOB',
+                             'varietyId': var_id, 'origin': '澳大利亚', 'grade': 61.5})
     check('AC-08 重复报价被拦截(40902)', c == 40902, m)
     det = steel.get('/inquiries/%d' % inq_id)
-    leak = [i for i in det.get('invites', []) if 'price' in i or 'quantity' in i]
+    leak = [i for i in det.get('quoteSuppliers', []) if 'price' in i or 'unitPrice' in i]
     check('AC-08 截止前需方不可见任何报价', not leak, leak)
     s, c, m = steel.try_code('POST', '/inquiries/%d/reveal' % inq_id, {})
     check('AC-08 未截止不可揭示(40901)', c == 40901, m)
     pg_exec("UPDATE biz_inquiry SET deadline=now()-interval '5 minutes' WHERE id=%s", (inq_id,))
-    snap = steel.post('/inquiries/%d/reveal' % inq_id)
-    rows = snap.get('rows', [])
-    check('AC-08 揭示生成 3 条比价快照', len(rows) == 3, snap)
+    rv = plat.post('/admin/quote-inquiries/%d/return' % inq_id)
+    check('AC-08 平台汇总揭示', rv.get('revealed') is True and rv.get('quoteCount') == 3, rv)
+    rv2 = steel.get('/inquiries/%d/quotes/reveal' % inq_id)
+    rows = rv2['rows']
+    check('AC-08 揭示快照 3 条且量为本厂份额',
+          len(rows) == 3 and float(rv2.get('shareQty')) == 30000.0
+          and all(float(x['quantity']) == 30000.0 for x in rows), rows)
     check('AC-08 快照按价格升序',
           [float(x['unitPrice']) for x in rows] == [812.0, 815.0, 818.0], rows)
     q3_id = rows[0]['quoteId']  # sup3 最低价
 
-    # ---- T11 议价多轮 ----
-    print('\n[T11] 议价多轮')
-    b1 = steel.post('/bargains', {'quoteId': q3_id, 'price': 810.00, 'quantity': 20000,
-                                  'extraTerms': '第 1 轮还价'})
-    check('T11 发起还价 PENDING', b1.get('status') == 'PENDING' and b1.get('roundNo') == 1, b1)
-    s, c, m = steel.try_code('PUT', '/bargains/%d/accept' % b1['id'], {})
-    check('T11 发起方不可自答(40301)', c == 40301, m)
-    sup3.put('/bargains/%d/accept' % b1['id'], {})
-    for price in (808.00, 806.00):
-        b = steel.post('/bargains', {'quoteId': q3_id, 'price': price, 'quantity': 20000,
-                                     'extraTerms': '还价 %.2f' % price})
-        sup3.put('/bargains/%d/accept' % b['id'], {})
-    bl = steel.get('/bargains', quoteId=q3_id)['list']
-    check('T11 三轮全部 ACCEPTED',
-          [x['roundNo'] for x in bl] == [3, 2, 1] and all(x['status'] == 'ACCEPTED' for x in bl), bl)
+    # ---- T11 钢厂反馈与自动成单 ----
+    print('\n[T11] 钢厂反馈与自动成单')
+    s, c, m = sup1.try_code('POST', '/inquiries/%d/feedback' % inq_id, {'decision': 'ACCEPTED'})
+    check('T11 供应商不可反馈(40301)', c == 40301, m)
+    s, c, m = steel.try_code('POST', '/inquiries/%d/feedback' % inq_id, {'decision': 'REJECTED'})
+    check('T11 拒单必填原因(40001)', c == 40001, m)
+    steel.post('/inquiries/%d/feedback' % inq_id, {'decision': 'ACCEPTED'})
+    fb = plat.get('/admin/quote-inquiries/%d/feedbacks' % inq_id)['list']
+    check('T11 钢厂一反馈可查', len(fb) == 1 and fb[0]['decision'] == 'ACCEPTED', fb)
+    r2 = steel2.post('/inquiries/%d/feedback' % inq_id, {'decision': 'ACCEPTED'})
+    check('T11 全员认可自动成单',
+          bool(r2.get('autoAward', {}).get('orderId')) and r2['autoAward'].get('memberCount') == 2,
+          r2.get('autoAward'))
+    aw = r2['autoAward']
 
-    # ---- AC-12 定标生成订单 ----
-    print('\n[AC-12] 定标生成订单')
-    aw = steel.post('/inquiries/%d/award' % inq_id, {'quoteId': q3_id})
+    # ---- AC-12 自动成单结果校验 ----
+    print('\n[AC-12] 自动成单结果校验')
     oid = aw['orderId']
     check('AC-12 返回订单与确认期限', oid and bool(aw.get('confirmDeadline')), aw)
     od = steel.get('/orders/%d' % oid)
-    check('AC-12 以议价接受价定标', float(od['unit_price']) == 806.0
-          and float(od['quantity']) == 20000, od)
+    check('AC-12 以最低价按归集总量成单', float(od['unit_price']) == 812.0
+          and float(od['quantity']) == 45000.0, od)
     check('AC-12 订单待供应商确认', od['status'] == 'PENDING_CONFIRM', od)
     det3 = sup3.get('/inquiries/%d' % inq_id)
     check('AC-12 中标报价 WIN', det3['myQuote']['status'] == 'WIN', det3.get('myQuote'))
     det2 = sup2.get('/inquiries/%d' % inq_id)
     check('AC-12 未中标报价 LOSE', det2['myQuote']['status'] == 'LOSE', det2.get('myQuote'))
-    s, c, m = steel.try_code('POST', '/inquiries/%d/award' % inq_id, {'quoteId': q3_id})
+    s, c, m = plat.try_code('POST', '/admin/quote-inquiries/%d/award' % inq_id,
+                            {'quoteId': q3_id})
     check('AC-12 重复定标被拦截(40901)', c == 40901, m)
 
     # ---- T12 供应商确认 ----
@@ -315,98 +344,75 @@ def run():
     check('T12 需方无确认权(40301)', c == 40301, m)
     sup3.put('/orders/%d/confirm' % oid, {})
     od2 = sup3.get('/orders/%d' % oid)
-    check('T12 确认后待合同', od2['status'] == 'PENDING_CONTRACT', od2)
+    check('T12 确认后待提货计划', od2['status'] == 'PENDING_PICKUP', od2)
 
-    # ---- AC-14 合同顺序签署 + AC-15 作废重签 ----
-    print('\n[AC-14/15] 合同签署与作废重签')
-    cg = steel.post('/orders/%d/contract/generate' % oid)
-    c1 = cg['contractId']
-    check('AC-14 生成合同 v1 待需方签', cg['version'] == 1 and cg['status'] == 'PENDING_BUYER', cg)
-    cd = steel.get('/contracts/%d' % c1)
-    check('AC-14 合同详情含订单', cd['order']['id'] == oid, cd.get('order'))
-    s, c, m = steel.try_code('POST', '/contracts/%d/sign' % c1,
-                             {'signerName': '需方经办', 'confirm': 'true'})
-    check('AC-14 签署必须附盖章件(40001)', c == 40001, m)
-    s, c, m = sup3.try_code('POST', '/contracts/%d/sign' % c1,
-                            {'signerName': '供方经办', 'confirm': 'true', 'fileId': 'x'})
-    check('AC-14 供方先签被拒(40901)', c == 40901, m)
-    stamp1 = upload(steel, 'stamp-buyer-%s.pdf' % tag, PDF, 'application/pdf')
-    r1 = steel.post('/contracts/%d/sign' % c1,
-                    {'signerName': '需方经办', 'confirm': 'true', 'fileId': stamp1})
-    check('AC-14 需方签署后待供方', r1['status'] == 'PENDING_SUPPLIER', r1)
-    check('AC-14 记录盖章件 SHA-256',
-          r1.get('fileSha256') == hashlib.sha256(PDF).hexdigest(), r1)
-    vd = steel.post('/contracts/%d/void' % c1, {'reason': 'E2E：条款调整，作废重签'})
-    check('AC-15 未完整签署合同可作废', vd['status'] == 'VOID', vd)
-    odv = steel.get('/orders/%d' % oid)
-    check('AC-15 作废后订单回到待生成合同', odv['status'] == 'PENDING_CONTRACT', odv)
-    cg2 = steel.post('/orders/%d/contract/generate' % oid)
-    c2 = cg2['contractId']
-    check('AC-15 作废重签生成新版本', cg2['version'] == 2, cg2)
-    s, c, m = sup3.try_code('POST', '/contracts/%d/sign' % c2,
-                            {'signerName': '供方经办', 'confirm': 'true', 'fileId': stamp1})
-    check('AC-15 v2 仍需需方先签(40901)', c == 40901, m)
-    steel.post('/contracts/%d/sign' % c2,
-               {'signerName': '需方经办', 'confirm': 'true', 'fileId': stamp1})
-    stamp2 = upload(sup3, 'stamp-supplier-%s.png' % tag, PNG, 'image/png')
-    r2 = sup3.post('/contracts/%d/sign' % c2,
-                   {'signerName': '供方经办', 'confirm': 'true', 'fileId': stamp2})
-    check('AC-14 双签后待平台核验',
-          r2['status'] == 'PENDING_SUPPLIER' and r2.get('platStatus') == 'PENDING', r2)
-    s, c, m = plat.try_code('PUT', '/admin/contracts/%d/verify' % c2, {'approve': 'false'})
-    check('AC-14 核验退回必填原因(40001)', c == 40001, m)
-    s, c, m = steel.try_code('POST', '/orders/%d/logistics-plan' % oid, {'orgMode': 'PLATFORM'})
-    check('AC-14 核验前订单未履约不可配物流(40901)', c == 40901, m)
-    vr = plat.put('/admin/contracts/%d/verify' % c2, {'approve': 'true'})
-    check('AC-14 平台核验后合同生效',
-          vr['status'] == 'EFFECTIVE' and vr.get('platStatus') == 'CONFIRMED', vr)
-    cd2 = steel.get('/contracts/%d' % c2)
-    check('AC-14 生效合同哈希为供方盖章件',
-          cd2['file_hash'] == hashlib.sha256(PNG).hexdigest(), cd2.get('file_hash'))
+    # ---- T13 提货计划全员提交 ----
+    print('\n[T13] 提货计划全员提交')
+    s, c, m = sup1.try_code('POST', '/orders/%d/pickup-plan' % oid, {'dailyQty': 1000, 'startDate': today})
+    check('T13 非成员不可提交(40301)', c == 40301, m)
+    s, c, m = steel.try_code('POST', '/orders/%d/pickup-plan' % oid, {'dailyQty': 0, 'startDate': today})
+    check('T13 日提货量必须大于 0(40001)', c == 40001, m)
+    steel.post('/orders/%d/pickup-plan' % oid, {'dailyQty': 3000, 'startDate': today})
     od3 = steel.get('/orders/%d' % oid)
-    check('AC-14 核验后订单履约中', od3['status'] == 'PERFORMING', od3)
-    s, c, m = plat.try_code('PUT', '/admin/contracts/%d/verify' % c2, {'approve': 'true'})
-    check('AC-14 重复核验被拦截(40901)', c == 40901, m)
-    s, c, m = steel.try_code('POST', '/contracts/%d/void' % c2, {'reason': '尝试作废已生效合同'})
-    check('AC-15 已生效合同不可作废(40901)', c == 40901, m)
+    check('T13 单成员提交不转态', od3['status'] == 'PENDING_PICKUP', od3)
+    steel2.post('/orders/%d/pickup-plan' % oid, {'dailyQty': 1500, 'startDate': today})
+    od3 = steel.get('/orders/%d' % oid)
+    check('T13 全员提交后待运输', od3['status'] == 'PENDING_TRANSPORT', od3)
 
-    # ---- T14 物流方案与运单 ----
-    print('\n[T14] 物流方案与运单调度')
-    plan = steel.post('/orders/%d/logistics-plan' % oid, {'orgMode': 'PLATFORM', 'remark': 'E2E 物流'})
+    # ---- T14 平台物流方案与分段运单 ----
+    print('\n[T14] 平台物流方案与分段运单')
+    plan = plat.post('/admin/logistics-plans', {'orderId': oid, 'orgMode': 'PLATFORM'})
     pid = plan['planId']
-    check('T14 创建物流方案', bool(pid), plan)
-    s, c, m = steel.try_code('POST', '/orders/%d/logistics-plan' % oid, {'orgMode': 'SELF'})
+    check('T14 平台创建物流方案', bool(pid), plan)
+    s, c, m = plat.try_code('POST', '/admin/logistics-plans',
+                            {'orderId': oid, 'orgMode': 'PLATFORM'})
     check('T14 重复方案被拦截(40902)', c == 40902, m)
     wd = (now + timedelta(days=6)).strftime('%Y-%m-%d')
-    seg = {'segmentNo': 'SEG-1', 'transportMode': 'ROAD', 'planQty': 10000,
-           'planDepartDate': today, 'planArriveDate': wd,
-           'departPlace': '曹妃甸港', 'arrivePlace': '青岛港'}
-    s, c, m = steel.try_code('POST', '/logistics-plans/%d/waybills' % pid, dict(seg))
-    check('T14 偏差超5%须填说明(40001)', c == 40001, m)
-    w1 = steel.post('/logistics-plans/%d/waybills' % pid,
-                    dict(seg, deviationReason='首段运力有限，剩余量由第二段补齐'))
+    s, c, m = plat.try_code('POST', '/admin/logistics-plans/%d/waybills' % pid,
+                            {'segmentNo': 'SEG-1', 'transportMode': 'SEA', 'planQty': 20000,
+                             'planDepartDate': today, 'planArriveDate': wd,
+                             'departPlace': '黄骅港', 'arrivePlace': '青岛港', 'freight': 60.0})
+    check('T14 运输方式仅铁路/多式联运/公路(40001)', c == 40001, m)
+    s, c, m = plat.try_code('POST', '/admin/logistics-plans/%d/waybills' % pid,
+                            {'segmentNo': 'SEG-1', 'transportMode': 'ROAD', 'planQty': 20000,
+                             'planDepartDate': today, 'planArriveDate': wd,
+                             'departPlace': '黄骅港', 'arrivePlace': '青岛港'})
+    check('T14 运费必填(40001)', c == 40001, m)
+    s, c, m = plat.try_code('POST', '/admin/logistics-plans/%d/waybills' % pid,
+                            {'segmentNo': 'SEG-1', 'transportMode': 'ROAD', 'planQty': 20000,
+                             'planDepartDate': today, 'planArriveDate': wd,
+                             'departPlace': '曹妃甸港', 'arrivePlace': '青岛港', 'freight': 60.0})
+    check('T14 装货港口仅黄骅港/天津港(40001)', c == 40001, m)
+    s, c, m = plat.try_code('POST', '/admin/logistics-plans/%d/waybills' % pid,
+                            {'segmentNo': 'SEG-1', 'transportMode': 'ROAD', 'planQty': 20000,
+                             'planDepartDate': today, 'planArriveDate': wd,
+                             'departPlace': '黄骅港', 'arrivePlace': '青岛港', 'freight': 60.0})
+    check('T14 计划量偏差超5%须填说明(40001)', c == 40001, m)
+    w1 = plat.post('/admin/logistics-plans/%d/waybills' % pid,
+                   {'segmentNo': 'SEG-1', 'transportMode': 'ROAD', 'planQty': 20000,
+                    'planDepartDate': today, 'planArriveDate': wd,
+                    'departPlace': '黄骅港', 'arrivePlace': '青岛港', 'freight': 60.0,
+                    'deviationReason': '首段运力有限，剩余量由第二段补齐'})
     wid1 = w1['id']
-    check('T14 分段1待指派', w1['status'] == 'PENDING_ASSIGN', w1)
-    r = steel.put('/waybills/%d/assign' % wid1, {'carrierId': carrier_cid})
-    check('T14 指派承运商', r['status'] == 'PENDING_ACCEPT', r)
-    carrier.put('/waybills/%d/accept' % wid1, {})
-    carrier.put('/waybills/%d/node' % wid1, {'node': 'DEPART', 'actualQty': 10000})
-    carrier.put('/waybills/%d/node' % wid1, {'node': 'ARRIVE'})
-    s, c, m = carrier.try_code('PUT', '/waybills/%d/node' % wid1, {'node': 'SIGN'})
-    check('T14 承运商仅可回填发运/到达(40001)', c == 40001, m)
+    check('T14 分段1创建即待发运', w1['status'] == 'PENDING_DEPART', w1)
+    r = plat.put('/admin/waybills/%d/advance' % wid1, {'action': 'ETA'})
+    check('T14 平台登记船到港', r.get('action') == 'ETA', r)
+    s, c, m = plat.try_code('PUT', '/admin/waybills/%d/advance' % wid1, {'action': 'ARRIVE'})
+    check('T14 未发运不可到达(40901)', c == 40901, m)
+    plat.put('/admin/waybills/%d/advance' % wid1, {'action': 'DEPART', 'actualQty': 20000})
+    plat.put('/admin/waybills/%d/advance' % wid1, {'action': 'ARRIVE'})
     steel.post('/waybills/%d/sign' % wid1, {})
     wl = steel.get('/waybills', orderId=oid)['list']
     st1 = next(x for x in wl if x['id'] == wid1)
     check('T14 需方签收后 SIGNED', st1['status'] == 'SIGNED', st1)
-    w2 = steel.post('/logistics-plans/%d/waybills' % pid,
-                    {'segmentNo': 'SEG-2', 'transportMode': 'SEA', 'planQty': 10000,
-                     'planDepartDate': today, 'planArriveDate': wd,
-                     'departPlace': '青岛港', 'arrivePlace': '湛江港', 'carrierId': carrier_cid})
+    w2 = plat.post('/admin/logistics-plans/%d/waybills' % pid,
+                   {'segmentNo': 'SEG-2', 'transportMode': 'RAIL', 'planQty': 25000,
+                    'planDepartDate': today, 'planArriveDate': wd,
+                    'departPlace': '天津港', 'arrivePlace': '青岛港', 'freight': 80.0})
     wid2 = w2['id']
-    check('T14 创建即指派', w2['status'] == 'PENDING_ACCEPT', w2)
-    carrier.put('/waybills/%d/accept' % wid2, {})
-    carrier.put('/waybills/%d/node' % wid2, {'node': 'DEPART'})
-    carrier.put('/waybills/%d/node' % wid2, {'node': 'ARRIVE'})
+    check('T14 分段2创建即待发运', w2['status'] == 'PENDING_DEPART', w2)
+    plat.put('/admin/waybills/%d/advance' % wid2, {'action': 'DEPART'})
+    plat.put('/admin/waybills/%d/advance' % wid2, {'action': 'ARRIVE'})
     steel.post('/waybills/%d/sign' % wid2, {})
     wl = steel.get('/waybills', orderId=oid)['list']
     check('T14 全部运单 SIGNED',
@@ -416,15 +422,15 @@ def run():
     # ---- T16 履约时间轴 ----
     print('\n[T16] 履约时间轴')
     tl = steel.get('/orders/%d/timeline' % oid)['list']
-    check('T16 时间轴节点完整', len(tl) >= 10, '共 %d 个节点' % len(tl))
+    check('T16 时间轴节点完整', len(tl) >= 8, '共 %d 个节点' % len(tl))
     codes = {x.get('nodeCode') or x.get('node_code') for x in tl}
-    check('T16 含订单/合同/运单节点',
-          {'ORDER_CREATED', 'CONTRACT_EFFECTIVE', 'WAYBILL_SIGNED'} <= codes, codes)
+    check('T16 含订单/运单节点',
+          {'ORDER_CREATED', 'WAYBILL_SIGNED'} <= codes, codes)
 
     # ---- T17 质检 + AC-19 预警 ----
     print('\n[T17/AC-19] 质检与预警')
     steel.post('/orders/%d/quality-check' % oid,
-               {'arrivedQty': 25000, 'conclusion': 'ACCEPT', 'indicators': 'Fe 62.1%',
+               {'arrivedQty': 50000, 'conclusion': 'ACCEPT', 'indicators': 'Fe 62.1%',
                 'checkDesc': 'E2E 质检-超差触发预警'})
     als = steel.get('/alerts', bizType='ORDER', bizId=oid)['list']
     al = next((a for a in als if a.get('alertType') == 'QTY_DIFF'), None)
@@ -432,30 +438,29 @@ def run():
     aid = al['id']
     r = steel.put('/alerts/%d/handle' % aid, {'action': 'PROCESSING', 'handlerRemark': 'E2E 处理中'})
     check('AC-19 预警转处理中', r['status'] == 'PROCESSING', r)
+    # 再次超差：同对象同类型仅一条未关闭预警（24h 节流不重复新建）
+    steel.post('/orders/%d/quality-check' % oid,
+               {'arrivedQty': 51000, 'conclusion': 'ACCEPT', 'checkDesc': 'E2E 重复超差'})
+    als2 = steel.get('/alerts', bizType='ORDER', bizId=oid, alertType='QTY_DIFF')['list']
+    open2 = [a for a in als2 if a['status'] in ('PENDING', 'PROCESSING')]
+    check('AC-19 未关闭同类预警去重',
+          len(open2) == 1 and len(als2) == 1 and open2[0]['id'] == aid,
+          [(a['id'], a['status']) for a in als2])
     s, c, m = steel.try_code('PUT', '/alerts/%d/handle' % aid, {'action': 'CLOSE'})
     check('AC-19 关闭须填处理意见(40001)', c == 40001, m)
     steel.put('/alerts/%d/handle' % aid, {'action': 'CLOSE', 'handlerRemark': '双方确认按实收结算'})
     steel.post('/orders/%d/quality-check' % oid,
-               {'arrivedQty': 26000, 'conclusion': 'ACCEPT', 'checkDesc': 'E2E 重复超差'})
-    als2 = steel.get('/alerts', bizType='ORDER', bizId=oid, alertType='QTY_DIFF')['list']
-    # PRD AC-19"不重复"= 同对象同类型未关闭去重：已关闭的留痕保留，未关闭仅 1 条
-    open2 = [a for a in als2 if a['status'] in ('PENDING', 'PROCESSING')]
-    check('AC-19 未关闭同类预警去重', len(open2) == 1 and len(als2) == 2,
-          [(a['id'], a['status']) for a in als2])
-    steel.put('/alerts/%d/handle' % open2[0]['id'],
-              {'action': 'CLOSE', 'handlerRemark': '双方确认按实收结算'})
-    steel.post('/orders/%d/quality-check' % oid,
-               {'arrivedQty': 20500, 'conclusion': 'ACCEPT', 'indicators': 'Fe 62.0%',
+               {'arrivedQty': 46000, 'conclusion': 'ACCEPT', 'indicators': 'Fe 62.0%',
                 'checkDesc': 'E2E 复检'})
     qcs = steel.get('/orders/%d/quality-checks' % oid)['list']
     check('T17 质检记录 3 条', len(qcs) == 3, [x['checkNo'] for x in qcs])
 
     # ---- T18 结算双向确认 ----
     print('\n[T18] 结算与双向确认')
-    total = 806.00 * 20500
+    total = 812.00 * 46000
     st = steel.post('/orders/%d/settlements' % oid, {'settleDesc': 'E2E 结算'})
     sid_ = st['id']
-    check('T18 结算数量默认最近质检实收', float(st['settle_qty']) == 20500, st)
+    check('T18 结算数量默认最近质检实收', float(st['settle_qty']) == 46000, st)
     check('T18 金额系统计算', float(st['total_amount']) == total, st['total_amount'])
     check('T18 初始待供应商确认', st['status'] == 'PENDING_CONFIRM_SUPPLIER', st)
     s, c, m = sup3.try_code('POST', '/orders/%d/settlements' % oid, {})
@@ -475,10 +480,14 @@ def run():
     std = steel.get('/settlements/%d' % sid_)
     check('T19 付款后结算 COMPLETED', std['status'] == 'COMPLETED', std)
     check('T19 付款记录可查', len(std.get('payments', [])) == 1, std.get('payments'))
-    steel.post('/orders/%d/archive' % oid, {})
+    # 完成确认（2026-11-24 迭代）：全部钢厂成员与供应商 finish-confirm 齐备后订单自动完成并归档
+    steel.post('/orders/%d/finish-confirm' % oid, {})
+    steel2.post('/orders/%d/finish-confirm' % oid, {})
+    r1 = sup3.post('/orders/%d/finish-confirm' % oid, {})
+    check('T19 双方确认后订单自动完成', r1.get('completed') is True, r1)
     od4 = steel.get('/orders/%d' % oid)
     check('T19 归档后订单 COMPLETED', od4['status'] == 'COMPLETED', od4)
-    blob = dl_bytes(steel, '/orders/%d/archive/export' % oid)
+    blob = dl_bytes(plat, '/orders/%d/archive/export' % oid)
     zf = zipfile.ZipFile(io.BytesIO(blob))
     check('T19 档案 zip 含 manifest.json',
           blob[:2] == b'PK' and 'manifest.json' in zf.namelist(), zf.namelist()[:5])
@@ -489,8 +498,6 @@ def run():
     check('AC-24 无关方不可见订单(40301)', c == 40301, m)
     s, c, m = sup2.try_code('GET', '/settlements/%d' % sid_)
     check('AC-24 无关方不可见结算(40301)', c == 40301, m)
-    s, c, m = sup2.try_code('GET', '/contracts/%d' % c2)
-    check('AC-24 无关方不可见合同(40301)', c == 40301, m)
     ms = sup3.get('/messages', isRead='0')['list']
     check('消息通知已送达', len(ms) > 0, '未读 %d 条' % len(ms))
 

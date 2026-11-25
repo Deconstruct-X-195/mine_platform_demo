@@ -7,7 +7,7 @@ from flask import g, request
 
 from ..common import (ApiError, doc_no, get_params, json_payload, ok, op_log,
                       page_args, page_data, parse_date, parse_datetime,
-                      require_fields, send_msg)
+                      require_fields, send_msg, validate_password)
 from ..db import execute, qall, q1
 from ..security import hash_password, plat_required
 from ..state_machine import transition, add_node
@@ -66,7 +66,10 @@ def pending_companies():
 @bp.put('/admin/companies/<int:cid>/reset-password')
 @plat_required
 def reset_company_password(cid):
-    """运营端重置企业账号密码（演示约定：重置为 demo123456）。"""
+    """运营端重置企业账号密码：由运营端传入新口令（强度校验 + bcrypt 散列落库），不再使用固定演示口令。"""
+    p = get_params()
+    require_fields(p, 'password')
+    validate_password(p['password'])
     row = q1(g.conn, "SELECT id, company_name FROM ent_company WHERE id=%s AND is_deleted=0", (cid,))
     if not row:
         raise ApiError(40401, '企业不存在')
@@ -74,7 +77,7 @@ def reset_company_password(cid):
     if not users:
         raise ApiError(40401, '该企业暂无账号')
     execute(g.conn, "UPDATE sys_user SET password_hash=%s WHERE company_id=%s AND is_deleted=0",
-            (hash_password('demo123456'), cid))
+            (hash_password(p['password']), cid))
     op_log(g.conn, g.ctx, 'sys_user', cid, 'RESET_PASSWORD', None,
            {'company': row['company_name'], 'accounts': len(users)})
     return ok({'reset': len(users)})

@@ -74,7 +74,8 @@ def run():
     reg2 = {'companyName': 'E2E归集钢厂' + tag, 'creditCode': '91340100MA2T%05dX' % (now.second * 1000 + now.microsecond // 1000),
             'companyTypes': 'STEEL_BUYER', 'province': '河北省', 'city': '唐山市',
             'contactName': '归集联系人', 'contactPhone': '13900000002',
-            'username': u2, 'password': 'new123456', 'licenseFileId': lic}
+            'username': u2, 'password': 'new123456', 'legalPerson': 'E2E 归集法人',
+            'licenseFileId': lic}
     r2 = anon.post('/auth/register', reg2)
     cid2 = r2['companyId']
     plat.put('/admin/companies/%s/audit' % cid2, {'approve': 'true', 'remark': 'E2E 归集准入'})
@@ -131,7 +132,7 @@ def run():
     else:
         rec('异常-品位不一致不可合并(40001)', True, '无可用品位不一致明细，跳过')
 
-    # 截止时间 < now+2h / 截止晚于到货日前 7 天（需先有归集订单，放在节点B 校验）
+    # 报价截止由平台自动设定（到货日前7天18:00），归集询价校验放在节点B
 
     # ---------- 节点A 需求归集合并 ----------
     agg = plat.post('/admin/aggregated-orders',
@@ -162,31 +163,19 @@ def run():
         """, (agg_id,))['c']
     rec('A6 站内信-需求已纳入归集订单', agg_msgs >= 1, '消息 %d 条' % agg_msgs)
 
-    # ---------- 异常校验（节点B 前置规则） ----------
-    arrive = (now + timedelta(days=18)).strftime('%Y-%m-%d')
-    ddl_bad = (now + timedelta(hours=1)).strftime('%Y-%m-%d %H:%M:%S')
-    http, code, msg = plat.try_code('POST', '/admin/quote-inquiries', {
-        'aggOrderId': agg_id, 'arriveDate': arrive, 'deadline': ddl_bad,
-        'inviteSupplierIds': [2, 3]})
-    rec('异常-截止需≥当前+2h(40001)', code == 40001, '%s %s' % (code, msg))
-
-    arrive_far = (now + timedelta(days=3)).strftime('%Y-%m-%d')
-    ddl_far = (now + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
-    http, code, msg = plat.try_code('POST', '/admin/quote-inquiries', {
-        'aggOrderId': agg_id, 'arriveDate': arrive_far, 'deadline': ddl_far,
-        'inviteSupplierIds': [2, 3]})
-    rec('异常-截止不晚于到货前7天(40001)', code == 40001, '%s %s' % (code, msg))
-
+    # ---------- 异常校验（节点B 前置规则；截止由平台自动设定，不再校验 deadline） ----------
     arrive2 = (now + timedelta(days=18)).strftime('%Y-%m-%d')
-    ddl_ok = (now + timedelta(days=8)).strftime('%Y-%m-%d %H:%M:%S')
     http, code, msg = plat.try_code('POST', '/admin/quote-inquiries', {
-        'aggOrderId': agg_id, 'arriveDate': arrive2, 'deadline': ddl_ok,
-        'inviteSupplierIds': []})
+        'aggOrderId': agg_id, 'arriveDate': arrive2, 'inviteSupplierIds': []})
     rec('异常-至少邀请一家供应商(40001)', code == 40001, '%s %s' % (code, msg))
+    http, code, msg = plat.try_code('POST', '/admin/quote-inquiries', {
+        'aggOrderId': agg_id, 'arriveDate': arrive2, 'minResponse': 11,
+        'inviteSupplierIds': [2, 3]})
+    rec('异常-最少响应家数越界(40001)', code == 40001, '%s %s' % (code, msg))
 
     # ---------- 节点B 平台代发询价 ----------
     batch = plat.post('/admin/quote-inquiries', {
-        'aggOrderId': agg_id, 'arriveDate': arrive2, 'deadline': ddl_ok,
+        'aggOrderId': agg_id, 'arriveDate': arrive2,
         'minResponse': 1, 'inviteSupplierIds': [2, 3],
         'remark': 'E2E 归集端到端询价'})
     batch_no, iid = batch['batchNo'], batch['inquiryId']
@@ -225,9 +214,11 @@ def run():
     rec('C1 供方可见归集询价', bool(mine and mine['inquiryNo']), str(mine and mine['inquiryNo']))
 
     q1_price, q2_price = '860', '845'
+    var_id = pg1("SELECT variety_id FROM biz_inquiry WHERE id=%s", (iid,))['variety_id']
     for cli, price, tag in ((sup1, q1_price, '供方一'), (sup2, q2_price, '供方二')):
         q = cli.post('/inquiries/%s/quotes' % iid, {
             'price': price, 'quantity': str(expect_total), 'deliveryDate': (now + timedelta(days=15)).strftime('%Y-%m-%d'),
+            'varietyId': var_id, 'origin': '澳大利亚', 'grade': 61.5,
             'taxType': 'INC_TAX', 'freightPrice': '30', 'deliveryType': 'PLANT',
             'remark': 'E2E 归集报价 %s' % tag})
         rec('C2 供方报价-%s' % tag, bool(q['id']) and q['status'] == 'SUBMITTED',
@@ -300,7 +291,7 @@ def run():
 
     # ---------- 节点F 运营处理反馈：重新发起询价 ----------
     batch2 = plat.post('/admin/quote-inquiries', {
-        'aggOrderId': agg_id, 'arriveDate': arrive2, 'deadline': ddl_ok,
+        'aggOrderId': agg_id, 'arriveDate': arrive2,
         'minResponse': 1, 'inviteSupplierIds': [2],
         'remark': 'E2E 重新发起询价'})
     iid2 = batch2['inquiryId']
