@@ -2,7 +2,7 @@
 (function () {
   window.Pages = window.Pages || {};
   const DELIVERY = { PORT_FOB: '港口FOB', PORT_TRUCK: '港口自提', PLANT: '场内自提' };
-  const SETTLE = { PREPAY: '预付款', COD: '货到付款', CREDIT: '账期结算', INSTALLMENT: '分期付款' };
+  const SETTLE = { PREPAY: '现货现款', COD: '货到付款', CREDIT: '账期结算', INSTALLMENT: '分期付款' };
   const MODES = { RAIL: '铁路直达', MULTIMODAL: '公铁联运', ROAD: '汽运直达', SEA: '海运' };
   /* 分段语义：铁路直达/公铁联运按列车拆分（第 N 列，每列独立轨迹动态）；
      汽运直达为持续运输过程——从开始发运到该订单全部吨数到站结束，全程一张运单 */
@@ -98,9 +98,11 @@
       const spotMap = await UI.spotPrices();   // 报价模式单价：品种→港口现货价
       const priceShown = (r) => UI.spotShown(r.priceSign, r.priceFloat) || UI.spotDiff(spotMap[r.varietyName], r.unit_price);
       const ORDER_TXT = { PENDING_PICKUP: '待收集提货计划', PENDING_TRANSPORT: '待制定运输方案', PENDING_CONFIRM: '待确认', PENDING_CONTRACT: '待签合同', PENDING_EFFECT: '待合同生效', PERFORMING: '履约中', COMPLETED: '已完成', CANCELLED: '已失效' };
-      const esc = (s) => '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"';
-      const lines = [['订单号', '品种', '品位(%)', '数量(湿吨)', '单价(元/湿吨)', '运费(元/湿吨)', '预计交货日', '状态', '供方', '确认截止'].map(esc)]
-        .concat(rows.map((r) => [
+      UI.exportPreview({
+        title: '导出预览 — 订单',
+        filename: '订单导出_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv',
+        head: ['订单号', '品种', '品位(%)', '数量(湿吨)', '单价(元/湿吨)', '运费(元/湿吨)', '预计交货日', '状态', '供方', '确认截止'],
+        rows: rows.map((r) => [
           r.order_no,
           r.varietyName,
           r.grade,
@@ -111,12 +113,8 @@
           ORDER_TXT[r.status] || r.status,
           r.supplierName,
           UI.fmtDateTime(r.confirm_deadline),
-        ].map(esc).join(',')));
-      const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
-      const a = UI.h('a', { href: URL.createObjectURL(blob), download: '订单导出_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv' });
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+        ]),
+      });
     }
 
     function acts(r) {

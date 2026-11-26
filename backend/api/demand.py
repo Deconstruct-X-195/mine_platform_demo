@@ -292,7 +292,7 @@ def delete_demand(did):
         return ok({'id': did, 'status': 'DELETED'})
     if st == 'PENDING_DELETE':
         raise ApiError(40901, '需求单已是删除待提交状态')
-    if st not in ('SUBMITTED', 'WITHDRAWN', 'TO_INQUIRY'):
+    if st not in ('SUBMITTED', 'WITHDRAWN', 'TO_INQUIRY', 'AGGREGATED'):
         raise ApiError(40901, '需求单当前状态为 %s，不可删除' % st)
     pend = q1(g.conn, """
         SELECT id FROM biz_demand_change WHERE demand_id=%s AND status='PENDING' AND is_deleted=0
@@ -378,8 +378,8 @@ def create_change_request(did):
     if agg_locked:
         if agg['status'] != 'OPEN':
             raise ApiError(40901, '该需求已进入询价流程，不可提交变更申请')
-    elif row['status'] not in ('SUBMITTED', 'TO_INQUIRY'):
-        raise ApiError(40901, '仅已提交/待询价（未进入询价）的需求单可提交变更申请')
+    elif row['status'] not in ('SUBMITTED', 'TO_INQUIRY', 'AGGREGATED'):
+        raise ApiError(40901, '仅已提交/待询价/已归集（未进入询价）的需求单可提交变更申请')
     p = get_params()
     reason = (p.get('changeReason') or '').strip()
     if not reason:

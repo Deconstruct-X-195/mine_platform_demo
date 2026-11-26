@@ -399,7 +399,7 @@ def _apply_demand_change(conn, ctx, did, after_raw):
     d = q1(conn, "SELECT * FROM biz_demand WHERE id=%s AND is_deleted=0", (did,))
     if not d:
         raise ApiError(40401, '需求单不存在')
-    if d['status'] not in ('SUBMITTED', 'TO_INQUIRY', 'INQUIRING'):
+    if d['status'] not in ('SUBMITTED', 'TO_INQUIRY', 'AGGREGATED', 'INQUIRING'):
         raise ApiError(40901, '需求单当前状态为 %s，无法应用变更' % d['status'])
     place = (str(after.get('deliveryPlace')).strip() if after.get('deliveryPlace') is not None else '')
     execute(conn, """
@@ -765,9 +765,11 @@ def create_aggregated_order():
             UPDATE biz_demand_item SET inquired_qty=%s, updated_at=now() WHERE id=%s
             """, (it['inquired_qty'] + lock, it['id']))  # 归集锁定剩余全部可询量
         mills[it['company_id']] = it['variety_name']
-    # 需求状态：SUBMITTED → TO_INQUIRY（待询价：已归集；运营端向供应商推送询价后才转询价中）
+    # 需求状态：一次性订单归集 → TO_INQUIRY（待询价：运营端向供应商推送询价后才转询价中）；
+    # 月度/季度计划归集 → AGGREGATED（已归集：仅推送采购参考，不走询价）
+    new_status = 'TO_INQUIRY' if kind == 'ORDER' else 'AGGREGATED'
     for did in {it['demand_id'] for it in items}:
-        transition(g.conn, g.ctx, 'biz_demand', '需求单', 'biz_demand', did, 'TO_INQUIRY')
+        transition(g.conn, g.ctx, 'biz_demand', '需求单', 'biz_demand', did, new_status)
     agg_no = q1(g.conn, "SELECT agg_no FROM biz_aggregated_order WHERE id=%s", (aid,))['agg_no']
     for cid, vname in mills.items():
         send_msg(g.conn, cid, '需求已纳入归集订单',
@@ -817,7 +819,7 @@ def close_aggregated_order(aid):
                     WHERE demand_id=%s AND is_deleted=0)))
             """, (m['demand_id'], aid, m['demand_id']))['c']
         drow = q1(g.conn, "SELECT id, status FROM biz_demand WHERE id=%s", (m['demand_id'],))
-        if not active and drow and drow['status'] in ('INQUIRING', 'TO_INQUIRY'):
+        if not active and drow and drow['status'] in ('INQUIRING', 'TO_INQUIRY', 'AGGREGATED'):
             transition(g.conn, g.ctx, 'biz_demand', '需求单', 'biz_demand', m['demand_id'], 'SUBMITTED')
     transition(g.conn, g.ctx, 'biz_aggregated_order', '归集订单', 'biz_aggregated_order', aid, 'CLOSED')
     for m in members:
@@ -881,7 +883,7 @@ def cancel_aggregated_item(aid, mid):
         WHERE is_deleted=0 AND status IN ('DRAFT','SENT','QUOTING') AND demand_id=%s
         """, (m['demand_id'],))['c']
     drow = q1(g.conn, "SELECT id, status FROM biz_demand WHERE id=%s", (m['demand_id'],))
-    if not other and not active_inq and drow and drow['status'] in ('INQUIRING', 'TO_INQUIRY'):
+    if not other and not active_inq and drow and drow['status'] in ('INQUIRING', 'TO_INQUIRY', 'AGGREGATED'):
         transition(g.conn, g.ctx, 'biz_demand', '需求单', 'biz_demand', m['demand_id'], 'SUBMITTED')
     send_msg(g.conn, m['company_id'], '需求已移出归集订单',
              '贵司需求已由平台移出归集订单 %s（份额 %.3f 湿吨已释放），需求回到已提交状态，可等待重新归集。'

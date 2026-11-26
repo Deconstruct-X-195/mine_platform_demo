@@ -476,35 +476,17 @@ def _save_quote_files(conn, qid, p, company_id):
                 (qid, fid, f['file_name'], g.ctx.user['id']))
 
 
-def _spot_base_price(conn, variety_id, port):
-    """品种最新港口现货价：先取交付港口，无则回退黄骅港；均无则报错。
-
-    「港口现货价格±上下浮」报价模式的固定基准（港口现货价由平台统一维护）。
-    """
-    for name in ([port] if port else []) + ['黄骅港']:
-        row = q1(conn, """
-            SELECT price FROM base_port_price
-            WHERE variety_id=%s AND port_name=%s AND is_deleted=0
-            ORDER BY price_date DESC, id DESC LIMIT 1
-        """, (variety_id, name))
-        if row:
-            return row['price']
-    raise ApiError(40001, '该品种暂无港口现货价格，暂无法按此模式报价，请联系平台维护价格数据')
-
-
 def _quote_payload_check(conn, inq, p):
     require_fields(p, 'deliveryDate')
-    # 密封报价「港口现货价格±上下浮」模式：传 priceSign(+/-) + priceFloat 时，
-    # 单价 = 品种最新港口现货价 ± 上下浮（上下浮 ≥0，由平台基准价换算，供应商不直接填绝对单价）
+    # 密封报价「港口现货价格±上下浮」模式：「港口现货价格」仅为固定字样（不关联品种当日港口价格数据）。
+    # 供应商选择 +/- 方向并填写上下浮金额；落库 price=上下浮金额（>0），方向存 price_sign，展示按字样拼接
     sign, flt = p.get('priceSign'), p.get('priceFloat')
     stored_sign, stored_float = None, None
     if sign in ('+', '-') and flt not in (None, ''):
-        base = _spot_base_price(conn, inq['variety_id'], p.get('deliveryPlace'))
         float_amt = decimal_field(p, 'priceFloat', positive=False)
         if float_amt < 0:
             raise ApiError(40001, '上下浮价格不能为负')
-        price = base + float_amt if sign == '+' else base - float_amt
-        # 申报值随报价落库：展示「港口现货价格±上下浮」用存储值，避免基准价变动后反推失真
+        price = float_amt
         stored_sign, stored_float = sign, float_amt
     else:
         # 数值字段统一规范化：前端 <input> 的 value 为字符串，非法值返回 40001 而非 500
@@ -681,7 +663,9 @@ def reveal_inquiry(conn, iid, ctx):
         SELECT q.id, q.supplier_id, q.price, q.quantity, q.delivery_date,
                q.pay_terms, q.valid_until, q.status, q.tax_type, q.freight_price,
                q.delivery_place, q.price_sign, q.price_float
-        FROM biz_quote q WHERE q.inquiry_id=%s AND q.is_deleted=0 ORDER BY q.price, q.id
+        FROM biz_quote q WHERE q.inquiry_id=%s AND q.is_deleted=0
+        ORDER BY COALESCE(CASE WHEN q.price_sign='-' THEN -q.price_float
+                               WHEN q.price_sign='+' THEN q.price_float END, q.price) ASC, q.id
         """, (iid,))
     min_resp = row['min_response'] or 2
     shortage = len(quotes) < min_resp
@@ -825,7 +809,8 @@ def agg_inquiry_feedback(iid):
             quotes = qall(g.conn, """
                 SELECT * FROM biz_quote
                 WHERE inquiry_id=%s AND is_deleted=0 AND status IN ('REVEALED','BARGAINING')
-                ORDER BY price ASC, id ASC
+                ORDER BY COALESCE(CASE WHEN price_sign='-' THEN -price_float
+                                       WHEN price_sign='+' THEN price_float END, price) ASC, id ASC
                 """, (iid,))
             pick = None
             if members and int(okc) >= len(members):
