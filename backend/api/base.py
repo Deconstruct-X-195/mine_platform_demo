@@ -46,8 +46,7 @@ def current_prices():
     rows = qall(g.conn, today_sql + ' ORDER BY p.variety_id, p.port_name, COALESCE(p.grade, 61.5), p.price_date DESC, p.id DESC',
                 port_args)
     trend_sql = """
-        SELECT DISTINCT ON (p.variety_id, p.port_name, COALESCE(p.grade, 61.5), p.price_date)
-               p.variety_id AS "varietyId", v.variety_name AS "varietyName",
+        SELECT p.variety_id AS "varietyId", v.variety_name AS "varietyName",
                p.price_date AS "priceDate", p.price, p.port_name AS "port",
                COALESCE(p.grade, 61.5) AS "grade"
         FROM base_port_price p JOIN base_variety v ON v.id=p.variety_id
@@ -57,6 +56,8 @@ def current_prices():
     if vid:
         trend_sql += ' AND p.variety_id=%s'
         trend_args.append(vid)
+    # 不做 DISTINCT ON 去重：与运营端图表同口径——同日同品位多条记录（录入不覆盖只新增）全部返回，
+    # 前端趋势图对同日多点并排展现；today 表仍取每键最新一条
     trend = qall(g.conn, trend_sql + ' ORDER BY p.variety_id, p.port_name, COALESCE(p.grade, 61.5), p.price_date, p.id DESC', trend_args)
     if not rows:
         # 港口价尚未维护时兜底：沿用兰格锚点基准价（base_price），日期如实显示
