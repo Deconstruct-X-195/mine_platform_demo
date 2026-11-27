@@ -101,11 +101,11 @@
     let curHbGrade = hbGrades.includes(61.5) ? 61.5 : (hbGrades[0] || 61.5);
     const varieties = (await API.get('/base/varieties')).list || [];
     const pb = varieties.find((v) => v.varietyName === 'PB粉');
-    /* 交易价格按品位分组（订单品位 61.5%/60.8%），与行业价格品位切换联动 */
+    /* 交易价格按品位分组（价格录入的交易价格，品位 61.5%/60.8%），与品位切换联动 */
     const dealRaw = pb ? ((await API.get('/base-prices/deal-trend?varietyId=' + pb.id)).list || []) : [];
     const dealByGrade = {};
     dealRaw.forEach((r) => {
-      /* 订单品位归并到最近的演示品位（61.5/60.8），保证与品位切换联动 */
+      /* 录入品位归并到最近的演示品位（61.5/60.8），保证与品位切换联动 */
       const raw = r.grade != null ? Number(r.grade) : 61.5;
       const g = Math.abs(raw - 61.5) <= Math.abs(raw - 60.8) ? 61.5 : 60.8;
       (dealByGrade[g] = dealByGrade[g] || []).push({ priceDate: r.priceDate, price: r.price });
@@ -301,7 +301,7 @@
       UI.h('h3', {}, '行业价格走势（分港口）'),
       trendBox));
 
-    // 交易价格走势（平台成交均价，钢厂端不可见）：按品位分组（订单品位归并到 61.5/60.8），品位切换同行业价格卡片
+    // 交易价格走势（取价格录入的交易价格，与订单无关，钢厂端不可见）：按品位分组，品位切换同行业价格卡片
     const dealRaw = ((await API.get('/base-prices/deal-trend?varietyId=' + pb.id)).list || []);
     const dealByGrade = {};
     dealRaw.forEach((r) => {
@@ -329,12 +329,12 @@
         .slice().sort((a, b) => String(a.priceDate).localeCompare(String(b.priceDate)));
       dealBox.appendChild(rows.length >= 2
         ? UI.trendChart(rows, 'price')
-        : UI.h('div', { class: 'empty' }, '该品位暂无成交数据'));
+        : UI.h('div', { class: 'empty' }, '该品位暂无交易价格数据'));
     }
     renderDeal();
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('div', { class: 'toolbar' },
-        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '交易价格走势（平台成交均价）'),
+        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '交易价格走势'),
         UI.h('div', { class: 'spacer' }),
         ...dealGradeBtns),
       dealBox));

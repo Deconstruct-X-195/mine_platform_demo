@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from flask import g, request
 
 from ..common import ApiError, get_params, json_payload, ok, op_log, parse_date, require_fields
-from ..db import execute, qall, q1
+from ..db import execute, qall, q1, with_db
 from ..security import auth_required
 from . import bp
 
@@ -96,18 +96,62 @@ def current_prices():
 @bp.get('/base-prices/deal-trend')
 @auth_required
 def deal_trend():
-    """平台成交价走势：?varietyId= 必选，按日×品位聚合订单均价（biz_order），行含 grade。"""
+    """交易价格走势：?varietyId= 必选，取价格录入的交易价格（base_port_price.deal_price）
+    按日×品位返回，与订单数据无关。"""
     vid = request.args.get('varietyId')
     if not vid:
         raise ApiError(40001, 'varietyId 必填')
     rows = qall(g.conn, """
-        SELECT DATE(o.created_at) AS "priceDate", COALESCE(o.grade, '61.50') AS grade,
-               AVG(o.unit_price) AS price, COUNT(*) AS deals
-        FROM biz_order o
-        WHERE o.is_deleted=0 AND o.variety_id=%s
-        GROUP BY DATE(o.created_at), COALESCE(o.grade, '61.50') ORDER BY 1
+        SELECT p.price_date AS "priceDate", COALESCE(p.grade, 61.5) AS grade,
+               p.deal_price AS price
+        FROM base_port_price p
+        WHERE p.is_deleted=0 AND p.variety_id=%s AND p.deal_price IS NOT NULL
+        ORDER BY p.price_date, p.id
     """, (vid,))
     return ok({'list': json_payload(rows)})
+
+
+@bp.get('/base-prices/bigscreen-trend')
+def bigscreen_trend():
+    """大屏矿价走势（公开只读）：最新一周（近 7 日）逐日聚合的录入价格。
+
+    PB粉与集采平台录入数据保持一致：取 base_port_price.price（价格录入的行业价格），
+    主品位 61.5%（缺品位按 61.5 归并），同日多港口/多记录取均值，逐日展示不聚合到周。
+    中华混一号已录入日取录入均值；未录入日按 PB粉 同趋势 +15 元/湿吨 补齐（保持在 PB粉 上方）。
+    返回 {days: ['MM.DD'...], pb: [...], chinaBlend: [...]}（缺数据的日为 null）。"""
+    with with_db() as conn:
+        rows = qall(conn, """
+            SELECT v.variety_name AS "varietyName", p.price_date, p.price
+            FROM base_port_price p JOIN base_variety v ON v.id=p.variety_id
+            WHERE p.is_deleted=0 AND v.variety_name IN ('PB粉', '中华混一号')
+              AND COALESCE(p.grade, 61.5) = 61.5
+              AND p.price_date >= current_date - 6
+            ORDER BY p.price_date
+        """)
+    span = 7
+    today = date.today()
+    day_keys = [today - timedelta(days=i) for i in range(span - 1, -1, -1)]
+    buckets = {name: {k: [] for k in day_keys} for name in ('PB粉', '中华混一号')}
+    for r in rows:
+        if r['price_date'] in buckets.get(r['varietyName'], {}):
+            buckets[r['varietyName']][r['price_date']].append(float(r['price']))
+
+    def avg(name):
+        vals = buckets[name]
+        return [sum(vals[k]) / len(vals[k]) if vals[k] else None for k in day_keys]
+
+    raw_pb, raw_blend = avg('PB粉'), avg('中华混一号')
+    # 中华混一号未录入日：跟随 PB粉 趋势 +15 元/湿吨（同形状、在上方）
+    raw_blend = [
+        b if b is not None else (p + 15 if p is not None else None)
+        for p, b in zip(raw_pb, raw_blend)
+    ]
+    # 去掉首部连续空日（只有部分日有录入时曲线从首个有数日开始）
+    first = next((i for i in range(span) if raw_pb[i] is not None or raw_blend[i] is not None), None)
+    days = [f'{k.month:02d}.{k.day:02d}' for k in day_keys]
+    pb = [round(v, 1) if v is not None else None for v in raw_pb[first:]] if first is not None else []
+    blend = [round(v, 1) if v is not None else None for v in raw_blend[first:]] if first is not None else []
+    return ok({'days': days[first:] if first is not None else [], 'pb': pb, 'chinaBlend': blend})
 
 
 @bp.get('/base-prices/ports')

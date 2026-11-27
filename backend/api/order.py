@@ -439,7 +439,8 @@ def buyer_overview():
             "'PENDING_CONFIRM_BUYER','CONFIRMED') AND " + own, oa)},
     ]
 
-    # 待办事项（与供应商端 todos 结构一致）：需求待提交/重提 · 询价待评审/议价中 · 到货待签收
+    # 待办事项（与供应商端 todos 结构一致，与小铃铛任务页签同口径）：
+    # 采购计划待提交/重提 · 询价待评审/议价中 · 订单待确认 · 合同待签署 · 结算单待确认 · 到货待签收
     todos = []
     for r in qall(g.conn, """
             SELECT d.demand_no, d.status, d.updated_at FROM biz_demand d
@@ -449,17 +450,46 @@ def buyer_overview():
                       'main': '需求 %s 待%s' % (r['demand_no'],
                                                '提交' if r['status'] == 'DRAFT' else '重提（已撤回）'),
                       'time': r['updated_at']})
+    # 询价待办口径与询价列表一致：本钢厂询价 + 归集成员的平台询价（buyer_id 为空）
+    own_inq = """i.is_deleted=0 AND (i.buyer_id=%s OR (i.agg_id IS NOT NULL AND EXISTS (
+        SELECT 1 FROM biz_aggregated_order_item m
+        JOIN biz_demand d ON d.id=m.demand_id
+        WHERE m.agg_id=i.agg_id AND m.is_deleted=0 AND d.is_deleted=0 AND d.company_id=%s)))"""
     for r in qall(g.conn, """
             SELECT i.inquiry_no, i.updated_at FROM biz_inquiry i
-            WHERE i.buyer_id=%s AND i.is_deleted=0 AND i.status='CLOSED'
-            ORDER BY i.updated_at DESC LIMIT 20""", (cid,)):
+            WHERE """ + own_inq + """ AND i.status='CLOSED'
+            ORDER BY i.updated_at DESC LIMIT 20""", (cid, cid)):
         todos.append({'kind': 'REVIEW', 'main': '询价单 %s 已揭示待评审' % r['inquiry_no'],
                       'time': r['updated_at']})
     for r in qall(g.conn, """
             SELECT i.inquiry_no, i.updated_at FROM biz_inquiry i
-            WHERE i.buyer_id=%s AND i.is_deleted=0 AND i.status='BARGAINING'
-            ORDER BY i.updated_at DESC LIMIT 20""", (cid,)):
+            WHERE """ + own_inq + """ AND i.status='BARGAINING'
+            ORDER BY i.updated_at DESC LIMIT 20""", (cid, cid)):
         todos.append({'kind': 'BARGAIN', 'main': '询价单 %s 议价中待处理' % r['inquiry_no'],
+                      'time': r['updated_at']})
+    # 订单待确认：需方或集采成员，且本钢厂尚未确认（成员行 buyer_confirm_at 为空）
+    for r in qall(g.conn, """
+            SELECT o.order_no, o.updated_at FROM biz_order o
+            WHERE o.is_deleted=0 AND o.status='PENDING_CONFIRM' AND """ + own + """
+              AND NOT EXISTS (SELECT 1 FROM biz_order_member m2
+                WHERE m2.order_id=o.id AND m2.company_id=%s AND m2.is_deleted=0
+                  AND m2.buyer_confirm_at IS NOT NULL)
+            ORDER BY o.updated_at DESC LIMIT 20""", oa + [cid]):
+        todos.append({'kind': 'CONFIRM', 'main': '订单 %s 待确认' % r['order_no'],
+                      'time': r['updated_at']})
+    for r in qall(g.conn, """
+            SELECT c.contract_no, c.updated_at FROM biz_contract c
+            JOIN biz_order o ON o.id=c.order_id
+            WHERE c.is_deleted=0 AND c.status='PENDING_BUYER' AND """ + own + """
+            ORDER BY c.updated_at DESC LIMIT 20""", oa):
+        todos.append({'kind': 'CONTRACT', 'main': '合同 %s 待签署（需方）' % r['contract_no'],
+                      'time': r['updated_at']})
+    for r in qall(g.conn, """
+            SELECT s.settle_no, s.updated_at FROM biz_settlement s
+            JOIN biz_order o ON o.id=s.order_id
+            WHERE s.is_deleted=0 AND s.status='PENDING_CONFIRM_BUYER' AND """ + own + """
+            ORDER BY s.updated_at DESC LIMIT 20""", oa):
+        todos.append({'kind': 'SETTLE', 'main': '结算单 %s 待确认' % r['settle_no'],
                       'time': r['updated_at']})
     for r in qall(g.conn, """
             SELECT w.waybill_no, w.updated_at FROM biz_waybill w JOIN biz_order o ON o.id=w.order_id
