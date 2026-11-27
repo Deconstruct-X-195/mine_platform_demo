@@ -9,11 +9,12 @@ from .db import execute, q1
 TRANSITIONS = {
     'biz_demand': {
         'DRAFT': ['SUBMITTED', 'WITHDRAWN'],
-        'SUBMITTED': ['WITHDRAWN', 'TO_INQUIRY', 'INQUIRING', 'CLOSED', 'PENDING_DELETE'],
+        'SUBMITTED': ['WITHDRAWN', 'TO_INQUIRY', 'AGGREGATED', 'INQUIRING', 'CLOSED', 'PENDING_DELETE'],
         'TO_INQUIRY': ['INQUIRING', 'SUBMITTED', 'CLOSED', 'PENDING_DELETE'],  # 待询价：已归集未推送询价（可更改/删除/取消归集回退）
+        'AGGREGATED': ['SUBMITTED', 'CLOSED', 'PENDING_DELETE'],  # 已归集：月度/季度需求归集后（不走询价，仅推送采购参考；可关闭归集回退/删除申请）
         'WITHDRAWN': ['SUBMITTED', 'PENDING_DELETE'],  # 撤回重提生成新版本；待提交内容可转删除申请
         'PENDING_DELETE': ['WITHDRAWN', 'DELETE_AUDIT'],  # 删除申请提交后转删除待审核（运营端审核）；也可转回更改（待提交）
-        'DELETE_AUDIT': ['CLOSED', 'SUBMITTED', 'TO_INQUIRY', 'WITHDRAWN'],  # 删除申请审核：通过→关闭，驳回→回退删除前状态
+        'DELETE_AUDIT': ['CLOSED', 'SUBMITTED', 'TO_INQUIRY', 'AGGREGATED', 'WITHDRAWN'],  # 删除申请审核：通过→关闭，驳回→回退删除前状态
         'INQUIRING': ['DEALT', 'CLOSED', 'SUBMITTED'],  # SUBMITTED: 归集订单关闭后扣量释放回退
         'DEALT': ['CLOSED', 'SUBMITTED'],  # SUBMITTED: 订单超时失效后成交回填回退
     },

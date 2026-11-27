@@ -341,6 +341,9 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: non
 .toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
 .toolbar .spacer { flex: 1; }
 .toolbar h3 { margin: 0; }
+/* 列表工具栏纵向排布（stacked）：筛选行置于标题下方；操作按钮行另置数据面板顶部 */
+.toolbar.stacked > h3 { flex-basis: 100%; }
+.toolbar.stacked > .spacer { display: none; }
 
 /* ---------- 5. 表格（hairline 分隔，无竖线） ---------- */
 .table-wrap { overflow-x: auto; }

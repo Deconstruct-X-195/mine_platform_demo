@@ -48,6 +48,38 @@
     });
   }
 
+  /* 导出预览：所有数据导出按钮统一先弹窗预览（前 10 条 + 总条数），确认后才下载 CSV
+     opts: { title, filename, head:['列1',...], rows:[[v,...],...] }（rows 为行数组，与 head 列一一对应） */
+  function exportPreview(opts) {
+    const PREVIEW_N = 10;
+    const head = opts.head || [];
+    const rows = opts.rows || [];
+    if (!rows.length) { toast('暂无可导出的数据', 'err'); return; }
+    const cols = head.map((label, i) => ({
+      label, render: (r) => (r[i] == null || r[i] === '' ? '-' : String(r[i])),
+    }));
+    const note = h('div', { style: 'font-size:12px;color:#6e6e73;margin-bottom:10px' },
+      rows.length > PREVIEW_N
+        ? '预览前 ' + PREVIEW_N + ' 条，共 ' + rows.length + ' 条，确认无误后导出全部数据'
+        : '共 ' + rows.length + ' 条，确认无误后导出');
+    const csvDate = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const doExport = () => {
+      const esc = (s) => '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"';
+      const lines = [head.map(esc)].concat(rows.map((r) => r.map(esc).join(',')));
+      const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      const a = h('a', { href: URL.createObjectURL(blob), download: opts.filename || ('导出_' + csvDate + '.csv') });
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      toast('已导出 ' + rows.length + ' 条', 'ok');
+    };
+    let m;
+    m = modal(opts.title || '导出预览', h('div', {}, note, table(cols, rows.slice(0, PREVIEW_N), '暂无可导出的数据')), [
+      h('button', { class: 'primary', onclick: () => { m.close(); doExport(); } }, '导 出'),
+      h('button', { onclick: () => m.close() }, '取 消'),
+    ], { wide: true, noAutoClose: true });
+  }
+
   /* columns: [{key,label,num,render(row),cls(自定义列样式,如勾选列 sel-col)}] */
   function table(columns, rows, emptyText) {
     if (!rows || !rows.length) return h('div', { class: 'empty' }, emptyText || '暂无数据');
@@ -104,7 +136,7 @@
 
   const STATUS = {
     /* DEMAND 展示口径：DRAFT/WITHDRAWN/PENDING_DELETE 统一显示「待提交」；筛选用 UNPUSHED 联合查询三者 */
-    DEMAND: { DRAFT: ['待提交', 'orange', 'UNPUSHED'], SUBMITTED: ['已提交', 'blue'], TO_INQUIRY: ['待询价', 'orange'], WITHDRAWN: ['待提交', 'orange'], PENDING_DELETE: ['待提交', 'orange'], DELETE_AUDIT: ['删除待审核', 'orange'], INQUIRING: ['询价中', 'blue'], DEALT: ['已成交', 'green'], CLOSED: ['已关闭', 'gray'] },
+    DEMAND: { DRAFT: ['待提交', 'orange', 'UNPUSHED'], SUBMITTED: ['已提交', 'blue'], AGGREGATED: ['已归集', 'blue'], TO_INQUIRY: ['待询价', 'orange'], WITHDRAWN: ['待提交', 'orange'], PENDING_DELETE: ['待提交', 'orange'], DELETE_AUDIT: ['删除待审核', 'orange'], INQUIRING: ['询价中', 'blue'], DEALT: ['已成交', 'green'], CLOSED: ['已关闭', 'gray'] },
     INQUIRY: { DRAFT: ['草稿', 'gray'], SENT: ['已发出', 'blue'], AGGREGATED: ['已归集', 'orange'], QUOTING: ['报价中', 'blue'], CLOSED: ['已截止', 'gray'], FEEDBACK: ['反馈待处理', 'orange'], BARGAINING: ['议价中', 'blue'], AWARDED: ['已定标', 'green'], FAILED: ['已流标', 'red'] },
     QUOTE: { SUBMITTED: ['已报价', 'blue'], REVEALED: ['已揭示', 'gray'], BARGAINING: ['议价中', 'blue'], WIN: ['中标', 'green'], LOSE: ['未中标', 'red'], REJECTED: ['已拒绝', 'red'] },
     BARGAIN: { PENDING: ['待响应', 'orange'], ONGOING: ['待响应', 'orange'], ACCEPTED: ['已接受', 'green'], REJECTED: ['已拒绝', 'red'], EXPIRED: ['已失效', 'gray'] },
@@ -237,8 +269,16 @@
     const vals = pts.map(r => parseFloat(r[priceKey]));
     const dayIdx = {};
     for (let i = 0; i <= WIN; i++) dayIdx[_dayAdd(minDate, i)] = i;
-    const i0 = dayIdx[String(pts[0].priceDate).slice(0, 10)];
-    const iN = dayIdx[String(pts[pts.length - 1].priceDate).slice(0, 10)];
+    /* 同日多点并排错开：各点位置 = 日期索引 + 日内居中小偏移（两点±0.3档），
+       日期与横轴刻度严格对齐——不再整档右移导致"19号数据落在20号刻度上"，同日点连线平缓无竖直跳变 */
+    const cnt = {}, seen = {};
+    pts.forEach((r) => { const d = String(r.priceDate).slice(0, 10); cnt[d] = (cnt[d] || 0) + 1; });
+    const EFF = pts.map((r) => {
+      const d = String(r.priceDate).slice(0, 10);
+      const k = seen[d] || 0; seen[d] = k + 1;
+      return dayIdx[d] + (cnt[d] > 1 ? (k - (cnt[d] - 1) / 2) * 0.6 : 0);
+    });
+    const WIN_EFF = Math.max(WIN, ...EFF.map((f) => Math.ceil(f)));
     /* 纵轴：价格图步长全站统一（元 → 10），格数随数据自适应；其他单位自适应取档 */
     const dom = _niceDomain(Math.min(...vals), Math.max(...vals), unit.charAt(0) === '元' ? 10 : null);
     /* 运量类数值（非价格单位）不可能为负：纵轴下限钳到 0，避免小运量时 nice 域出现负刻度 */
@@ -262,7 +302,7 @@
     const draw = () => {
       const W = Math.max(320, wrap.clientWidth || 600);
       const iw = W - ML - MR;
-      const X = (i) => ML + i * iw / WIN;
+      const X = (i) => ML + i * iw / WIN_EFF;
       svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
       svg.innerHTML = '';
 
@@ -283,18 +323,19 @@
       svg.appendChild(el('line', { x1: ML, y1: gy, x2: W - MR, y2: gy, stroke: '#ececf0', 'stroke-width': '1' }));
       svg.appendChild(el('text', { x: ML - 8, y: +gy + 4, 'text-anchor': 'end', 'font-size': '11', fill: '#86868b' }, fmtTick(v)));
     }
-    // x 轴日期刻度：整月域固定 5 档（窗口首日 / 每 7 天 / 今日）
+    // x 轴日期刻度：整月域固定 5 档（窗口首日 / 每 7 天 / 今日）；今日双条扩展域时今日刻度不再贴右缘
     [0, 7, 14, 21, WIN].forEach((off) => {
+      const atEdge = WIN_EFF === WIN && off === WIN;
       svg.appendChild(el('text', {
         x: X(off).toFixed(1), y: H - 8, 'font-size': '11', fill: '#86868b',
-        'text-anchor': off === 0 ? 'start' : (off === WIN ? 'end' : 'middle'),
+        'text-anchor': off === 0 ? 'start' : (atEdge ? 'end' : 'middle'),
       }, fmtDay(_dayAdd(minDate, off))));
     });
 
     // 面积 + 折线（按截图风格：无逐点圆点，仅悬浮显示数据点）
-    const line = pts.map((r) => X(dayIdx[String(r.priceDate).slice(0, 10)]).toFixed(1) + ',' + Y(parseFloat(r.price)).toFixed(1)).join(' ');
+    const line = pts.map((r, i) => X(EFF[i]).toFixed(1) + ',' + Y(parseFloat(r.price)).toFixed(1)).join(' ');
     const base = (H - MB).toFixed(1);
-    svg.appendChild(el('polygon', { points: `${X(i0).toFixed(1)},${base} ${line} ${X(iN).toFixed(1)},${base}`, fill: `url(#${gid})` }));
+    svg.appendChild(el('polygon', { points: `${X(EFF[0]).toFixed(1)},${base} ${line} ${X(EFF[EFF.length - 1]).toFixed(1)},${base}`, fill: `url(#${gid})` }));
     svg.appendChild(el('polyline', {
       points: line, fill: 'none', stroke: '#1a5cb0', 'stroke-width': '2.5',
       'stroke-linejoin': 'round', 'stroke-linecap': 'round',
@@ -318,15 +359,14 @@
       const rect = svg.getBoundingClientRect();
       if (!rect.width) return;
       const px = (e.clientX - rect.left) * (W / rect.width);
-      /* 命中最近的日期（30 日域），再取该日期的数据点 */
-      let di = Math.round((px - ML) / iw * WIN);
-      di = Math.max(0, Math.min(WIN, di));
+      /* 命中最近的数据点（按并排偏移后的实际位置距离），再取该点 */
+      const ex = (px - ML) / iw * WIN_EFF;
       let bi = 0, bd = Infinity;
-      pts.forEach((r, k) => {
-        const d = Math.abs(dayIdx[String(r.priceDate).slice(0, 10)] - di);
+      EFF.forEach((fi, k) => {
+        const d = Math.abs(fi - ex);
         if (d < bd) { bd = d; bi = k; }
       });
-      const cx = X(dayIdx[String(pts[bi].priceDate).slice(0, 10)]), cy = Y(vals[bi]);
+      const cx = X(EFF[bi]), cy = Y(vals[bi]);
       hover.style.display = '';
       vline.setAttribute('x1', cx); vline.setAttribute('x2', cx);
       hdot.setAttribute('cx', cx); hdot.setAttribute('cy', cy);
@@ -371,6 +411,20 @@
     const seriesPts = usable.map((s) => s.rows
       .filter((r) => { const d = String(r.priceDate).slice(0, 10); return d >= minDate && d <= todayStr && r.price != null; })
       .slice().sort((a, b) => String(a.priceDate).localeCompare(String(b.priceDate))));
+    /* 同日多点并排错开：各点位置 = 日期索引 + 日内居中小偏移（两点±0.3档、三点±0.6档），
+       日期与横轴刻度严格对齐——不再整档右移导致"19号数据落在20号刻度上"，同日点连线短且平缓无竖直跳变 */
+    const SPREAD = 0.6;
+    const seriesEFF = seriesPts.map((ps) => {
+      const cnt = {}, seen = {};
+      ps.forEach((r) => { const d = String(r.priceDate).slice(0, 10); cnt[d] = (cnt[d] || 0) + 1; });
+      return ps.map((r) => {
+        const d = String(r.priceDate).slice(0, 10);
+        const k = seen[d] || 0; seen[d] = k + 1;
+        return dayIdx[d] + (cnt[d] > 1 ? (k - (cnt[d] - 1) / 2) * SPREAD : 0);
+      });
+    });
+    let WIN_EFF = WIN;
+    seriesEFF.forEach((effs) => effs.forEach((fi) => { const c = Math.ceil(fi); if (c > WIN_EFF) WIN_EFF = c; }));
     const allVals = [];
     seriesPts.forEach((ps) => ps.forEach((r) => allVals.push(parseFloat(r.price))));
     if (!allVals.length) { wrap.appendChild(h('div', { class: 'empty' }, '数据不足，暂无走势')); return wrap; }
@@ -395,7 +449,7 @@
     const draw = () => {
       const W = Math.max(320, chartWrap.clientWidth || 600);
       const iw = W - ML - MR;
-      const X = (i) => ML + i * iw / WIN;
+      const X = (i) => ML + i * iw / WIN_EFF;
       svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
       svg.innerHTML = '';
 
@@ -407,18 +461,19 @@
         svg.appendChild(el('line', { x1: ML, y1: gy, x2: W - MR, y2: gy, stroke: '#ececf0', 'stroke-width': '1' }));
         svg.appendChild(el('text', { x: ML - 8, y: +gy + 4, 'text-anchor': 'end', 'font-size': '11', fill: '#86868b' }, fmtTick(v)));
       }
-      // x 轴日期刻度：整月域固定 5 档（窗口首日 / 每 7 天 / 今日）
+      // x 轴日期刻度：整月域固定 5 档（窗口首日 / 每 7 天 / 今日）；今日双条扩展域时今日刻度不再贴右缘
       [0, 7, 14, 21, WIN].forEach((off) => {
+        const atEdge = WIN_EFF === WIN && off === WIN;
         svg.appendChild(el('text', {
           x: X(off).toFixed(1), y: H - 8, 'font-size': '11', fill: '#86868b',
-          'text-anchor': off === 0 ? 'start' : (off === WIN ? 'end' : 'middle'),
+          'text-anchor': off === 0 ? 'start' : (atEdge ? 'end' : 'middle'),
         }, fmtDay(_dayAdd(minDate, off))));
       });
 
       /* 按日期聚合各系列数值（悬浮提示卡一次展示同日期全部系列） */
       const byDate = {};
-      const lineOf = usable.map((s, si) => seriesPts[si].map((r) =>
-        X(dayIdx[String(r.priceDate).slice(0, 10)]).toFixed(1) + ',' + Y(parseFloat(r.price)).toFixed(1)).join(' '));
+      const lineOf = usable.map((s, si) => seriesPts[si].map((r, k) =>
+        X(seriesEFF[si][k]).toFixed(1) + ',' + Y(parseFloat(r.price)).toFixed(1)).join(' '));
       usable.forEach((s, si) => {
         if (seriesPts[si].length < 2) return;
         svg.appendChild(el('polyline', {
@@ -464,26 +519,35 @@
         const rect = svg.getBoundingClientRect();
         if (!rect.width) return;
         const px = (e.clientX - rect.left) * (W / rect.width);
-        /* 命中最近的日期（30 日域），提示卡展示该日期全部系列 */
-        let di = Math.round((px - ML) / iw * WIN);
-        di = Math.max(0, Math.min(WIN, di));
-        const dstr = _dayAdd(minDate, di);
-        const rows = byDate[dstr] || [];
+        /* 命中最近的数据点（按并排偏移后的实际位置距离），提示卡展示该点日期的全部系列 */
+        const ex = (px - ML) / iw * WIN_EFF;
+        let hi = -1, pi = -1, hd = Infinity;
+        seriesEFF.forEach((effs, si) => effs.forEach((fi, k) => {
+          const d = Math.abs(fi - ex);
+          if (d < hd) { hd = d; hi = si; pi = k; }
+        }));
+        if (hi < 0) return;
+        const hitDate = String(seriesPts[hi][pi].priceDate).slice(0, 10);
+        const hitEff = seriesEFF[hi][pi];
+        const rows = byDate[hitDate] || [];
         if (!rows.length) return;
         hover.style.display = '';
-        const cx = X(di);
+        const cx = X(hitEff);
         vline.setAttribute('x1', cx); vline.setAttribute('x2', cx);
-        hdots.forEach((hd, si) => {
-          const r = seriesPts[si].find((x) => String(x.priceDate).slice(0, 10) === dstr);
-          if (r) {
-            hd.style.display = '';
-            hd.setAttribute('cx', cx.toFixed(1));
-            hd.setAttribute('cy', Y(parseFloat(r.price)).toFixed(1));
-          } else hd.style.display = 'none';
+        hdots.forEach((hd2, si) => {
+          /* 悬浮点跟随命中点：命中系列放命中点位置，其余系列放各自该日期最近一条 */
+          const effs = seriesEFF[si];
+          let k = -1, best = Infinity;
+          effs.forEach((fi, idx) => { if (String(seriesPts[si][idx].priceDate).slice(0, 10) === hitDate && Math.abs(fi - hitEff) < best) { best = Math.abs(fi - hitEff); k = idx; } });
+          if (k >= 0) {
+            hd2.style.display = '';
+            hd2.setAttribute('cx', X(effs[k]).toFixed(1));
+            hd2.setAttribute('cy', Y(parseFloat(seriesPts[si][k].price)).toFixed(1));
+          } else hd2.style.display = 'none';
         });
         const hgt = 30 + rows.length * 20 + 6;
         tipRect.setAttribute('height', String(hgt));
-        tipDate.textContent = fmtDay(dstr);
+        tipDate.textContent = fmtDay(hitDate);
         tipRows.forEach((tr, i) => {
           const row = rows[i];
           const show = row ? '' : 'none';
@@ -654,7 +718,7 @@
   }
 
   window.UI = {
-    h, toast, modal, confirmBox, table, pager, statusTag, kv, formRow, selectField, dropdown,
+    h, toast, modal, confirmBox, exportPreview, table, pager, statusTag, kv, formRow, selectField, dropdown,
     trendChart, multiTrendChart, donutChart, hbarChart, input, statusFilter, timeline, STATUS,
     fmtDate, fmtDateTime, fmtMoney, fmtQty, selCol, spotPrices, spotDiff, spotShown,
   };

@@ -7,9 +7,10 @@ from flask import g, request
 
 from ..common import (ApiError, doc_no, get_params, json_payload, ok, op_log,
                       page_args, page_data, parse_date, parse_datetime,
-                      require_fields, send_msg, validate_password)
+                      require_fields, send_msg, validate_credit_code,
+                      validate_password, validate_phone)
 from ..db import execute, qall, q1
-from ..security import hash_password, plat_required
+from ..security import hash_password, plat_required, roles_from_company_types
 from ..state_machine import transition, add_node
 from . import bp
 from .inquiry import _auto_deadline, _check_invites, create_and_send_agg_inquiry, reveal_inquiry
@@ -61,6 +62,114 @@ def pending_companies():
         FROM ent_company %s ORDER BY id DESC LIMIT %%s OFFSET %%s
         """ % where, args + [size, (page - 1) * size])
     return ok(page_data(rows, total, page, size))
+
+
+@bp.post('/admin/companies/register')
+@plat_required
+def platform_company_register():
+    """运营端代注册：表单字段与企业注册页一致，但全部为选填。
+
+    缺失字段处理：企业名称/信用代码自动生成占位值（信用代码 18 位、以 AD 开头标识代注册）；
+    登录账号填写且企业角色已选时才创建账号（密码缺省自动生成并在响应中返回，运营转告企业）；
+    营业执照选传（licenseFileId），缺省不写资质。企业落库为 PENDING，走正常准入审核流程。
+    """
+    p = get_params()
+    name = (p.get('companyName') or '').strip()
+    if not name:
+        name = '待完善企业 ' + datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    credit = (p.get('creditCode') or '').strip()
+    if credit:
+        validate_credit_code(credit)
+        if q1(g.conn, "SELECT id FROM ent_company WHERE credit_code=%s AND is_deleted=0", (credit,)):
+            raise ApiError(40902, '统一社会信用代码已存在')
+    else:
+        # 占位信用代码：AD + 时间戳（微秒截断至 16 位），满足 15~18 位大写字母数字且唯一
+        credit = ('AD' + datetime.now().strftime('%y%m%d%H%M%S%f'))[:18]
+        if q1(g.conn, "SELECT id FROM ent_company WHERE credit_code=%s", (credit,)):
+            raise ApiError(40902, '占位信用代码冲突，请重试')
+    # 企业类型：选填；填写登录账号时必须已选（角色由企业类型推导）
+    types = []
+    raw_types = (p.get('companyTypes') or '').strip()
+    if raw_types:
+        type_alias = {'STEEL': 'STEEL', 'STEEL_BUYER': 'STEEL', 'SUPPLIER': 'SUPPLIER'}
+        for t in (s.strip() for s in raw_types.split(',')):
+            if not t:
+                continue
+            t = type_alias.get(t, t)
+            if t not in ('STEEL', 'SUPPLIER') or t in types:
+                raise ApiError(40001, '企业类型不合法（STEEL/SUPPLIER 逗号分隔）')
+            types.append(t)
+    roles = ','.join(roles_from_company_types(','.join(types))) if types else ''
+
+    contact_phone = (p.get('contactPhone') or '').strip()
+    if contact_phone:
+        validate_phone(contact_phone)
+    contact_email = (p.get('contactEmail') or '').strip()
+    if contact_email and '@' not in contact_email:
+        raise ApiError(40001, '联系邮箱格式不正确')
+    legal_person = (p.get('legalPerson') or '').strip()
+    if len(legal_person) > 30:
+        raise ApiError(40001, '法定代表人不超过 30 字')
+
+    # 账号：选填——仅当登录账号 + 企业角色齐备时创建；密码缺省自动生成（响应返回，运营转告企业）
+    username = (p.get('username') or '').strip()
+    generated_pwd = None
+    if username:
+        if not types:
+            raise ApiError(40001, '填写登录账号时须选择企业角色')
+        validate_phone(username)
+        if q1(g.conn, "SELECT id FROM sys_user WHERE username=%s AND is_deleted=0", (username,)):
+            raise ApiError(40902, '手机号已被注册')
+        password = p.get('password')
+        if password:
+            validate_password(password)
+        else:
+            import secrets
+            # 自动生成 8 位口令：字母 4 + 大写 1 + 数字 3（满足"字母+数字且≥8位"强度规则）
+            alphabet = 'abcdefghjkmnpqrstuvwxyz'
+            generated_pwd = ''.join(secrets.choice(alphabet) for _ in range(4)) \
+                + secrets.choice('ABCDEFGHJKLMNPQRSTUVWXYZ') \
+                + ''.join(secrets.choice('0123456789') for _ in range(3))
+            password = generated_pwd
+
+    license_file_id = (p.get('licenseFileId') or '').strip() or None
+    lic = None
+    if license_file_id:
+        lic = q1(g.conn, "SELECT * FROM sys_file WHERE file_id=%s AND is_deleted=0", (license_file_id,))
+        if not lic:
+            raise ApiError(40401, '营业执照附件不存在，请先上传')
+
+    admin_id = g.ctx.user['id']
+    cid = execute(g.conn, """
+        INSERT INTO ent_company (company_name, credit_code, company_types, province, city,
+                                 address, legal_person, contact_name, contact_phone,
+                                 contact_email, business_scope, bank_name, bank_account,
+                                 audit_status, created_by, updated_by)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s,%s) RETURNING id
+        """, (name, credit, ','.join(types) if types else '', p.get('province'),
+              p.get('city'), (p.get('address') or '').strip(), legal_person,
+              (p.get('contactName') or '').strip(), contact_phone, contact_email,
+              (p.get('businessScope') or '').strip(), p.get('bankName'), p.get('bankAccount'),
+              admin_id, admin_id), returning_id=True)
+    uid = None
+    if username:
+        uid = execute(g.conn, """
+            INSERT INTO sys_user (company_id, username, password_hash, real_name, roles, created_by)
+            VALUES (%s,%s,%s,%s,%s,%s) RETURNING id
+            """, (cid, username, hash_password(password),
+                  (p.get('contactName') or '').strip() or name, roles, admin_id), returning_id=True)
+        op_log(g.conn, g.ctx, 'sys_user', uid, 'ADMIN_REGISTER_USER', None,
+               {'username': username, 'companyTypes': ','.join(types)})
+    if lic:
+        execute(g.conn, """
+            INSERT INTO ent_qualification (company_id, file_id, file_name, file_type, created_by)
+            VALUES (%s,%s,%s,'BUSINESS_LICENSE',%s)
+            """, (cid, license_file_id, lic['file_name'], admin_id))
+    op_log(g.conn, g.ctx, 'ent_company', cid, 'ADMIN_REGISTER', None,
+           {'companyName': name, 'creditCode': credit,
+            'placeholderCredit': not bool((p.get('creditCode') or '').strip())})
+    return ok({'companyId': cid, 'userId': uid, 'username': username or None,
+               'generatedPassword': generated_pwd, 'auditStatus': 'PENDING'})
 
 
 @bp.put('/admin/companies/<int:cid>/reset-password')
@@ -399,7 +508,7 @@ def _apply_demand_change(conn, ctx, did, after_raw):
     d = q1(conn, "SELECT * FROM biz_demand WHERE id=%s AND is_deleted=0", (did,))
     if not d:
         raise ApiError(40401, '需求单不存在')
-    if d['status'] not in ('SUBMITTED', 'TO_INQUIRY', 'INQUIRING'):
+    if d['status'] not in ('SUBMITTED', 'TO_INQUIRY', 'AGGREGATED', 'INQUIRING'):
         raise ApiError(40901, '需求单当前状态为 %s，无法应用变更' % d['status'])
     place = (str(after.get('deliveryPlace')).strip() if after.get('deliveryPlace') is not None else '')
     execute(conn, """
@@ -765,9 +874,11 @@ def create_aggregated_order():
             UPDATE biz_demand_item SET inquired_qty=%s, updated_at=now() WHERE id=%s
             """, (it['inquired_qty'] + lock, it['id']))  # 归集锁定剩余全部可询量
         mills[it['company_id']] = it['variety_name']
-    # 需求状态：SUBMITTED → TO_INQUIRY（待询价：已归集；运营端向供应商推送询价后才转询价中）
+    # 需求状态：一次性订单归集 → TO_INQUIRY（待询价：运营端向供应商推送询价后才转询价中）；
+    # 月度/季度计划归集 → AGGREGATED（已归集：仅推送采购参考，不走询价）
+    new_status = 'TO_INQUIRY' if kind == 'ORDER' else 'AGGREGATED'
     for did in {it['demand_id'] for it in items}:
-        transition(g.conn, g.ctx, 'biz_demand', '需求单', 'biz_demand', did, 'TO_INQUIRY')
+        transition(g.conn, g.ctx, 'biz_demand', '需求单', 'biz_demand', did, new_status)
     agg_no = q1(g.conn, "SELECT agg_no FROM biz_aggregated_order WHERE id=%s", (aid,))['agg_no']
     for cid, vname in mills.items():
         send_msg(g.conn, cid, '需求已纳入归集订单',
@@ -817,7 +928,7 @@ def close_aggregated_order(aid):
                     WHERE demand_id=%s AND is_deleted=0)))
             """, (m['demand_id'], aid, m['demand_id']))['c']
         drow = q1(g.conn, "SELECT id, status FROM biz_demand WHERE id=%s", (m['demand_id'],))
-        if not active and drow and drow['status'] in ('INQUIRING', 'TO_INQUIRY'):
+        if not active and drow and drow['status'] in ('INQUIRING', 'TO_INQUIRY', 'AGGREGATED'):
             transition(g.conn, g.ctx, 'biz_demand', '需求单', 'biz_demand', m['demand_id'], 'SUBMITTED')
     transition(g.conn, g.ctx, 'biz_aggregated_order', '归集订单', 'biz_aggregated_order', aid, 'CLOSED')
     for m in members:
@@ -881,7 +992,7 @@ def cancel_aggregated_item(aid, mid):
         WHERE is_deleted=0 AND status IN ('DRAFT','SENT','QUOTING') AND demand_id=%s
         """, (m['demand_id'],))['c']
     drow = q1(g.conn, "SELECT id, status FROM biz_demand WHERE id=%s", (m['demand_id'],))
-    if not other and not active_inq and drow and drow['status'] in ('INQUIRING', 'TO_INQUIRY'):
+    if not other and not active_inq and drow and drow['status'] in ('INQUIRING', 'TO_INQUIRY', 'AGGREGATED'):
         transition(g.conn, g.ctx, 'biz_demand', '需求单', 'biz_demand', m['demand_id'], 'SUBMITTED')
     send_msg(g.conn, m['company_id'], '需求已移出归集订单',
              '贵司需求已由平台移出归集订单 %s（份额 %.3f 湿吨已释放），需求回到已提交状态，可等待重新归集。'
@@ -1504,6 +1615,12 @@ def platform_logistics_orders():
                s.company_name AS "supplierName", o.quantity,
                c.contract_no AS "contractNo",
                p.id AS "planId", p.plan_no AS "planNo", p.org_mode AS "orgMode",
+               (SELECT q.delivery_place FROM biz_quote q
+                 WHERE q.id=o.quote_id AND q.is_deleted=0 LIMIT 1) AS "startPlace",
+               COALESCE((SELECT string_agg(DISTINCT d.delivery_place, '、') FROM biz_order_member m
+                          JOIN biz_demand d ON d.id=m.demand_id AND d.is_deleted=0
+                          WHERE m.order_id=o.id AND m.is_deleted=0 AND d.delivery_place IS NOT NULL),
+                        o.delivery_place) AS "destPlace",
                (SELECT count(*) FROM biz_waybill w WHERE w.plan_id=p.id AND w.is_deleted=0 AND w.status<>'CANCELLED') AS "waybillCount",
                (SELECT coalesce(sum(w.plan_qty),0) FROM biz_waybill w WHERE w.plan_id=p.id AND w.is_deleted=0 AND w.status<>'CANCELLED') AS "plannedQty"
         FROM biz_order o
@@ -1826,15 +1943,14 @@ def platform_create_waybill(pid):
     if plan_qty is None:
         plan_qty = plan['order_qty'] - used
     if plan_qty <= 0:
-        raise ApiError(40001, '剩余可排量为 %.3f 湿吨，无法新增分段运单' % plan_qty)
+        raise ApiError(40001, '运输量必须大于 0')
     seg_no = str(p['segmentNo'])
     if q1(g.conn, "SELECT id FROM biz_waybill WHERE plan_id=%s AND segment_no=%s AND is_deleted=0",
           (pid, seg_no)):
         raise ApiError(40902, '分段序号 %s 已存在' % seg_no)
+    # 分段运输量不强制与订单量一致：允许多个分段自由排载，合计偏差仅记审计（不再强制填写偏差说明）
     new_total = used + plan_qty
     deviation = abs(new_total - plan['order_qty']) / plan['order_qty'] * 100
-    if deviation > 5 and not (p.get('deviationReason') or '').strip():
-        raise ApiError(40001, '分段计划量合计与订单数量偏差 %.2f%% 超过 5%%，必须填写偏差说明' % deviation)
     carrier_id = p.get('carrierId')
     if carrier_id:
         _check_carrier(carrier_id)
@@ -2469,7 +2585,8 @@ def dashboard():
         'companyApproved': count("SELECT count(*) AS c FROM ent_company WHERE is_deleted=0 AND audit_status='APPROVED'"),
         'procureQty': q1(g.conn, "SELECT COALESCE(SUM(quantity),0) AS c FROM biz_order WHERE is_deleted=0")['c'],
         'waybillTotal': count("SELECT count(*) AS c FROM biz_waybill WHERE is_deleted=0"),
-        'totalAmount': q1(g.conn, "SELECT COALESCE(SUM(amount),0) AS c FROM biz_order WHERE is_deleted=0")['c'],
+        'monthOrders': count("SELECT count(*) AS c FROM biz_order WHERE is_deleted=0"
+                             " AND status <> 'CANCELLED' AND created_at >= date_trunc('month', current_date)"),
         'companyPending': count("SELECT count(*) AS c FROM ent_company WHERE is_deleted=0 AND audit_status='PENDING'"),
         'orderActive': count("SELECT count(*) AS c FROM biz_order WHERE is_deleted=0 AND status NOT IN ('CANCELLED','COMPLETED')"),
         'orderTotal': count("SELECT count(*) AS c FROM biz_order WHERE is_deleted=0"),
@@ -2481,12 +2598,12 @@ def dashboard():
 @bp.get('/admin/dashboard/charts')
 @plat_required
 def dashboard_charts():
-    """运营看板图表：货运趋势（近30日）/ 矿种分布 / 运输方式运量对比。"""
+    """运营看板图表：货运趋势（近30日每日运输总量，无运单日补 0）/ 矿种分布 / 运输方式运量对比。"""
     freight = qall(g.conn, """
-        SELECT DATE(created_at) AS "trendDate", SUM(plan_qty) AS qty, count(*) AS cnt
-        FROM biz_waybill
-        WHERE is_deleted=0 AND created_at >= current_date - interval '29 days'
-        GROUP BY DATE(created_at) ORDER BY 1
+        SELECT d::date AS "trendDate", COALESCE(SUM(w.plan_qty), 0) AS qty, count(w.id) AS cnt
+        FROM generate_series(current_date - interval '29 days', current_date, interval '1 day') d
+        LEFT JOIN biz_waybill w ON w.is_deleted=0 AND DATE(w.created_at) = d::date
+        GROUP BY d ORDER BY d
     """)
     variety = qall(g.conn, """
         SELECT v.variety_name AS "name", COALESCE(SUM(o.quantity),0) AS qty

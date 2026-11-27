@@ -80,6 +80,7 @@ CREATE TABLE IF NOT EXISTS base_port_price (
   id BIGSERIAL PRIMARY KEY,
   variety_id BIGINT NOT NULL, port_name VARCHAR(50) NOT NULL, price_date DATE NOT NULL,
   price NUMERIC(18,2) NOT NULL, grade NUMERIC(5,2) NOT NULL DEFAULT 61.5,
+  deal_price NUMERIC(18,2), -- 交易价格（选填，随行业价格一并录入/修改）
   created_at TIMESTAMP NOT NULL DEFAULT now(), created_by BIGINT,
   is_deleted SMALLINT DEFAULT 0,
   CONSTRAINT uk_port_variety_date UNIQUE (variety_id, port_name, price_date, grade)

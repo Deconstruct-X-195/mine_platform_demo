@@ -2,7 +2,7 @@
 (function () {
   window.Pages = window.Pages || {};
   const DELIVERY = { PLANT: '到场', STATION_SELF: '到站自提', PORT_FOB: '港口FOB', PORT_TRUCK: '港口自提' };
-  const SETTLE = { PREPAY: '预付款', COD: '货到付款', CREDIT: '账期结算', INSTALLMENT: '分期付款' };
+  const SETTLE = { PREPAY: '现货现款', COD: '货到付款', CREDIT: '账期结算', INSTALLMENT: '分期付款' };
 
   /* 采购周期文案：MONTH→「2026年11月」，QUARTER→「2026年第4季度」，ONE_TIME→「一次性订单（2026年12月）」，无值→「—」 */
   function cycleText(type, year, value) {
@@ -36,18 +36,19 @@
     const pagerBox = UI.h('div', {});
     const contentBox = UI.h('div', {});   // 表格+分页容器（load 时清空重建）
     const listBox = UI.h('div', { class: 'list-fixed' });   // 定高列表区（同运营端）：表头39px+10行，超出滚动
-    /* 面板一：标题行（状态筛选紧跟标题）→ 批量按钮行；面板二：表格 + 分页 */
+    /* 面板一：标题行（筛选行置于标题下方）；面板二：表格 + 分页（批量按钮行置于数据面板顶部） */
     const btnBar = UI.h('div', { class: 'batch-bar' },
       UI.h('button', { class: 'primary', onclick: () => editForm(null, () => load()) }, '新建需求'),
       UI.h('button', { onclick: batchEdit }, '更 改'),
       UI.h('button', { class: 'danger', onclick: batchDelete }, '删 除'),
       UI.h('button', { onclick: batchExport }, '导 出'));
     page.appendChild(UI.h('div', { class: 'card' },
-      UI.h('div', { class: 'toolbar' },
+      UI.h('div', { class: 'toolbar stacked' },
         UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '需求单'),
-        UI.statusFilter('DEMAND', (v) => { status = v; pageNo = 1; selected.clear(); load(); })),
-      btnBar));
+        UI.h('div', { class: 'spacer' }),
+        UI.statusFilter('DEMAND', (v) => { status = v; pageNo = 1; selected.clear(); load(); }))));
     page.appendChild(listCard);
+    listCard.appendChild(btnBar);       // 批量操作行：数据面板顶部（同运营端布局）
     listCard.appendChild(contentBox);   // 表格+分页容器必须挂进表格面板，否则 load 渲染进孤儿节点导致页面空白
     contentBox.appendChild(listBox);    // 定高列表区：纵向超出滚动，横向滚动条固定在分页行上方
     contentBox.appendChild(pagerBox);   // 分页条固定在面板右下角
@@ -99,10 +100,12 @@
     function batchExport() {
       const rows = selRows();
       if (!rows.length) { UI.toast('请先勾选需求单', 'err'); return; }
-      const PRINT_STATUS = { DRAFT: '待提交', SUBMITTED: '已提交', TO_INQUIRY: '待询价', WITHDRAWN: '待提交', PENDING_DELETE: '待提交', DELETE_AUDIT: '删除待审核', CLOSED: '已关闭', INQUIRING: '询价中', DEALT: '已成交' };
-      const esc = (s) => '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"';
-      const lines = [['需求编号', '产品名称', '品位(%)', '采购周期', '数量(湿吨)', '溢短装(%)', '交货方式', '交货地点', '期望到货时间', '结算方式', '状态', '创建时间'].map(esc)]
-        .concat(rows.map((r) => {
+      const PRINT_STATUS = { DRAFT: '待提交', SUBMITTED: '已提交', AGGREGATED: '已归集', TO_INQUIRY: '待询价', WITHDRAWN: '待提交', PENDING_DELETE: '待提交', DELETE_AUDIT: '删除待审核', CLOSED: '已关闭', INQUIRING: '询价中', DEALT: '已成交' };
+      UI.exportPreview({
+        title: '导出预览 — 需求单',
+        filename: '需求单导出_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv',
+        head: ['需求编号', '产品名称', '品位(%)', '采购周期', '数量(湿吨)', '溢短装(%)', '交货方式', '交货地点', '期望到货时间', '结算方式', '状态', '创建时间'],
+        rows: rows.map((r) => {
           const it = (r.items && r.items[0]) || {};
           return [
             r.demand_no,
@@ -117,13 +120,9 @@
             (SETTLE[r.settle_type] || r.settle_type || '-') + (r.settle_days ? ' ' + r.settle_days + '天' : ''),
             PRINT_STATUS[r.status] || r.status,
             UI.fmtDateTime(r.created_at),
-          ].map(esc).join(',');
-        }));
-      const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
-      const a = UI.h('a', { href: URL.createObjectURL(blob), download: '需求单导出_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv' });
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+          ];
+        }),
+      });
     }
 
     let loadSeq = 0;
@@ -349,7 +348,7 @@
       updateOtherMode();
 
       /* 变更申请（已提交/待询价/已归集未询价）：先填信息后写理由——变更理由字段置于表单末尾，保存一次性提交 */
-      const isChange = row && (row.status === 'SUBMITTED' || row.status === 'TO_INQUIRY'
+      const isChange = row && (row.status === 'SUBMITTED' || row.status === 'TO_INQUIRY' || row.status === 'AGGREGATED'
         || (row.status === 'INQUIRING' && row.aggOpen));
       if (isChange) {
         f.changeReason = UI.h('textarea', { rows: 3, style: 'width:100%',
@@ -426,8 +425,8 @@
               if (row) {
                 const reason = isChange ? String(f.changeReason.value || '').trim() : '';
                 if (isChange && !reason) { UI.toast('请填写变更理由', 'err'); return; }
-                if ((row.status === 'INQUIRING' && row.aggOpen) || row.status === 'TO_INQUIRY') {
-                  /* 已归集（待询价/询价中未推送）：需求已锁定归集（无本地暂存态），变更申请直接推送运营端审核 */
+                if ((row.status === 'INQUIRING' && row.aggOpen) || row.status === 'TO_INQUIRY' || row.status === 'AGGREGATED') {
+                  /* 已归集（待询价/已归集/询价中未推送）：需求已锁定归集（无本地暂存态），变更申请直接推送运营端审核 */
                   await API.post('/demands/' + row.id + '/change-request',
                     Object.assign(payload, { changeReason: reason }));
                   UI.toast('变更申请已提交运营端审核，审核通过后自动变更', 'ok');

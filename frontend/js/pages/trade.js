@@ -1,7 +1,7 @@
 /* 询价报价议价（PRD 4.4/FR-04/FR-05/T08-T12）：密封报价、截止揭示比价、多轮议价、定标、流标 */
 (function () {
   window.Pages = window.Pages || {};
-  const SETTLE = { PREPAY: '预付款', COD: '货到付款', CREDIT: '账期结算', INSTALLMENT: '分期付款' };
+  const SETTLE = { PREPAY: '现货现款', COD: '货到付款', CREDIT: '账期结算', INSTALLMENT: '分期付款' };
   const DELIVERY = { PORT_FOB: '港口离岸', PORT_TRUCK: '港口自提', PLANT: '场内自提', STATION_SELF: '到站自提' };
   const INVITE_STATUS = { INVITED: '已邀请', QUOTED: '已报价', DECLINED: '已婉拒', EXPIRED: '已失效' };
 
@@ -131,6 +131,7 @@
         { key: 'seq', label: '序号', num: true },
         { label: '单价(元/湿吨)', num: true,
           render: (r) => UI.spotShown(r.priceSign, r.priceFloat) || UI.spotDiff(spotBase, r.unitPrice) },
+        { key: 'freightPrice', label: '运费(元/湿吨)', num: true, render: (r) => r.freightPrice != null ? UI.fmtMoney(r.freightPrice) : '-' },
         { label: '含税', render: (r) => ({ INC_TAX: '含税', EX_TAX: '不含税' }[r.taxType] || '-') },
         { key: 'quantity', label: '数量(湿吨)', num: true, render: (r) => UI.fmtMoney(r.quantity) },
         { label: '港口', render: (r) => r.deliveryPlace || '-' },
@@ -203,13 +204,15 @@
     const listCard = UI.h('div', { class: 'card' });
     const listBox = UI.h('div', { class: 'list-fixed' });   // 定高列表区（同运营端）：表头39px+10行，超出滚动
     const pagerBox = UI.h('div', {});
-    /* 询价单由运营端汇集钢厂需求后生成：钢厂端只读查看，导出按钮位于「全部状态」筛选之后 */
+    /* 询价单由运营端汇集钢厂需求后生成：钢厂端只读；筛选行置于标题下方，导出按钮置于数据面板顶部（同运营端布局） */
     page.appendChild(UI.h('div', { class: 'card' },
-      UI.h('div', { class: 'toolbar' },
+      UI.h('div', { class: 'toolbar stacked' },
         UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '询价单'),
-        UI.statusFilter('INQUIRY', (v) => { status = v; pageNo = 1; selected.clear(); load(); }),
-        UI.h('button', { onclick: batchExport }, '导 出'))));
+        UI.h('div', { class: 'spacer' }),
+        UI.statusFilter('INQUIRY', (v) => { status = v; pageNo = 1; selected.clear(); load(); }))));
     page.appendChild(listCard);
+    listCard.appendChild(UI.h('div', { class: 'toolbar' },
+      UI.h('button', { onclick: batchExport }, '导 出')));
     listCard.appendChild(listBox);    // 定高列表区：纵向超出滚动，横向滚动条固定在分页行上方
     listCard.appendChild(pagerBox);   // 分页条固定在面板右下角
 
@@ -219,21 +222,19 @@
     function batchExport() {
       const rows = selRows();
       if (!rows.length) { UI.toast('请先勾选询价单', 'err'); return; }
-      const esc = (s) => '"' + String(s == null ? '' : s).replace(/"/g, '""') + '"';
-      const lines = [['询价编号', '品种', '数量(湿吨)', '期望到货', '状态', '创建时间'].map(esc)]
-        .concat(rows.map((r) => [
+      UI.exportPreview({
+        title: '导出预览 — 询价单',
+        filename: '询价单导出_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv',
+        head: ['询价编号', '品种', '数量(湿吨)', '期望到货', '状态', '创建时间'],
+        rows: rows.map((r) => [
           r.inquiry_no,
           r.varietyName,
           r.quantity,
           UI.fmtDate(r.expect_arrive_date),
           STATUS_TXT[r.status] || r.status,
           UI.fmtDateTime(r.created_at),
-        ].map(esc).join(',')));
-      const blob = new Blob(['\uFEFF' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
-      const a = UI.h('a', { href: URL.createObjectURL(blob), download: '询价单导出_' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.csv' });
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
+        ]),
+      });
     }
 
     function syncHead() {
@@ -429,7 +430,8 @@
           { label: '轮次', render: (r) => '第 ' + r.roundNo + ' 轮' },
           { key: 'inquiry_no', label: '询价单号' },
           { label: '我的上轮报价', num: true, render: (r) => r.quote_id
-            ? UI.spotDiff(spotBase, r.price) + ' × ' + UI.fmtMoney(r.quantity) + ' 湿吨'
+            ? (UI.spotShown(r.price_sign, r.price_float) || UI.spotDiff(spotBase, r.price))
+              + ' × ' + UI.fmtMoney(r.quantity) + ' 湿吨'
               + (r.freight_price != null ? '（运费 ' + UI.fmtMoney(r.freight_price) + ' 元/湿吨）' : '')
             : UI.h('span', { class: 'tag' }, '未报价') },
           { label: '钢厂反馈', render: (r) => r.fb_decision === 'REJECTED'
@@ -511,21 +513,19 @@
       const originInput = UI.input('text', q ? (q.origin || '') : '', { placeholder: '产地，如 澳大利亚' });
       const gradeInput = UI.input('number', q && q.grade != null ? String(q.grade) : '',
         { placeholder: '品位%，如 62', step: '0.01' });
-      /* 单价：港口现货价格±上下浮模式——港口现货价由平台统一维护（固定基准，仅展示字样），
-         供应商选择 +/- 方向并填写上下浮价格；落库单价 = 品种最新港口现货价 ± 上下浮 */
+      /* 单价：「港口现货价格」仅为固定字样（不关联品种当日港口价格数据），
+         供应商选择 +/- 方向并填写上下浮金额（可为 0，平价时单价仅「港口现货价格」字样，± 选择保留）；
+         落库单价=上下浮金额，方向存 price_sign */
       const priceSignSel = UI.selectField([['+', '+'], ['-', '-']], '+');
       const priceFloat = UI.input('number', '', { placeholder: '上下浮（元/湿吨）', step: '0.01', min: '0' });
       const priceBox = UI.h('span', { class: 'inline-flex', style: 'gap:8px;flex-wrap:nowrap;align-items:center' },
         UI.h('input', { value: '港口现货价格', disabled: true,
           style: 'width:110px;background:#f5f5f7;color:var(--label-2)' }),
         priceSignSel, priceFloat);
-      /* 修改报价回填：按当前港口现货价反推上次报价的方向与上下浮金额 */
-      const basePorts = ((await API.get('/base-prices/ports' + API.qs({ port: '黄骅港' })).catch(() => ({}))) || {}).list || [];
-      const baseRow = basePorts.find((x) => x.varietyName === r.varietyName) || null;
-      if (q && baseRow) {
-        const diff = Number(q.price) - Number(baseRow.price);
-        priceSignSel.value = diff >= 0 ? '+' : '-';
-        priceFloat.value = String(Math.abs(Math.round(diff * 100) / 100));
+      /* 修改报价回填：直接使用上次报价存储的方向与上下浮金额（不关联当日港口价格数据） */
+      if (q && q.price_sign) {
+        priceSignSel.value = q.price_sign;
+        priceFloat.value = q.price_float != null ? String(Math.abs(Math.round(Number(q.price_float) * 100) / 100)) : '';
       }
       const taxSel = UI.selectField([['INC_TAX', '含税'], ['EX_TAX', '不含税']],
         q ? (q.tax_type || 'INC_TAX') : 'INC_TAX');
@@ -580,14 +580,15 @@
             { label: '轮次', render: (r) => '第 ' + r.roundNo + ' 轮' },
             { key: 'inquiry_no', label: '询价单号' },
             { label: '我的上轮报价', num: true, render: (r) => r.quote_id
-              ? UI.spotDiff(baseRow ? baseRow.price : null, r.price) + ' × ' + UI.fmtMoney(r.quantity) + ' 湿吨'
-                + (r.freight_price != null ? '（运费 ' + UI.fmtMoney(r.freight_price) + ' 元/湿吨）' : '')
-              : UI.h('span', { class: 'tag' }, '未报价') },
-            { label: '钢厂反馈', render: (r) => r.fb_decision === 'REJECTED'
-              ? UI.h('span', { class: 'tag red' }, '不认可：' + (r.fb_reason || ''))
-              : r.fb_decision === 'ACCEPTED' ? UI.h('span', { class: 'tag green' }, '认可')
-              : UI.h('span', { class: 'tag' }, '未反馈') },
-          ], det.historyRounds))] : []),
+            ? (UI.spotShown(r.price_sign, r.price_float) || UI.spotDiff(spotBase, r.price))
+              + ' × ' + UI.fmtMoney(r.quantity) + ' 湿吨'
+              + (r.freight_price != null ? '（运费 ' + UI.fmtMoney(r.freight_price) + ' 元/湿吨）' : '')
+            : UI.h('span', { class: 'tag' }, '未报价') },
+          { label: '钢厂反馈', render: (r) => r.fb_decision === 'REJECTED'
+            ? UI.h('span', { class: 'tag red' }, '不认可：' + (r.fb_reason || ''))
+            : r.fb_decision === 'ACCEPTED' ? UI.h('span', { class: 'tag green' }, '认可')
+            : UI.h('span', { class: 'tag' }, '未反馈') },
+        ], det.historyRounds))] : []),
         UI.h('div', { class: 'sec-title' }, '报价信息'),
         UI.h('div', { class: 'form-grid' },
           UI.formRow('矿种', varietySel, true),

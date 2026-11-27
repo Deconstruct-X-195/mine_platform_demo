@@ -149,6 +149,7 @@ def init_schema(conn):
                 WHERE file_url IS NOT NULL AND supplier_file_url IS NULL AND supplier_sign_at IS NOT NULL;
             -- 港口价品位维度（PB粉 61.5/60.8 双品位，不同品位价格不同）
             ALTER TABLE base_port_price ADD COLUMN IF NOT EXISTS grade NUMERIC(5,2) NOT NULL DEFAULT 61.5;
+            ALTER TABLE base_port_price ADD COLUMN IF NOT EXISTS deal_price NUMERIC(18,2);  -- 交易价格（选填，随行业价格一并录入/修改）
             -- 同键（品种×港口×日期×品位）允许多条：重复录入不覆盖原记录、仅新增（唯一约束改普通索引）
             ALTER TABLE base_port_price DROP CONSTRAINT IF EXISTS uk_port_variety_date;
             CREATE INDEX IF NOT EXISTS idx_port_price_key ON base_port_price (variety_id, port_name, price_date, grade);
@@ -208,8 +209,7 @@ def init_schema(conn):
             ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS variety_id BIGINT;
             ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS origin VARCHAR(100);
             ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS grade NUMERIC(5,2);
-            -- 供应商申报的上下浮方向与金额（展示「港口现货价格±上下浮」用存储值，
-            -- 避免基准价变动后按绝对价反推失真）
+            -- 供应商申报的上下浮方向与金额（「港口现货价格」仅固定字样，不关联当日港口价格数据）
             ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS price_sign VARCHAR(2);
             ALTER TABLE biz_quote ADD COLUMN IF NOT EXISTS price_float NUMERIC(18,2);
             ALTER TABLE sys_message ALTER COLUMN receiver_company_id DROP NOT NULL;

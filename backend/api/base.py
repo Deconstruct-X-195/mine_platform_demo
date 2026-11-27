@@ -46,8 +46,7 @@ def current_prices():
     rows = qall(g.conn, today_sql + ' ORDER BY p.variety_id, p.port_name, COALESCE(p.grade, 61.5), p.price_date DESC, p.id DESC',
                 port_args)
     trend_sql = """
-        SELECT DISTINCT ON (p.variety_id, p.port_name, COALESCE(p.grade, 61.5), p.price_date)
-               p.variety_id AS "varietyId", v.variety_name AS "varietyName",
+        SELECT p.variety_id AS "varietyId", v.variety_name AS "varietyName",
                p.price_date AS "priceDate", p.price, p.port_name AS "port",
                COALESCE(p.grade, 61.5) AS "grade"
         FROM base_port_price p JOIN base_variety v ON v.id=p.variety_id
@@ -57,6 +56,8 @@ def current_prices():
     if vid:
         trend_sql += ' AND p.variety_id=%s'
         trend_args.append(vid)
+    # 不做 DISTINCT ON 去重：与运营端图表同口径——同日同品位多条记录（录入不覆盖只新增）全部返回，
+    # 前端趋势图对同日多点并排展现；today 表仍取每键最新一条
     trend = qall(g.conn, trend_sql + ' ORDER BY p.variety_id, p.port_name, COALESCE(p.grade, 61.5), p.price_date, p.id DESC', trend_args)
     if not rows:
         # 港口价尚未维护时兜底：沿用兰格锚点基准价（base_price），日期如实显示
@@ -118,6 +119,7 @@ def port_prices():
     sql = """
         SELECT p.id, p.variety_id AS "varietyId", v.variety_name AS "varietyName",
                p.port_name AS "portName", p.price_date AS "priceDate", p.price,
+               p.deal_price AS "dealPrice",
                COALESCE(p.grade, 61.5) AS "grade"
         FROM base_port_price p JOIN base_variety v ON v.id=p.variety_id
         WHERE p.is_deleted=0
@@ -160,6 +162,16 @@ def save_port_price():
     port_name = str(p['portName']).strip()
     if not port_name or len(port_name) > 50:
         raise ApiError(40001, '港口名称必填且不超过50字')
+    deal_price = p.get('dealPrice')
+    if deal_price in (None, ''):
+        deal_price = None
+    else:
+        try:
+            deal_price = float(deal_price)
+        except (TypeError, ValueError):
+            raise ApiError(40001, '交易价格必须是数字')
+        if deal_price <= 0:
+            raise ApiError(40001, '交易价格必须大于0')
     # 同键（品种×港口×日期×品位）已有记录：不覆盖原记录，直接新增一条（前端按 duplicated 提醒）
     dup = q1(g.conn, """
         SELECT price FROM base_port_price
@@ -167,14 +179,87 @@ def save_port_price():
         ORDER BY id DESC LIMIT 1
     """, (p['varietyId'], port_name, d, grade))
     row = q1(g.conn, """
-        INSERT INTO base_port_price (variety_id, port_name, price_date, price, grade, created_by)
-        VALUES (%s,%s,%s,%s,%s,%s)
+        INSERT INTO base_port_price (variety_id, port_name, price_date, price, grade, deal_price, created_by)
+        VALUES (%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
-    """, (p['varietyId'], port_name, d, price, grade, g.ctx.user['id']), )
+    """, (p['varietyId'], port_name, d, price, grade, deal_price, g.ctx.user['id']), )
     op_log(g.conn, g.ctx, 'base_port_price', row['id'], 'CREATE', None,
-           {'portName': port_name, 'priceDate': str(d), 'price': price, 'grade': grade})
+           {'portName': port_name, 'priceDate': str(d), 'price': price, 'grade': grade,
+            'dealPrice': deal_price})
     return ok({'id': row['id'], 'duplicated': dup is not None,
                'existingPrice': str(dup['price']) if dup is not None else None})
+
+
+@bp.put('/base-prices/ports/<int:pid>')
+@auth_required
+def update_port_price(pid):
+    """修改港口现货价（平台运营专用；按记录 id 原地更新，不新增）。"""
+    if not g.ctx.is_plat:
+        raise ApiError(40301, '仅平台运营可维护港口价格')
+    old = q1(g.conn, "SELECT id FROM base_port_price WHERE id=%s AND is_deleted=0", (pid,))
+    if not old:
+        raise ApiError(40401, '记录不存在')
+    p = get_params()
+    require_fields(p, 'varietyId', 'portName', 'priceDate', 'price')
+    v = q1(g.conn, "SELECT id FROM base_variety WHERE id=%s AND is_deleted=0", (p['varietyId'],))
+    if not v:
+        raise ApiError(40401, '品种不存在')
+    try:
+        price = float(p['price'])
+    except (TypeError, ValueError):
+        raise ApiError(40001, '价格必须是数字')
+    if price <= 0:
+        raise ApiError(40001, '价格必须大于0')
+    try:
+        grade = float(str(p.get('grade') or '').replace('%', '').strip() or 61.5)
+    except (TypeError, ValueError):
+        raise ApiError(40001, '品位必须是数字')
+    if not 0 < grade <= 100:
+        raise ApiError(40001, '品位需在 0-100 之间')
+    d = parse_date(p, 'priceDate')
+    port_name = str(p['portName']).strip()
+    if not port_name or len(port_name) > 50:
+        raise ApiError(40001, '港口名称必填且不超过50字')
+    deal_price = p.get('dealPrice')
+    if deal_price in (None, ''):
+        deal_price = None  # 置空表示清除该条记录的交易价格
+    else:
+        try:
+            deal_price = float(deal_price)
+        except (TypeError, ValueError):
+            raise ApiError(40001, '交易价格必须是数字')
+        if deal_price <= 0:
+            raise ApiError(40001, '交易价格必须大于0')
+    execute(g.conn, """
+        UPDATE base_port_price
+        SET variety_id=%s, port_name=%s, price_date=%s, price=%s, grade=%s, deal_price=%s
+        WHERE id=%s AND is_deleted=0
+    """, (p['varietyId'], port_name, d, price, grade, deal_price, pid))
+    op_log(g.conn, g.ctx, 'base_port_price', pid, 'UPDATE', None,
+           {'portName': port_name, 'priceDate': str(d), 'price': price, 'grade': grade,
+            'dealPrice': deal_price})
+    return ok({'id': pid})
+
+
+@bp.post('/base-prices/ports/batch-delete')
+@auth_required
+def batch_remove_port_prices():
+    """批量删除港口现货价（平台运营专用，软删除）。JSON 体：{ids: [记录id, ...]}。"""
+    if not g.ctx.is_plat:
+        raise ApiError(40301, '仅平台运营可维护港口价格')
+    p = get_params()
+    ids = p.get('ids')
+    if not isinstance(ids, list) or not ids:
+        raise ApiError(40001, 'ids 必填且为非空数组')
+    try:
+        ids = [int(x) for x in ids]
+    except (TypeError, ValueError):
+        raise ApiError(40001, 'ids 必须为整数数组')
+    n = 0
+    for pid in ids:
+        n += execute(g.conn, "UPDATE base_port_price SET is_deleted=1 WHERE id=%s AND is_deleted=0", (pid,)) or 0
+    op_log(g.conn, g.ctx, 'base_port_price', 0, 'BATCH_DELETE', None, {'count': n, 'ids': ids})
+    return ok({'deleted': n})
 
 
 @bp.delete('/base-prices/ports/<int:pid>')

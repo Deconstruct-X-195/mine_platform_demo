@@ -389,7 +389,7 @@ def submit_pickup_plan(oid):
 @bp.get('/buyer/overview')
 @roles_required(ROLE_STEEL)
 def buyer_overview():
-    """钢厂端总览：KPI 面板 + 采购全流程各阶段计数 + 最新采购订单（滚动列表）。"""
+    """钢厂端总览：KPI 面板 + 采购全流程各阶段计数 + 待办事项（结构同供应商端）。"""
     cid = g.ctx.company['id']
     # 归属条件：传统订单（需方）或集采聚合订单的参与钢厂成员
     own = ('(o.buyer_id=%s OR EXISTS (SELECT 1 FROM biz_order_member m'
@@ -439,19 +439,35 @@ def buyer_overview():
             "'PENDING_CONFIRM_BUYER','CONFIRMED') AND " + own, oa)},
     ]
 
-    # 最新 20 条采购订单（滚动列表）
-    orders = qall(g.conn, """
-        SELECT o.id, o.order_no, v.variety_name AS "varietyName", o.grade,
-               o.quantity, o.unit_price, o.amount, o.delivery_date, o.status,
-               s.company_name AS "supplierName",
-               (SELECT m.quantity FROM biz_order_member m
-                 WHERE m.order_id=o.id AND m.company_id=%s AND m.is_deleted=0 LIMIT 1) AS "myQty"
-        FROM biz_order o
-        JOIN base_variety v ON v.id=o.variety_id
-        LEFT JOIN ent_company s ON s.id=o.supplier_id
-        WHERE o.is_deleted=0 AND """ + own + " ORDER BY o.id DESC LIMIT 20",
-        [cid] + oa)
-    return ok({'kpi': kpi, 'flow': flow, 'orders': orders})
+    # 待办事项（与供应商端 todos 结构一致）：需求待提交/重提 · 询价待评审/议价中 · 到货待签收
+    todos = []
+    for r in qall(g.conn, """
+            SELECT d.demand_no, d.status, d.updated_at FROM biz_demand d
+            WHERE d.company_id=%s AND d.is_deleted=0 AND d.status IN ('DRAFT','WITHDRAWN')
+            ORDER BY d.updated_at DESC LIMIT 20""", (cid,)):
+        todos.append({'kind': 'DEMAND',
+                      'main': '需求 %s 待%s' % (r['demand_no'],
+                                               '提交' if r['status'] == 'DRAFT' else '重提（已撤回）'),
+                      'time': r['updated_at']})
+    for r in qall(g.conn, """
+            SELECT i.inquiry_no, i.updated_at FROM biz_inquiry i
+            WHERE i.buyer_id=%s AND i.is_deleted=0 AND i.status='CLOSED'
+            ORDER BY i.updated_at DESC LIMIT 20""", (cid,)):
+        todos.append({'kind': 'REVIEW', 'main': '询价单 %s 已揭示待评审' % r['inquiry_no'],
+                      'time': r['updated_at']})
+    for r in qall(g.conn, """
+            SELECT i.inquiry_no, i.updated_at FROM biz_inquiry i
+            WHERE i.buyer_id=%s AND i.is_deleted=0 AND i.status='BARGAINING'
+            ORDER BY i.updated_at DESC LIMIT 20""", (cid,)):
+        todos.append({'kind': 'BARGAIN', 'main': '询价单 %s 议价中待处理' % r['inquiry_no'],
+                      'time': r['updated_at']})
+    for r in qall(g.conn, """
+            SELECT w.waybill_no, w.updated_at FROM biz_waybill w JOIN biz_order o ON o.id=w.order_id
+            WHERE w.is_deleted=0 AND w.status='ARRIVED' AND """ + own + """
+            ORDER BY w.updated_at DESC LIMIT 20""", oa):
+        todos.append({'kind': 'ARRIVED', 'main': '运单 %s 已到货待签收' % r['waybill_no'],
+                      'time': r['updated_at']})
+    return ok({'kpi': kpi, 'flow': flow, 'todos': todos})
 
 
 @bp.get('/supplier/overview')
