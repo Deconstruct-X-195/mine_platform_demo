@@ -118,6 +118,7 @@ def port_prices():
     sql = """
         SELECT p.id, p.variety_id AS "varietyId", v.variety_name AS "varietyName",
                p.port_name AS "portName", p.price_date AS "priceDate", p.price,
+               p.deal_price AS "dealPrice",
                COALESCE(p.grade, 61.5) AS "grade"
         FROM base_port_price p JOIN base_variety v ON v.id=p.variety_id
         WHERE p.is_deleted=0
@@ -160,6 +161,16 @@ def save_port_price():
     port_name = str(p['portName']).strip()
     if not port_name or len(port_name) > 50:
         raise ApiError(40001, '港口名称必填且不超过50字')
+    deal_price = p.get('dealPrice')
+    if deal_price in (None, ''):
+        deal_price = None
+    else:
+        try:
+            deal_price = float(deal_price)
+        except (TypeError, ValueError):
+            raise ApiError(40001, '交易价格必须是数字')
+        if deal_price <= 0:
+            raise ApiError(40001, '交易价格必须大于0')
     # 同键（品种×港口×日期×品位）已有记录：不覆盖原记录，直接新增一条（前端按 duplicated 提醒）
     dup = q1(g.conn, """
         SELECT price FROM base_port_price
@@ -167,12 +178,13 @@ def save_port_price():
         ORDER BY id DESC LIMIT 1
     """, (p['varietyId'], port_name, d, grade))
     row = q1(g.conn, """
-        INSERT INTO base_port_price (variety_id, port_name, price_date, price, grade, created_by)
-        VALUES (%s,%s,%s,%s,%s,%s)
+        INSERT INTO base_port_price (variety_id, port_name, price_date, price, grade, deal_price, created_by)
+        VALUES (%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
-    """, (p['varietyId'], port_name, d, price, grade, g.ctx.user['id']), )
+    """, (p['varietyId'], port_name, d, price, grade, deal_price, g.ctx.user['id']), )
     op_log(g.conn, g.ctx, 'base_port_price', row['id'], 'CREATE', None,
-           {'portName': port_name, 'priceDate': str(d), 'price': price, 'grade': grade})
+           {'portName': port_name, 'priceDate': str(d), 'price': price, 'grade': grade,
+            'dealPrice': deal_price})
     return ok({'id': row['id'], 'duplicated': dup is not None,
                'existingPrice': str(dup['price']) if dup is not None else None})
 
@@ -207,13 +219,24 @@ def update_port_price(pid):
     port_name = str(p['portName']).strip()
     if not port_name or len(port_name) > 50:
         raise ApiError(40001, '港口名称必填且不超过50字')
+    deal_price = p.get('dealPrice')
+    if deal_price in (None, ''):
+        deal_price = None  # 置空表示清除该条记录的交易价格
+    else:
+        try:
+            deal_price = float(deal_price)
+        except (TypeError, ValueError):
+            raise ApiError(40001, '交易价格必须是数字')
+        if deal_price <= 0:
+            raise ApiError(40001, '交易价格必须大于0')
     execute(g.conn, """
         UPDATE base_port_price
-        SET variety_id=%s, port_name=%s, price_date=%s, price=%s, grade=%s
+        SET variety_id=%s, port_name=%s, price_date=%s, price=%s, grade=%s, deal_price=%s
         WHERE id=%s AND is_deleted=0
-    """, (p['varietyId'], port_name, d, price, grade, pid))
+    """, (p['varietyId'], port_name, d, price, grade, deal_price, pid))
     op_log(g.conn, g.ctx, 'base_port_price', pid, 'UPDATE', None,
-           {'portName': port_name, 'priceDate': str(d), 'price': price, 'grade': grade})
+           {'portName': port_name, 'priceDate': str(d), 'price': price, 'grade': grade,
+            'dealPrice': deal_price})
     return ok({'id': pid})
 
 

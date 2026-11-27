@@ -37,12 +37,13 @@
     const listCard = UI.h('div', { class: 'card' });
     const listBox = UI.h('div', { class: 'list-fixed' });   // 定高列表区（同运营端）：表头39px+10行，超出滚动
     const pagerBox = UI.h('div', {});
-    /* 「订单」标题后紧跟导出按钮 */
+    /* 标题面板仅标题；导出按钮置于数据面板顶部（同运营端布局） */
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('div', { class: 'toolbar' },
-        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '订单'),
-        UI.h('button', { onclick: batchExport }, '导 出'))));
+        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '订单'))));
     page.appendChild(listCard);
+    listCard.appendChild(UI.h('div', { class: 'toolbar' },
+      UI.h('button', { onclick: batchExport }, '导 出')));
     listCard.appendChild(listBox);    // 定高列表区：纵向超出滚动，横向滚动条固定在分页行上方
     listCard.appendChild(pagerBox);   // 分页条固定在面板右下角
 

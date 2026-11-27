@@ -204,13 +204,15 @@
     const listCard = UI.h('div', { class: 'card' });
     const listBox = UI.h('div', { class: 'list-fixed' });   // 定高列表区（同运营端）：表头39px+10行，超出滚动
     const pagerBox = UI.h('div', {});
-    /* 询价单由运营端汇集钢厂需求后生成：钢厂端只读查看，导出按钮位于「全部状态」筛选之后 */
+    /* 询价单由运营端汇集钢厂需求后生成：钢厂端只读；筛选行置于标题下方，导出按钮置于数据面板顶部（同运营端布局） */
     page.appendChild(UI.h('div', { class: 'card' },
-      UI.h('div', { class: 'toolbar' },
+      UI.h('div', { class: 'toolbar stacked' },
         UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '询价单'),
-        UI.statusFilter('INQUIRY', (v) => { status = v; pageNo = 1; selected.clear(); load(); }),
-        UI.h('button', { onclick: batchExport }, '导 出'))));
+        UI.h('div', { class: 'spacer' }),
+        UI.statusFilter('INQUIRY', (v) => { status = v; pageNo = 1; selected.clear(); load(); }))));
     page.appendChild(listCard);
+    listCard.appendChild(UI.h('div', { class: 'toolbar' },
+      UI.h('button', { onclick: batchExport }, '导 出')));
     listCard.appendChild(listBox);    // 定高列表区：纵向超出滚动，横向滚动条固定在分页行上方
     listCard.appendChild(pagerBox);   // 分页条固定在面板右下角
 
@@ -428,7 +430,8 @@
           { label: '轮次', render: (r) => '第 ' + r.roundNo + ' 轮' },
           { key: 'inquiry_no', label: '询价单号' },
           { label: '我的上轮报价', num: true, render: (r) => r.quote_id
-            ? UI.spotDiff(spotBase, r.price) + ' × ' + UI.fmtMoney(r.quantity) + ' 湿吨'
+            ? (UI.spotShown(r.price_sign, r.price_float) || UI.spotDiff(spotBase, r.price))
+              + ' × ' + UI.fmtMoney(r.quantity) + ' 湿吨'
               + (r.freight_price != null ? '（运费 ' + UI.fmtMoney(r.freight_price) + ' 元/湿吨）' : '')
             : UI.h('span', { class: 'tag' }, '未报价') },
           { label: '钢厂反馈', render: (r) => r.fb_decision === 'REJECTED'
@@ -511,7 +514,8 @@
       const gradeInput = UI.input('number', q && q.grade != null ? String(q.grade) : '',
         { placeholder: '品位%，如 62', step: '0.01' });
       /* 单价：「港口现货价格」仅为固定字样（不关联品种当日港口价格数据），
-         供应商选择 +/- 方向并填写上下浮金额；落库单价=上下浮金额，方向存 price_sign */
+         供应商选择 +/- 方向并填写上下浮金额（可为 0，平价时单价仅「港口现货价格」字样，± 选择保留）；
+         落库单价=上下浮金额，方向存 price_sign */
       const priceSignSel = UI.selectField([['+', '+'], ['-', '-']], '+');
       const priceFloat = UI.input('number', '', { placeholder: '上下浮（元/湿吨）', step: '0.01', min: '0' });
       const priceBox = UI.h('span', { class: 'inline-flex', style: 'gap:8px;flex-wrap:nowrap;align-items:center' },
@@ -576,14 +580,15 @@
             { label: '轮次', render: (r) => '第 ' + r.roundNo + ' 轮' },
             { key: 'inquiry_no', label: '询价单号' },
             { label: '我的上轮报价', num: true, render: (r) => r.quote_id
-              ? UI.spotDiff(baseRow ? baseRow.price : null, r.price) + ' × ' + UI.fmtMoney(r.quantity) + ' 湿吨'
-                + (r.freight_price != null ? '（运费 ' + UI.fmtMoney(r.freight_price) + ' 元/湿吨）' : '')
-              : UI.h('span', { class: 'tag' }, '未报价') },
-            { label: '钢厂反馈', render: (r) => r.fb_decision === 'REJECTED'
-              ? UI.h('span', { class: 'tag red' }, '不认可：' + (r.fb_reason || ''))
-              : r.fb_decision === 'ACCEPTED' ? UI.h('span', { class: 'tag green' }, '认可')
-              : UI.h('span', { class: 'tag' }, '未反馈') },
-          ], det.historyRounds))] : []),
+            ? (UI.spotShown(r.price_sign, r.price_float) || UI.spotDiff(spotBase, r.price))
+              + ' × ' + UI.fmtMoney(r.quantity) + ' 湿吨'
+              + (r.freight_price != null ? '（运费 ' + UI.fmtMoney(r.freight_price) + ' 元/湿吨）' : '')
+            : UI.h('span', { class: 'tag' }, '未报价') },
+          { label: '钢厂反馈', render: (r) => r.fb_decision === 'REJECTED'
+            ? UI.h('span', { class: 'tag red' }, '不认可：' + (r.fb_reason || ''))
+            : r.fb_decision === 'ACCEPTED' ? UI.h('span', { class: 'tag green' }, '认可')
+            : UI.h('span', { class: 'tag' }, '未反馈') },
+        ], det.historyRounds))] : []),
         UI.h('div', { class: 'sec-title' }, '报价信息'),
         UI.h('div', { class: 'form-grid' },
           UI.formRow('矿种', varietySel, true),

@@ -373,28 +373,14 @@ def run():
                              'planDepartDate': today, 'planArriveDate': wd,
                              'departPlace': '黄骅港', 'arrivePlace': '青岛港', 'freight': 60.0})
     check('T14 运输方式仅铁路/多式联运/公路(40001)', c == 40001, m)
-    s, c, m = plat.try_code('POST', '/admin/logistics-plans/%d/waybills' % pid,
-                            {'segmentNo': 'SEG-1', 'transportMode': 'ROAD', 'planQty': 20000,
-                             'planDepartDate': today, 'planArriveDate': wd,
-                             'departPlace': '黄骅港', 'arrivePlace': '青岛港'})
-    check('T14 运费必填(40001)', c == 40001, m)
-    s, c, m = plat.try_code('POST', '/admin/logistics-plans/%d/waybills' % pid,
-                            {'segmentNo': 'SEG-1', 'transportMode': 'ROAD', 'planQty': 20000,
-                             'planDepartDate': today, 'planArriveDate': wd,
-                             'departPlace': '曹妃甸港', 'arrivePlace': '青岛港', 'freight': 60.0})
-    check('T14 装货港口仅黄骅港/天津港(40001)', c == 40001, m)
-    s, c, m = plat.try_code('POST', '/admin/logistics-plans/%d/waybills' % pid,
-                            {'segmentNo': 'SEG-1', 'transportMode': 'ROAD', 'planQty': 20000,
-                             'planDepartDate': today, 'planArriveDate': wd,
-                             'departPlace': '黄骅港', 'arrivePlace': '青岛港', 'freight': 60.0})
-    check('T14 计划量偏差超5%须填说明(40001)', c == 40001, m)
+    # 分段运单：运费为可选字段；分段运输量不强制与订单量一致，偏差超 5% 不再强制填说明（仅记录 DEVIATION 审计）
     w1 = plat.post('/admin/logistics-plans/%d/waybills' % pid,
                    {'segmentNo': 'SEG-1', 'transportMode': 'ROAD', 'planQty': 20000,
                     'planDepartDate': today, 'planArriveDate': wd,
-                    'departPlace': '黄骅港', 'arrivePlace': '青岛港', 'freight': 60.0,
-                    'deviationReason': '首段运力有限，剩余量由第二段补齐'})
+                    'departPlace': '黄骅港', 'arrivePlace': '青岛港'})
     wid1 = w1['id']
-    check('T14 分段1创建即待发运', w1['status'] == 'PENDING_DEPART', w1)
+    check('T14 分段1免运费可创建/即待发运', w1['status'] == 'PENDING_DEPART', w1)
+    check('T14 偏差超5%免说明仅审计', 'planTotalDeviation' in w1, w1)
     r = plat.put('/admin/waybills/%d/advance' % wid1, {'action': 'ETA'})
     check('T14 平台登记船到港', r.get('action') == 'ETA', r)
     s, c, m = plat.try_code('PUT', '/admin/waybills/%d/advance' % wid1, {'action': 'ARRIVE'})

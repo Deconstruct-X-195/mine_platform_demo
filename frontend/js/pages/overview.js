@@ -1,4 +1,4 @@
-/* 总览（#/overview）：钢厂端 KPI+采购全流程+滚动订单；供应商端 KPI+待办事项+近期动态 */
+/* 总览（#/overview）：钢厂端 KPI+采购全流程+待办事项；供应商端 KPI+待办事项+近期动态 */
 (function () {
   window.Pages = window.Pages || {};
 
@@ -54,33 +54,30 @@
             UI.h('div', { class: 'flow-name' }, s.label)),
         ]).flat())));
 
-    /* 3. 采购订单列表（动态滚动，悬停暂停） */
-    const rows = d.orders || [];
-    const headRow = UI.h('div', { class: 'ov-row ov-head' },
-      UI.h('span', {}, '订单号'), UI.h('span', {}, '品种'),
-      UI.h('span', { class: 'num' }, '数量(湿吨)'),
-      UI.h('span', { class: 'num' }, '交货日'), UI.h('span', {}, '状态'));
-    const listBox = UI.h('div', { class: 'scroll-box' });
+    /* 3. 待办事项列表（与供应商端一致）：需求待提交/重提 · 询价待评审/议价中 · 到货待签收 */
+    const todos = d.todos || [];
     page.appendChild(UI.h('div', { class: 'card' },
-      UI.h('h3', { class: 'bar-title' }, '采购订单'),
-      headRow, listBox));
-
-    if (!rows.length) {
-      listBox.appendChild(UI.h('div', { class: 'empty' }, '暂无采购订单'));
-      return;
-    }
-    const rowEl = (r) => UI.h('div', { class: 'ov-row' },
-      UI.h('span', {}, r.order_no),
-      UI.h('span', {}, (r.varietyName || '-') + (r.grade != null ? ' ' + UI.fmtQty(r.grade) + '%' : '')),
-      UI.h('span', { class: 'num' }, UI.fmtQty(r.myQty != null ? r.myQty : r.quantity)),
-      UI.h('span', { class: 'num' }, UI.fmtDate(r.delivery_date)),
-      UI.h('span', {}, UI.statusTag('ORDER', r.status)));
-    // 两份相同内容交替滚动实现无缝循环；数据少时按容器高度补齐份数
-    const half = UI.h('div', { class: 'scroll-half' });
-    const fill = Math.max(1, Math.ceil(320 / Math.max(rows.length, 1) / 44));
-    for (let k = 0; k < fill; k++) rows.forEach((r) => half.appendChild(rowEl(r)));
-    listBox.appendChild(UI.h('div', { class: 'scroll-track' }, half, half.cloneNode(true)));
+      UI.h('h3', { class: 'bar-title' }, '待办事项',
+        UI.h('span', { class: 'hint', style: 'margin-left:auto' },
+          todos.length ? '共 ' + todos.length + ' 项待处理' : '')),
+      todos.length ? UI.table([
+        { label: '类型', render: (t) => {
+            const [txt, color] = STEEL_TODO_TAG[t.kind] || ['待办', ''];
+            return UI.h('span', { class: 'tag' + color }, txt);
+          } },
+        { label: '事项', render: (t) => t.main },
+        { label: '时间', render: (t) => t.time ? UI.fmtDateTime(t.time) : '-' },
+        { label: '操作', render: (t) => UI.h('button', { class: 'sm primary',
+            onclick: () => { location.hash = STEEL_TODO_HASH[t.kind] || '#/'; } }, '去处理') },
+      ], todos) : UI.h('div', { class: 'empty' }, '暂无待办事项，一切进展顺利')));
   };
+
+  /* 钢厂端待办：类型标签与跳转菜单 */
+  const STEEL_TODO_TAG = {
+    DEMAND: ['待提交', ' orange'], REVIEW: ['待评审', ' red'],
+    BARGAIN: ['议价中', ' blue'], ARRIVED: ['待签收', ' blue'],
+  };
+  const STEEL_TODO_HASH = { DEMAND: '#/demand', REVIEW: '#/bargain', BARGAIN: '#/bargain', ARRIVED: '#/track' };
 
   /* 供应商端总览：KPI 五卡 + 待办事项列表 + 近期动态 */
   const SUP_TODO_TAG = { QUOTE: ['待报价', ' orange'], CONFIRM: ['待确认', ' red'] };

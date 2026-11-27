@@ -20,12 +20,19 @@
          不关联品种当日港口价格数据 */
       let priceBox = UI.h('span', { class: 'hint' }, '-');
       if (q.priceSign) {
-        priceBox = UI.h('span', { class: 'inline-flex', style: 'gap:8px;flex-wrap:nowrap;align-items:center' },
-          UI.h('input', { value: '港口现货价格', disabled: true,
-            style: 'width:150px;background:#f5f5f7;color:var(--label-2)' }),
-          UI.h('span', { style: 'padding:0 4px;font-weight:600' }, q.priceSign),
-          UI.h('input', { value: q.priceFloat != null ? UI.fmtMoney(Math.abs(Number(q.priceFloat))) : '', disabled: true,
-            style: 'width:110px;background:#f5f5f7' }));
+        const fAbs = q.priceFloat != null ? Math.abs(Number(q.priceFloat)) : null;
+        if (fAbs === 0) {
+          /* 上下浮=0（平价）：单价仅「港口现货价格」字样，不显示 ±0 */
+          priceBox = UI.h('input', { value: '港口现货价格', disabled: true,
+            style: 'width:150px;background:#f5f5f7;color:var(--label-2)' });
+        } else {
+          priceBox = UI.h('span', { class: 'inline-flex', style: 'gap:8px;flex-wrap:nowrap;align-items:center' },
+            UI.h('input', { value: '港口现货价格', disabled: true,
+              style: 'width:150px;background:#f5f5f7;color:var(--label-2)' }),
+            UI.h('span', { style: 'padding:0 4px;font-weight:600' }, q.priceSign),
+            UI.h('input', { value: q.priceFloat != null ? UI.fmtMoney(fAbs) : '', disabled: true,
+              style: 'width:110px;background:#f5f5f7' }));
+        }
       } else if (q.price != null) {
         priceBox = UI.h('span', { class: 'hint' }, '单价 ' + UI.fmtMoney(q.price) + ' 元/湿吨');
       }
@@ -68,12 +75,12 @@
   Pages.dashboard = async function (page) {
     const d = await API.get('/admin/dashboard');
     const charts = await API.get('/admin/dashboard/charts');
-    // 长条统计卡：准入企业 / 集采总货量 / 订单总数 / 总交易额
+    // 长条统计卡：准入企业 / 集采总货量 / 订单总数 / 本月成交单数
     const stripItems = [
       ['准入企业', String(d.companyApproved || 0), '家'],
       ['集采总货量', Number(d.procureQty || 0).toLocaleString('zh-CN'), '湿吨'],
       ['订单总数', String(d.orderTotal || 0), '单'],
-      ['总交易额', '¥' + Number(d.totalAmount || 0).toLocaleString('zh-CN'), ''],
+      ['本月成交单数', String(d.monthOrders || 0), '单'],
     ];
     page.appendChild(UI.h('div', { class: 'card stat-strip' },
       stripItems.map(([label, val, unit]) => UI.h('div', { class: 'stat-strip-item' },
@@ -106,18 +113,12 @@
     const dealRowsOf = (g) => (dealByGrade[g] || [])
       .slice().sort((a, b) => String(a.priceDate).localeCompare(String(b.priceDate)));
 
-    /* 右侧行情表按当前品位计算：日期并集 + 行业/交易价格 + 行业价格涨跌（品位内逐日） */
+    /* 右侧行情表：仅展示行业价格记录日，交易价格取该条记录录入的 dealPrice（选填）；
+       订单推导的价格不再并入本表（不在趋势图交易价格线之外产生独立行） */
     function quoteRowsOf(grade) {
-      const dateMap = {};
-      (hbByGrade[grade] || []).forEach((r) => {
-        dateMap[r.priceDate] = { priceDate: r.priceDate, industry: r.price };
-      });
-      dealRowsOf(grade).forEach((r) => {
-        const k = String(r.priceDate).slice(0, 10);
-        const row = dateMap[k] = dateMap[k] || { priceDate: k };
-        row.deal = r.price;
-      });
-      const list = Object.values(dateMap).sort((a, b) => String(b.priceDate).localeCompare(String(a.priceDate)));
+      const list = (hbByGrade[grade] || [])
+        .slice().sort((a, b) => String(b.priceDate).localeCompare(String(a.priceDate)))
+        .map((r) => ({ priceDate: r.priceDate, industry: r.price, deal: r.dealPrice }));
       let prev = null;
       list.slice().sort((a, b) => String(a.priceDate).localeCompare(String(b.priceDate))).forEach((r) => {
         r.chg = (r.industry != null && prev != null) ? r.industry - prev : null;
@@ -177,14 +178,15 @@
     // 货运趋势 / 矿种分布 / 运输方式运量对比
     const MODE_LABELS = { ROAD: '公路', RAIL: '铁路', WATER: '水运', SEA: '海运', MULTIMODAL: '多式联运' };
     const freightRows = (charts.freightTrend || [])
-      .map((r) => ({ priceDate: r.trendDate, price: r.qty }));
+      .map((r) => ({ priceDate: r.trendDate, price: r.qty }))
+      .filter((r) => Number(r.price) > 0); // 每日运输总量：运量为 0 的日子不做渲染
     const varietyDist = (charts.varietyDist || []).map((r) => ({ name: r.name, qty: Number(r.qty) }));
     const modeDist = (charts.modeDist || []).map((r) => ({ name: MODE_LABELS[r.mode] || r.mode, qty: Number(r.qty) }));
-    // 货运趋势（整行全宽，默认展示近 30 日运量）+ 矿种分布 / 运输方式运量对比
+    // 货运趋势（整行全宽，展示近 30 日每日运输总量，无运单日为 0）+ 矿种分布 / 运输方式运量对比
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('div', { class: 'toolbar' },
-        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '货运趋势')),
-      freightRows.length >= 2
+        UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '货运趋势（每日运输总量）')),
+      freightRows.length > 0
         ? UI.trendChart(freightRows, 'price', '湿吨')
         : UI.h('div', { class: 'empty' }, '暂无运单数据')));
     // 矿种分布 + 运输方式运量对比（同行两列）
@@ -397,6 +399,7 @@
       { label: '品位', render: (r) => gradeTxt(gradeOf(r)) },
       { label: '港口', render: (r) => r.portName || r.port || '-' },
       { key: 'price', label: '行业价格(元/湿吨)', num: true, render: (r) => UI.fmtMoney(r.price) },
+      { label: '交易价格(元/湿吨)', num: true, render: (r) => r.dealPrice != null ? UI.fmtMoney(r.dealPrice) : '—' },
       { label: '计价口径', render: (r) => r.priceBasis === 'DRY' ? '干基' : '湿基' },
       { key: 'priceDate', label: '价格日期', render: (r) => UI.fmtDate(r.priceDate) },
       { label: '来源', render: () => 'Mysteel' },
@@ -449,6 +452,9 @@
           ports.map((p) => UI.h('option', { value: p }))) : null);
       const priceInp = UI.input('number', row ? Number(row.price).toFixed(2) : '',
         { placeholder: '价格（元/湿吨）', step: '0.01' });
+      /* 交易价格：选填（非必填），随行业价格一并录入/修改；留空表示不填（重新录入留空则清除） */
+      const dealInp = UI.input('number', row && row.dealPrice != null ? Number(row.dealPrice).toFixed(2) : '',
+        { placeholder: '选填，元/湿吨', step: '0.01' });
       const FORM_GRADES = [61.5, 60.8];
       let curGrade = row ? gradeOf(row) : 61.5;
       const gradeBtns = FORM_GRADES.map((g) => UI.h('button', {
@@ -472,6 +478,7 @@
           UI.formRow('品位', UI.h('div', { style: 'display:flex;align-items:center' }, ...gradeBtns), true),
           UI.formRow('港口', portPick, true),
           UI.formRow('价格(元/湿吨)', priceInp, true),
+          UI.formRow('交易价格(元/湿吨)', dealInp, false),
           UI.formRow('价格日期', dateInp, true),
           UI.formRow('计价口径', UI.input('text', '湿基', {}), false),
           UI.formRow('来源', UI.input('text', 'Mysteel', {}), false)),
@@ -482,13 +489,16 @@
           const portName = String(portInp.value || '').trim();
           if (!portName) { UI.toast('请选择或填写港口', 'err'); return; }
           if (!(Number(priceInp.value) > 0)) { UI.toast('价格需大于 0', 'err'); return; }
+          if (dealInp.value !== '' && !(Number(dealInp.value) > 0)) { UI.toast('交易价格需大于 0', 'err'); return; }
           if (!dateInp.value) { UI.toast('请选择价格日期', 'err'); return; }
+          const dealPrice = dealInp.value === '' ? null : Number(dealInp.value);
           try {
             if (row) {
               /* 重新录入：按记录 id 原地更新该条内容，不新增 */
               await API.put('/base-prices/ports/' + row.id, {
                 varietyId: Number(varietySel.value), portName,
                 priceDate: dateInp.value, price: Number(priceInp.value), grade: curGrade,
+                dealPrice,
               });
               m.close();
               UI.toast('已更新该条价格记录，页面数据已自动更新', 'ok');
@@ -497,6 +507,7 @@
               const res = await API.post('/base-prices/ports', {
                 varietyId: Number(varietySel.value), portName,
                 priceDate: dateInp.value, price: Number(priceInp.value), grade: curGrade,
+                dealPrice,
               });
               m.close();
               if (res && res.duplicated) {
@@ -583,14 +594,16 @@
     const listBox = UI.h('div', { class: 'list-fixed' });
     const pagerBox = UI.h('div', {});
 
-    const filterEl = UI.h('div', {});
-    /* 面板拆分：工具栏（标题+检索/导出）与表格数据分为两块独立面板 */
+    const filterEl = UI.h('div', {});  // 筛选行（标题面板，标题下方）
+    const actionEl = UI.h('div', { class: 'toolbar' });  // 操作行（数据面板顶部）
+    /* 面板拆分：标题面板（标题+筛选）与数据面板（操作+表格）两块独立 */
     page.appendChild(UI.h('div', { class: 'card' },
-      UI.h('div', { class: 'toolbar' },
+      UI.h('div', { class: 'toolbar stacked' },
         UI.h('h3', { style: 'margin:0;border:none;padding:0' },
           tab === 'archive' ? '企业档案信息' : '准入申请列表'),
         filterEl)));
     page.appendChild(UI.h('div', { class: 'card' },
+      actionEl,
       listBox,
       pagerBox));
     render();
@@ -620,8 +633,10 @@
       kwInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
       box.appendChild(UI.h('span', { class: 'inline-flex' },
         kwInput,
-        UI.h('button', { class: 'sm', onclick: go }, '查询'),
-        UI.h('button', { class: 'sm', onclick: exportCsv }, '导 出')));
+        UI.h('button', { class: 'sm', onclick: go }, '查询')));
+      actionEl.innerHTML = '';
+      actionEl.appendChild(UI.h('button', { class: 'primary', onclick: () => companyRegisterModal() }, '新 增'));
+      actionEl.appendChild(UI.h('button', { class: 'sm', onclick: exportCsv }, '导 出'));
       // 现阶段企业注册即默认准入，不再提供准入状态筛选
       if (tab === 'list') {
         await load();
@@ -652,6 +667,137 @@
           r.companyName, r.creditCode, typesCn(r.companyTypes), r.contactName, r.contactPhone,
         ])),
       });
+    }
+
+    /* 运营代注册：字段同登录页企业注册表单，但全部选填（缺失字段由后端自动占位；
+       登录账号填写且企业角色已选时才创建账号，密码缺省自动生成并回显转告企业） */
+    function companyRegisterModal() {
+      const f = {};
+      const field = (key, label, props) => {
+        f[key] = UI.input((props && props.type) || 'text', '', Object.assign({ placeholder: label }, props || {}));
+        return UI.formRow(label, f[key], false); // 与注册页同结构，但无必填星号
+      };
+
+      /* 企业角色：radio 严格单选（同注册页交互），可全不选 */
+      const TYPES = [['STEEL_BUYER', '钢铁企业（需方）'], ['SUPPLIER', '供应商（供方）']];
+      const ROLE_DESC = {
+        STEEL_BUYER: '采购铁矿石等大宗原料，发起需求与询价',
+        SUPPLIER: '参与密封报价、议价与合同签订',
+      };
+      const roleCards = TYPES.map(([code, name]) => {
+        const radio = UI.h('input', { type: 'radio', name: 'companyType', value: code });
+        const card = UI.h('label', { class: 'role-card', 'data-code': code },
+          UI.h('span', { class: 'role-name' }, name),
+          UI.h('span', { class: 'role-desc' }, ROLE_DESC[code]),
+          UI.h('span', { class: 'role-check' }, '✓'),
+          radio);
+        radio.addEventListener('change', () => {
+          roleCards.forEach((c) => {
+            const r = c.querySelector('input');
+            if (r.checked) { c.classList.add('on'); } else { c.classList.remove('on'); }
+          });
+        });
+        return card;
+      });
+
+      /* 营业执照：同注册页交互——选择后进入下方文件框，可删除、点击文件名预览；再次选择替换 */
+      let licenseFile = null;
+      const license = UI.h('input', { type: 'file', accept: 'image/*,.pdf' });
+      const uploadBox = UI.h('div', { class: 'upload-box', style: 'display:none' });
+      const fmtSize = (n) => (n >= 1024 * 1024 ? (n / 1024 / 1024).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB');
+      const previewLicense = (file) => {
+        const url = URL.createObjectURL(file);
+        const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name);
+        const body = isPdf
+          ? UI.h('iframe', { src: url, style: 'width:100%;height:70vh;border:1px solid var(--separator);background:#fff' })
+          : UI.h('img', { src: url, style: 'max-width:100%;max-height:70vh;display:block;margin:0 auto' });
+        UI.modal('营业执照预览 · ' + file.name, body, null, { wide: true });
+        setTimeout(() => URL.revokeObjectURL(url), 10 * 60 * 1000);
+      };
+      const renderUpload = () => {
+        uploadBox.innerHTML = '';
+        if (!licenseFile) { uploadBox.style.display = 'none'; return; }
+        uploadBox.style.display = '';
+        uploadBox.appendChild(UI.h('div', { class: 'upload-item' },
+          UI.h('a', { class: 'upload-name', title: '点击预览', href: 'javascript:;', onclick: () => previewLicense(licenseFile) }, licenseFile.name),
+          UI.h('span', { class: 'upload-size' }, fmtSize(licenseFile.size)),
+          UI.h('a', { class: 'upload-del', href: 'javascript:;', onclick: () => { licenseFile = null; renderUpload(); } }, '删除')));
+      };
+      license.addEventListener('change', () => {
+        const file = license.files && license.files[0];
+        if (!file) return;
+        licenseFile = file;
+        renderUpload();
+        license.value = ''; // 允许再次选择同一文件替换
+      });
+      const form = UI.h('form', { onsubmit: (e) => e.preventDefault() },
+        UI.h('div', { class: 'sec' }, '企业信息'),
+        UI.h('div', { class: 'form-grid' },
+          field('companyName', '企业名称', { placeholder: '请输入工商注册全称（选填，缺省自动占位）' }),
+          field('creditCode', '统一社会信用代码', { placeholder: '18 位字母数字，如 91130000XXXXXXXXXX' }),
+          UI.h('div', { class: 'form-row full' },
+            UI.h('label', {}, '企业角色（仅可选择一个，选填；填写登录账号时必选）'),
+            UI.h('div', { class: 'role-grid' }, ...roleCards)),
+          field('legalPerson', '法定代表人', { placeholder: '请输入法定代表人姓名' }),
+          field('address', '注册地址', { placeholder: '请输入注册详细地址' }),
+          UI.h('div', { class: 'form-row full' },
+            UI.h('label', {}, '经营范围'),
+            UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '选填，如：铁矿石进口、销售', onchange: (e) => { f.businessScope = e.target.value; } }))),
+        UI.h('div', { class: 'sec' }, '联系信息'),
+        UI.h('div', { class: 'form-grid' },
+          field('contactName', '联系人', { placeholder: '请输入联系人姓名' }),
+          field('contactPhone', '联系电话', { placeholder: '11 位手机号' }),
+          field('contactEmail', '联系邮箱', { placeholder: '选填，如 name@company.com' })),
+        UI.h('div', { class: 'sec' }, '账号与营业执照'),
+        UI.h('div', { class: 'form-grid' },
+          field('username', '登录账号（11 位手机号）', { placeholder: '设置登录手机号，11 位（选填，填写后为企业创建登录账号）' }),
+          field('password', '密码（至少 8 位）', { type: 'password', autocomplete: 'new-password',
+            placeholder: '至少 8 位，建议字母与数字组合（选填，缺省自动生成）' }),
+          UI.h('div', { class: 'form-row full' },
+            UI.h('label', {}, '营业执照（选填）'),
+            license, UI.h('div', { class: 'hint' }, '支持图片 / PDF，选择后可在下方查看文件'),
+            uploadBox)));
+      const m = UI.modal('运营代注册 · 企业信息（全部选填）', form, [
+        UI.h('button', { class: 'primary', onclick: async () => {
+          /* 提交时直接以 DOM 勾选态为准（同注册页）；全部字段非必填，仅对已填内容做格式与组合校验 */
+          const checkedRole = form.querySelector('input[name="companyType"]:checked');
+          const body = {
+            companyName: f.companyName.value.trim(),
+            creditCode: f.creditCode.value.trim(),
+            companyTypes: checkedRole ? checkedRole.value : '',
+            address: f.address.value.trim(),
+            legalPerson: f.legalPerson.value.trim(),
+            contactName: f.contactName.value.trim(),
+            contactPhone: f.contactPhone.value.trim(),
+            contactEmail: f.contactEmail.value.trim(),
+            businessScope: f.businessScope || '',
+            username: f.username.value.trim(),
+            password: f.password.value,
+          };
+          if (body.creditCode && !/^[0-9A-Z]{15,18}$/.test(body.creditCode)) { UI.toast('统一社会信用代码应为 15~18 位大写字母或数字', 'err'); return; }
+          if (body.contactPhone && !/^1\d{10}$/.test(body.contactPhone)) { UI.toast('联系电话应为 11 位手机号', 'err'); return; }
+          if (body.contactEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(body.contactEmail)) { UI.toast('联系邮箱格式不正确，如 name@company.com', 'err'); return; }
+          if (body.username) {
+            if (!/^1\d{10}$/.test(body.username)) { UI.toast('登录账号必须为 11 位手机号', 'err'); return; }
+            if (!body.companyTypes) { UI.toast('填写登录账号时须选择企业角色', 'err'); return; }
+            if (body.password && body.password.length < 8) { UI.toast('密码至少 8 位，建议字母与数字组合', 'err'); return; }
+          } else if (body.password) { UI.toast('已填写密码但未填写登录账号，请补填登录账号或清空密码', 'err'); return; }
+          try {
+            if (licenseFile) {
+              const up = await API.upload(licenseFile, '/auth/license');
+              body.licenseFileId = up.fileId != null ? up.fileId : up.id;
+            }
+            const res = await API.post('/admin/companies/register', body);
+            let msg = '代注册成功（企业 ' + res.companyId + '，待准入审核）';
+            if (res.generatedPassword) msg += '；已生成密码 ' + res.generatedPassword + '，请转告企业';
+            else if (res.username) msg += '；登录账号 ' + res.username + ' 已创建';
+            else msg += '；暂未创建登录账号';
+            UI.toast(msg, 'ok');
+            m.close();
+            render();
+          } catch (e) { /* toast 已提示 */ }
+        } }, '提交注册'),
+      ], { wide: true });
     }
 
     async function load() {
@@ -940,7 +1086,8 @@
     // 表格横向滚动容器：超宽时面板内右拉
     const scrollWrap = (node, style) => UI.h('div', { class: 'table-scroll-wrap', style }, node);
 
-    const filterBox = UI.h('div', {});
+    const filterBox = UI.h('div', {});  // 筛选行（标题面板，标题下方）
+    const actionBox = UI.h('div', { class: 'toolbar' });  // 操作行（数据面板顶部）
     /* 三个二级菜单共用列表容器：定高列表区（.list-fixed，表头39px+10行×48px），切换页签高度保持不变；纵向超出滚动，横向滚动条固定在分页行上方 */
     const listBox = UI.h('div', { class: 'list-fixed' });
     const pagerBox = UI.h('div', {});
@@ -948,13 +1095,14 @@
     /* 卡片标题随二级菜单页签变化：需求列表/订单归集/需求归集/变更申请 */
     const TAB_TITLE = { demands: '需求列表', aggr: '订单归集', group: '需求归集', changes: '变更申请' };
     const titleEl = UI.h('h3', { style: 'margin:0;border:none;padding:0' }, TAB_TITLE[tab] || '需求列表');
-    /* 面板拆分：工具栏（标题+筛选/操作）与表格数据分为两块独立面板（四个页签共用） */
+    /* 面板拆分：标题面板（标题+筛选）与数据面板（操作+表格）两块独立（四个页签共用） */
     page.appendChild(UI.h('div', { class: 'card' },
-      UI.h('div', { class: 'toolbar' },
+      UI.h('div', { class: 'toolbar stacked' },
         titleEl,
         UI.h('div', { class: 'spacer' }),
         filterBox)));
     page.appendChild(UI.h('div', { class: 'card' },
+      actionBox,
       listBox,
       pagerBox));
     render();
@@ -962,16 +1110,17 @@
     async function render() {
       titleEl.textContent = TAB_TITLE[tab] || '需求列表';
       filterBox.innerHTML = '';
+      actionBox.innerHTML = '';
       pagerBox.innerHTML = '';
       if (tab === 'demands') {
-        filterBox.appendChild(UI.h('button', {
-          class: 'primary', style: 'margin-right:8px', onclick: mergeAggregated,
+        actionBox.appendChild(UI.h('button', {
+          class: 'primary', onclick: mergeAggregated,
         }, '合并归集'));
         filterBox.appendChild(UI.statusFilter('DEMAND', (v) => { demandStatus = v; pageNo = 1; picked.clear(); loadDemands(); }));
         await loadDemands();
       } else if (tab === 'aggr') {
-        filterBox.appendChild(UI.h('button', {
-          class: 'primary', style: 'margin-right:8px',
+        actionBox.appendChild(UI.h('button', {
+          class: 'primary',
           onclick: () => {
             // 带上勾选的 OPEN 归集订单，跳转后自动弹出发起询价弹窗
             if (pickedAgg.size) sessionStorage.setItem('agg_inquiry_seed', String([...pickedAgg][0]));
@@ -982,7 +1131,7 @@
         await loadAggr();
       } else if (tab === 'group') {
         filterBox.appendChild(UI.statusFilter('AGG', (v) => { aggStatus = v; aggPageNo = 1; loadGroup(); }));
-        filterBox.appendChild(UI.h('button', { class: 'primary', style: 'margin-left:10px', onclick: pushGroups }, '推送供应商'));
+        actionBox.appendChild(UI.h('button', { class: 'primary', onclick: pushGroups }, '推送供应商'));
         await loadGroup();
       } else {
         filterBox.appendChild(UI.statusFilter('CHANGE', (v) => { changeStatus = v; chPageNo = 1; loadChanges(); }));
@@ -1460,14 +1609,15 @@
     /* 定高列表区 + 分页行同卡片（同需求归集）：横向滚动条固定在分页行上方 */
     const listBox = UI.h('div', { class: 'list-fixed' });
     const pagerBox = UI.h('div', {});
-    /* 面板拆分：工具栏（标题+筛选/发起询价）与表格数据分为两块独立面板 */
+    /* 面板拆分：标题面板（标题+筛选）与数据面板（操作+表格）两块独立 */
     page.appendChild(UI.h('div', { class: 'card' },
-      UI.h('div', { class: 'toolbar' },
+      UI.h('div', { class: 'toolbar stacked' },
         UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '询价报价'),
         UI.h('div', { class: 'spacer' }),
-        UI.statusFilter('INQUIRY', (v) => { status = v; pageNo = 1; load(); }),
-        UI.h('button', { class: 'primary', onclick: () => createModal() }, '发起询价'))));
+        UI.statusFilter('INQUIRY', (v) => { status = v; pageNo = 1; load(); }))));
     page.appendChild(UI.h('div', { class: 'card' },
+      UI.h('div', { class: 'toolbar' },
+        UI.h('button', { class: 'primary', onclick: () => createModal() }, '发起询价')),
       listBox,
       pagerBox));
     await load();
@@ -1896,9 +2046,9 @@
     const pagerBox = UI.h('div', {});
     const kw = UI.input('text', '', { placeholder: '订单号（模糊）', style: 'width:180px' });
     const search = () => { keyword = kw.value.trim(); pageNo = 1; load(); };
-    /* 面板拆分：工具栏（标题+筛选/查询）与表格数据分为两块独立面板 */
+    /* 面板拆分：标题面板（标题+筛选/查询，全为筛选类）与数据面板两块独立 */
     page.appendChild(UI.h('div', { class: 'card' },
-      UI.h('div', { class: 'toolbar' },
+      UI.h('div', { class: 'toolbar stacked' },
         UI.h('h3', { style: 'margin:0;border:none;padding:0' }, '订单管理'),
         UI.h('div', { class: 'spacer' }),
         UI.statusFilter('ORDER', (v) => { status = v; pageNo = 1; load(); }),
@@ -2725,10 +2875,11 @@
       });
       const modeTxt = Object.keys(MODE_LABEL).filter((k) => byMode[k])
         .map((k) => MODE_LABEL[k] + ' ' + Math.round(byMode[k] * 100) / 100 + ' 湿吨').join(' · ') || '暂无';
-      /* 起始地/目的地预填（订单成交报价到货港口 / 钢厂交货地址），可改 */
+      /* 起始地/目的地默认与订单一致（成交报价到货港口 / 钢厂交货地址），可修改 */
       const departPlace = UI.h('input', { type: 'text', style: 'width:100%;height:32px', placeholder: '如：黄骅港', value: r.startPlace || '' });
       const arrivePlace = UI.h('input', { type: 'text', style: 'width:100%;height:32px', placeholder: '如：邯郸南站 / 钢厂场区', value: r.destPlace || '' });
-      /* 运输量：本次分段运单的排量（默认剩余可排，可改；各方式合计不超过订单量） */
+      /* 运输量：本次分段运单的排量（默认剩余可排，可改）。分段运输量不强制与订单量一致：
+         支持多个分段自由排载，各段合计允许与订单量存在偏差（>5% 自动记录偏差审计） */
       const planQty = numInput({ value: Number(remain).toFixed(2), min: '0.01', step: '0.01', style: 'width:100%' });
       const m = UI.modal('新增分段运单 · ' + r.orderNo, UI.h('form', { onsubmit: (e) => e.preventDefault() },
         UI.kv([
@@ -2736,7 +2887,7 @@
           ['订单量', r.quantity + ' 湿吨'],
           ['已排量', (r.plannedQty || 0) + ' 湿吨'],
           ['各方式已排', modeTxt],
-          ['剩余可排', remain + ' 湿吨'],
+          ['剩余可排（参考，分段量不强制等于订单量）', remain + ' 湿吨'],
         ]),
         UI.h('div', { class: 'form-grid' },
           UI.formRow('分段号', segNo, true),
@@ -2749,7 +2900,6 @@
           if (!departPlace.value.trim()) { UI.toast('请填写起始地', 'err'); return; }
           if (!arrivePlace.value.trim()) { UI.toast('请填写目的地', 'err'); return; }
           if (!(q > 0)) { UI.toast('请填写运输量（必须大于 0）', 'err'); return; }
-          if (q > remain + 0.000001) { UI.toast('运输量 ' + q + ' 湿吨超过剩余可排 ' + remain + ' 湿吨', 'err'); return; }
           try {
             await API.post('/admin/logistics-plans/' + r.planId + '/waybills', {
               segmentNo: parseInt(segNo.value, 10) || 1,

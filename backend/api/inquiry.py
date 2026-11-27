@@ -419,6 +419,7 @@ def inquiry_detail(iid):
             rounds = qall(g.conn, """
                 SELECT i.id, i.inquiry_no, i.status, i.deadline,
                        q.id AS quote_id, q.price, q.quantity, q.freight_price,
+                       q.price_sign, q.price_float,
                        q.delivery_date, q.status AS quote_status, q.version,
                        f.decision AS fb_decision, f.reason AS fb_reason
                 FROM biz_inquiry i
@@ -479,7 +480,8 @@ def _save_quote_files(conn, qid, p, company_id):
 def _quote_payload_check(conn, inq, p):
     require_fields(p, 'deliveryDate')
     # 密封报价「港口现货价格±上下浮」模式：「港口现货价格」仅为固定字样（不关联品种当日港口价格数据）。
-    # 供应商选择 +/- 方向并填写上下浮金额；落库 price=上下浮金额（>0），方向存 price_sign，展示按字样拼接
+    # 供应商选择 +/- 方向并填写上下浮金额；上下浮可为 0（平价，单价仅显示「港口现货价格」字样）；
+    # 落库 price=上下浮金额，方向存 price_sign，展示按字样拼接
     sign, flt = p.get('priceSign'), p.get('priceFloat')
     stored_sign, stored_float = None, None
     if sign in ('+', '-') and flt not in (None, ''):
@@ -491,7 +493,8 @@ def _quote_payload_check(conn, inq, p):
     else:
         # 数值字段统一规范化：前端 <input> 的 value 为字符串，非法值返回 40001 而非 500
         price = decimal_field(p, 'price', positive=False)
-    if price <= 0:
+    # 报价模式（港口现货价格±上下浮）允许上下浮=0（平价）；绝对单价模式仍要求 >0
+    if stored_sign is None and price <= 0:
         raise ApiError(40001, '报价单价必须大于0')
     qty = decimal_field(p, 'quantity', positive=False)
     if qty <= 0:
