@@ -129,6 +129,8 @@
       UI.h('div', { class: 'main' },
         UI.h('div', { class: 'topbar' },
           UI.h('div', { class: 'page-title', id: 'page-title' }, ''),
+          UI.h('button', { class: 'sm bigscreen-btn', id: 'bigscreen-btn', title: '在新窗口打开政务大屏',
+            style: 'display:none', onclick: () => window.open('/bigscreen/', '_blank') }, '政务大屏'),
           bell,
           UI.h('div', { class: 'user-box' },
             UI.h('b', {}, user.realName || user.username),
@@ -281,6 +283,9 @@
       demand_list: 'demand_pool', demand_aggr: 'demand_pool', demand_group: 'demand_pool', demand_changes: 'demand_pool' };
     const titleKey = GROUP_TOP[pageKey] || pageKey;
     if (title) title.textContent = MENU_META[titleKey] ? menuLabel(API.currentUser(), titleKey) : '大宗矿产集采平台';
+    /* 政务大屏入口：仅在运营看板页顶栏显示 */
+    const bigBtn = document.getElementById('bigscreen-btn');
+    if (bigBtn) bigBtn.style.display = (titleKey === 'dashboard') ? '' : 'none';
   }
 
   /* 会话菜单静默刷新：每次页面加载调用一次 /auth/me，
