@@ -269,16 +269,16 @@
     const vals = pts.map(r => parseFloat(r[priceKey]));
     const dayIdx = {};
     for (let i = 0; i <= WIN; i++) dayIdx[_dayAdd(minDate, i)] = i;
-    /* 同日多点横向错开：同日第 k 条的有效索引 = 日期索引 + k，相邻两条横轴差恰为一天步长；
-       绘图域按最大有效索引自动扩展（今日双条时右端超出原 28 天窗口） */
+    /* 同日多点并排错开：各点位置 = 日期索引 + 日内居中小偏移（两点±0.3档），
+       日期与横轴刻度严格对齐——不再整档右移导致"19号数据落在20号刻度上"，同日点连线平缓无竖直跳变 */
     const cnt = {}, seen = {};
     pts.forEach((r) => { const d = String(r.priceDate).slice(0, 10); cnt[d] = (cnt[d] || 0) + 1; });
     const EFF = pts.map((r) => {
       const d = String(r.priceDate).slice(0, 10);
       const k = seen[d] || 0; seen[d] = k + 1;
-      return dayIdx[d] + k;
+      return dayIdx[d] + (cnt[d] > 1 ? (k - (cnt[d] - 1) / 2) * 0.6 : 0);
     });
-    const WIN_EFF = Math.max(WIN, ...EFF);
+    const WIN_EFF = Math.max(WIN, ...EFF.map((f) => Math.ceil(f)));
     /* 纵轴：价格图步长全站统一（元 → 10），格数随数据自适应；其他单位自适应取档 */
     const dom = _niceDomain(Math.min(...vals), Math.max(...vals), unit.charAt(0) === '元' ? 10 : null);
     /* 运量类数值（非价格单位）不可能为负：纵轴下限钳到 0，避免小运量时 nice 域出现负刻度 */
@@ -359,12 +359,11 @@
       const rect = svg.getBoundingClientRect();
       if (!rect.width) return;
       const px = (e.clientX - rect.left) * (W / rect.width);
-      /* 命中最近的有效索引（同日多点各自占一档），再取该点 */
-      let ei = Math.round((px - ML) / iw * WIN_EFF);
-      ei = Math.max(EFF[0], Math.min(WIN_EFF, ei));
+      /* 命中最近的数据点（按并排偏移后的实际位置距离），再取该点 */
+      const ex = (px - ML) / iw * WIN_EFF;
       let bi = 0, bd = Infinity;
       EFF.forEach((fi, k) => {
-        const d = Math.abs(fi - ei);
+        const d = Math.abs(fi - ex);
         if (d < bd) { bd = d; bi = k; }
       });
       const cx = X(EFF[bi]), cy = Y(vals[bi]);
@@ -412,18 +411,20 @@
     const seriesPts = usable.map((s) => s.rows
       .filter((r) => { const d = String(r.priceDate).slice(0, 10); return d >= minDate && d <= todayStr && r.price != null; })
       .slice().sort((a, b) => String(a.priceDate).localeCompare(String(b.priceDate))));
-    /* 同日多点横向错开：各点有效索引 = 日期索引 + 同日内序号，相邻两条横轴差恰为一天步长；
-       绘图域按全部系列最大有效索引自动扩展（今日双条时右端超出原 28 天窗口） */
+    /* 同日多点并排错开：各点位置 = 日期索引 + 日内居中小偏移（两点±0.3档、三点±0.6档），
+       日期与横轴刻度严格对齐——不再整档右移导致"19号数据落在20号刻度上"，同日点连线短且平缓无竖直跳变 */
+    const SPREAD = 0.6;
     const seriesEFF = seriesPts.map((ps) => {
-      const seen = {};
+      const cnt = {}, seen = {};
+      ps.forEach((r) => { const d = String(r.priceDate).slice(0, 10); cnt[d] = (cnt[d] || 0) + 1; });
       return ps.map((r) => {
         const d = String(r.priceDate).slice(0, 10);
         const k = seen[d] || 0; seen[d] = k + 1;
-        return dayIdx[d] + k;
+        return dayIdx[d] + (cnt[d] > 1 ? (k - (cnt[d] - 1) / 2) * SPREAD : 0);
       });
     });
     let WIN_EFF = WIN;
-    seriesEFF.forEach((effs) => effs.forEach((fi) => { if (fi > WIN_EFF) WIN_EFF = fi; }));
+    seriesEFF.forEach((effs) => effs.forEach((fi) => { const c = Math.ceil(fi); if (c > WIN_EFF) WIN_EFF = c; }));
     const allVals = [];
     seriesPts.forEach((ps) => ps.forEach((r) => allVals.push(parseFloat(r.price))));
     if (!allVals.length) { wrap.appendChild(h('div', { class: 'empty' }, '数据不足，暂无走势')); return wrap; }
@@ -518,12 +519,11 @@
         const rect = svg.getBoundingClientRect();
         if (!rect.width) return;
         const px = (e.clientX - rect.left) * (W / rect.width);
-        /* 命中最近的数据点（有效索引距离，同日多点各自占一档），提示卡展示该点日期的全部系列 */
-        let ei = Math.round((px - ML) / iw * WIN_EFF);
-        ei = Math.max(0, Math.min(WIN_EFF, ei));
+        /* 命中最近的数据点（按并排偏移后的实际位置距离），提示卡展示该点日期的全部系列 */
+        const ex = (px - ML) / iw * WIN_EFF;
         let hi = -1, pi = -1, hd = Infinity;
         seriesEFF.forEach((effs, si) => effs.forEach((fi, k) => {
-          const d = Math.abs(fi - ei);
+          const d = Math.abs(fi - ex);
           if (d < hd) { hd = d; hi = si; pi = k; }
         }));
         if (hi < 0) return;
