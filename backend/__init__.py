@@ -7,7 +7,7 @@ import os
 import threading
 from datetime import date, datetime
 
-from flask import Flask, g, jsonify, request, send_from_directory
+from flask import Flask, g, jsonify, redirect, request, send_from_directory
 from flask.json.provider import DefaultJSONProvider
 from werkzeug.exceptions import HTTPException
 
@@ -16,6 +16,8 @@ from .db import pool
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND_DIR = os.path.join(_ROOT, 'frontend')
+# 政务大屏静态目录（21:9 index.html / 4:3 index43.html，独立于 SPA）
+BIGSCREEN_DIR = os.path.join(_ROOT, 'bigscreen')
 # C11（部署适配方案 §5）：上传目录支持 MINE_UPLOAD_DIR 环境变量覆盖
 # （服务器侧分离挂载盘 /data/mine/uploads，默认保持本地仓库相对路径不变）
 UPLOAD_DIR = os.environ.get('MINE_UPLOAD_DIR') or os.path.join(_ROOT, 'uploads')
@@ -86,6 +88,16 @@ def create_app():
     app.register_blueprint(bp)
 
     # ---- 前端静态托管（原生 SPA，无构建）----
+    # 政务大屏（先于 /<path:filename> 通配注册，专路优先）
+    # /bigscreen/ 默认进 4:3 版（index43.html）；21:9 版保留在 /bigscreen/index.html
+    @app.route('/bigscreen/')
+    def _bigscreen_index():
+        return redirect('/bigscreen/index43.html')
+
+    @app.route('/bigscreen/<path:filename>')
+    def _bigscreen_static(filename):
+        return send_from_directory(BIGSCREEN_DIR, filename)
+
     @app.route('/')
     def _index():
         return send_from_directory(FRONTEND_DIR, 'index.html')

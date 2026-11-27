@@ -1,0 +1,164 @@
+/* =============================================================================
+ * 政府铁矿石集采平台 · 4:3 大屏样式（1600×1200 设计稿，JS 等比缩放）
+ * -----------------------------------------------------------------------------
+ * 配色规范（严格遵守，改动请全局搜索替换）：
+ *   背景        #081630（深藏青渐变）
+ *   面板底色    rgba(15,40,80,0.6) + 磨砂玻璃（backdrop-filter）
+ *   发光边框    #2468bb（1px 细边框，DataV border-box 补充）
+ *   高亮数字/预警 #ffc837（金色）
+ *   图表线条    #32d0e8（浅青蓝）
+ * 字体规范：黑体（SimHei），数字等宽（tabular-nums），适配远距离观看
+ * ========================================================================== */
+
+/* ---------- 全局：深藏青渐变背景，黑体，数字等宽 ---------- */
+html, body {
+  margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
+  background: linear-gradient(160deg, #0a1d40 0%, #081630 45%, #050d1f 100%);
+  font-family: 'SimHei', 'Microsoft YaHei', sans-serif;
+  color: #d8e6ff;
+  -webkit-font-smoothing: antialiased;
+}
+#app { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+
+/* ---------- 舞台：1600×1200 设计稿，transform 等比缩放居中 ---------- */
+.bigscreen {
+  width: 1600px; height: 1200px; flex-shrink: 0;
+  display: flex; flex-direction: column;
+  padding: 14px 18px 14px;
+  transform-origin: center center;
+  box-sizing: border-box;
+}
+.bigscreen * { box-sizing: border-box; font-variant-numeric: tabular-nums; }
+
+/* DataV 边框容器内部统一铺满：磨砂玻璃面板底色 */
+.dv-border-box-content { background: rgba(15, 40, 80, .6); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+/* 补充 1px #2468bb 细发光描边（DataV 边框四角发光之外的整体细线） */
+[class*="dv-border-box"] { outline: 1px solid rgba(36, 104, 187, .55); outline-offset: -1px; filter: drop-shadow(0 0 6px rgba(36, 104, 187, .25)); }
+
+/* ---------- 顶部标题栏 ---------- */
+.topbar {
+  position: relative; height: 78px; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(180deg, rgba(36, 104, 187, .22) 0%, rgba(36, 104, 187, 0) 100%);
+  border-bottom: 1px solid rgba(36, 104, 187, .55);
+}
+.topbar-deco { position: absolute; top: 24px; }
+.topbar-deco.left  { left: 20px; }
+.topbar-deco.right { right: 20px; }
+.topbar-title-box { text-align: center; }
+.topbar-title {
+  font-size: 34px; font-weight: 700; letter-spacing: 6px; color: #eaf3ff;
+  text-shadow: 0 0 14px rgba(50, 208, 232, .45);
+}
+.topbar-sub { margin-top: 4px; font-size: 15px; letter-spacing: 3px; color: #7fa8dd; }
+.topbar-status { position: absolute; right: 24px; text-align: right; }
+.datetime { font-size: 17px; color: #cfe0ff; letter-spacing: 1px; }
+.status-ok { margin-top: 5px; font-size: 14px; color: #37d39b; display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+.status-dot { width: 9px; height: 9px; border-radius: 50%; background: #37d39b; box-shadow: 0 0 8px rgba(55, 211, 155, .9); animation: pulse 2.4s ease-in-out infinite; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } } /* 唯一柔和呼吸光，无花哨动画 */
+
+/* ---------- 主体三列布局 ---------- */
+.main { flex: 1; display: flex; gap: 14px; margin-top: 12px; min-height: 0; }
+.col { display: flex; flex-direction: column; gap: 14px; min-height: 0; min-width: 0; }
+.col-left  { width: 296px; flex-shrink: 0; }
+.col-mid   { flex: 1; }
+.col-right { width: 512px; flex-shrink: 0; }
+
+/* 面板通用：面板标题 + 内容区 */
+.panel-body { position: absolute; inset: 0; padding: 12px 16px 10px; display: flex; flex-direction: column; }
+.panel-title {
+  flex-shrink: 0; height: 30px; line-height: 30px;
+  font-size: 18px; font-weight: 700; letter-spacing: 2px; color: #cfe0ff;
+  padding-left: 12px; border-left: 3px solid #32d0e8;
+  background: linear-gradient(90deg, rgba(50, 208, 232, .12), rgba(50, 208, 232, 0) 70%);
+}
+.chart-box { flex: 1; min-height: 0; }
+
+/* ---------- 左列：4 个指标卡（金色大数字） ---------- */
+.kpi-card { flex: 1; position: relative; }
+.kpi-inner { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; padding: 0 22px; }
+.kpi-label { font-size: 17px; color: #9db8e8; letter-spacing: 2px; }
+.kpi-num {
+  margin-top: 8px; font-size: 48px; font-weight: 700; line-height: 1.05;
+  color: #ffc837; letter-spacing: 1px;
+  text-shadow: 0 0 16px rgba(255, 200, 55, .4);
+}
+.kpi-num .unit { margin-left: 8px; font-size: 16px; font-weight: 400; color: #7fa8dd; letter-spacing: 0; }
+
+/* ---------- 中列上：集采流程链路（2×4 蛇形：节点列 + 箭头列交替） ---------- */
+.flow-panel { height: 272px; flex-shrink: 0; }
+.flow-grid {
+  position: relative; flex: 1; margin-top: 8px;
+  display: grid; grid-template-columns: 1fr 30px 1fr 30px 1fr 30px 1fr;
+  grid-template-rows: 1fr 1fr; row-gap: 14px;
+}
+.flow-node { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.flow-dot {
+  width: 34px; height: 34px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 16px; font-weight: 700; flex-shrink: 0;
+}
+.flow-name { margin-top: 6px; font-size: 15px; color: #cfe0ff; letter-spacing: 1px; white-space: nowrap; }
+.flow-tag  { margin-top: 2px; font-size: 12px; letter-spacing: 1px; }
+/* 节点三态：done 已完成（青蓝）/ doing 进行中（金色）/ todo 待启动（灰蓝） */
+.flow-node.done .flow-dot { background: rgba(50, 208, 232, .18); border: 1px solid #32d0e8; color: #32d0e8; box-shadow: 0 0 10px rgba(50, 208, 232, .5); }
+.flow-node.done .flow-tag { color: #32d0e8; }
+.flow-node.doing .flow-dot { background: rgba(255, 200, 55, .16); border: 1px solid #ffc837; color: #ffc837; box-shadow: 0 0 10px rgba(255, 200, 55, .55); animation: pulse 2.2s ease-in-out infinite; }
+.flow-node.doing .flow-tag { color: #ffc837; }
+.flow-node.todo .flow-dot { background: rgba(95, 125, 179, .15); border: 1px dashed #5f7db3; color: #7fa8dd; }
+.flow-node.todo .flow-tag { color: #5f7db3; }
+/* 行内箭头分隔符：渐变流光线 + 菱形箭头端点（与节点圆点同高水平对齐） */
+.flow-sep { display: flex; justify-content: center; align-items: flex-start; padding-top: 13px; }
+.flow-sep .line {
+  position: relative; width: 100%; height: 2px; margin-top: 4px;
+  background: linear-gradient(90deg, rgba(50, 208, 232, .15), rgba(50, 208, 232, .75));
+}
+.flow-sep .line::after {
+  content: ''; position: absolute; right: -1px; top: -3px;
+  width: 8px; height: 8px; background: #32d0e8; transform: rotate(45deg);
+  box-shadow: 0 0 6px rgba(50, 208, 232, .8);
+}
+/* 第 2 行蛇形反向：箭头指向左（渐变与端点镜像） */
+.flow-sep.rev .line { background: linear-gradient(270deg, rgba(50, 208, 232, .15), rgba(50, 208, 232, .75)); }
+.flow-sep.rev .line::after { right: auto; left: -1px; transform: rotate(225deg); }
+/* 第 4→5 节点右端竖向折行箭头（位于第 4 列中缝） */
+.flow-turn {
+  position: absolute; right: calc(12.5% - 1px); top: 50%; transform: translateY(-46%);
+  width: 2px; height: 34px;
+  background: linear-gradient(180deg, rgba(50, 208, 232, .75), rgba(50, 208, 232, .15));
+}
+.flow-turn i::after {
+  content: ''; position: absolute; bottom: 0; left: -3px;
+  width: 8px; height: 8px; background: #32d0e8; transform: rotate(135deg);
+  box-shadow: 0 0 6px rgba(50, 208, 232, .8);
+}
+
+/* ---------- 中列下：华北物流地图 ---------- */
+.map-panel { flex: 1; position: relative; }
+
+/* ---------- 右列：3 个图表面板 ---------- */
+.chart-panel { flex: 1; position: relative; }
+
+/* ---------- 底部通栏：预警字幕 + 在途清单 ---------- */
+.bottombar { height: 158px; flex-shrink: 0; margin-top: 12px; display: flex; gap: 14px; }
+.bottombar [class*="dv-border-box"] { flex: 1; position: relative; }
+.alert-panel { max-width: 560px; }
+/* 预警字幕：纵向无缝滚动 */
+.alert-marquee { flex: 1; margin-top: 6px; overflow: hidden; }
+.alert-viewport { height: 100%; overflow: hidden; }
+.alert-track { transition: transform .6s ease; will-change: transform; }
+.alert-item {
+  height: 34px; line-height: 34px; font-size: 15px; letter-spacing: 1px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #cfe0ff;
+}
+.alert-item .tag { margin-right: 8px; }
+/* 预警类型配色：warn 提醒（金）/ danger 严重（红）/ info 提示（青蓝） */
+.alert-item.warn   { color: #ffc837; }
+.alert-item.warn .tag   { color: #ffc837; text-shadow: 0 0 8px rgba(255, 200, 55, .8); }
+.alert-item.danger { color: #ff6b6b; }
+.alert-item.danger .tag { color: #ff6b6b; text-shadow: 0 0 8px rgba(255, 107, 107, .8); }
+.alert-item.info   { color: #32d0e8; }
+.alert-item.info .tag   { color: #32d0e8; text-shadow: 0 0 8px rgba(50, 208, 232, .8); }
+
+/* 在途物资清单（DataV dv-scroll-board，主题色统一） */
+.transit-panel .panel-body { padding-bottom: 6px; }

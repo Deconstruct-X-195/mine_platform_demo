@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>政府铁矿石集采平台 · 4:3 数据可视化大屏</title>
+<!-- DataV 组件样式（本地化依赖，离线可用） -->
+<link rel="stylesheet" href="assets/vendor/datav-vue3.css">
+<link rel="stylesheet" href="css/screen43.css">
+</head>
+<body>
+<!-- 4:3 舞台：1600×1200 设计稿，JS 等比缩放适配任意监控大屏分辨率 -->
+<div id="app">
+  <div id="stage" class="bigscreen">
+
+    <!-- ======== 顶部标题栏：主标题 + 副标题 + 实时时间 + 系统状态 ======== -->
+    <header class="topbar">
+      <!-- 左右对称装饰光带（DataV；注意 in-DOM 模板必须显式闭合，不能用自闭合写法） -->
+      <dv-decoration-8 class="topbar-deco left" :color="['#32d0e8', '#2468bb']" style="width:300px;height:34px"></dv-decoration-8>
+      <dv-decoration-8 class="topbar-deco right" :reverse="true" :color="['#32d0e8', '#2468bb']" style="width:300px;height:34px"></dv-decoration-8>
+
+      <div class="topbar-title-box">
+        <div class="topbar-title">政府铁矿石集采平台</div>
+        <div class="topbar-sub">集采监管 · 供需监控 · 物流溯源 · 风险预警</div>
+      </div>
+
+      <!-- 右上角：实时系统时间 + 系统状态 -->
+      <div class="topbar-status">
+        <div class="datetime">{{ sysTime }}</div>
+        <div class="status-ok"><span class="status-dot"></span>系统状态【运行正常】</div>
+      </div>
+    </header>
+
+    <!-- ======== 主体三列：左指标卡 / 中流程+地图 / 右图表 ======== -->
+    <main class="main">
+
+      <!-- 左列：4 个核心指标卡（DataV 发光边框 + 磨砂玻璃面板） -->
+      <section class="col col-left">
+        <dv-border-box-8 class="kpi-card" :color="['#2468bb', '#32d0e8']" :duration="6">
+          <div class="kpi-inner">
+            <div class="kpi-label">年度撮合集采总量</div>
+            <div class="kpi-num">{{ kpi.yearTotalQty }}<span class="unit">万吨</span></div>
+          </div>
+        </dv-border-box-8>
+        <dv-border-box-8 class="kpi-card" :color="['#2468bb', '#32d0e8']" :duration="6">
+          <div class="kpi-inner">
+            <div class="kpi-label">主流矿成交均价</div>
+            <div class="kpi-num">{{ kpi.avgDealPrice }}<span class="unit">元/湿吨</span></div>
+          </div>
+        </dv-border-box-8>
+        <dv-border-box-8 class="kpi-card" :color="['#2468bb', '#32d0e8']" :duration="6">
+          <div class="kpi-inner">
+            <div class="kpi-label">入库合格供应商</div>
+            <div class="kpi-num">{{ kpi.qualifiedSuppliers }}<span class="unit">家</span></div>
+          </div>
+        </dv-border-box-8>
+        <dv-border-box-8 class="kpi-card" :color="['#2468bb', '#32d0e8']" :duration="6">
+          <div class="kpi-inner">
+            <div class="kpi-label">港口在途货量</div>
+            <div class="kpi-num">{{ kpi.portInTransit }}<span class="unit">万吨</span></div>
+          </div>
+        </dv-border-box-8>
+      </section>
+
+      <!-- 中列：集采流程发光链路（2×4 蛇形） + 华北物流地图 -->
+      <section class="col col-mid">
+        <!-- 铁矿石集采流程链路（8 节点，蛇形 2 行：第 1 行左→右，第 2 行右→左） -->
+        <dv-border-box-13 class="flow-panel" :color="['#2468bb', '#32d0e8']">
+          <div class="panel-body">
+            <div class="panel-title">铁矿石集采流程链路</div>
+            <!-- flowRows 由 app43.js 计算：偶数行为节点、奇数位为箭头分隔符 -->
+            <div class="flow-grid">
+              <template v-for="(row, r) in flowRows" :key="r">
+                <template v-for="(item, c) in row" :key="r + '-' + c">
+                  <div v-if="item && item.name" class="flow-node" :class="item.status">
+                    <div class="flow-dot">{{ item.status === 'done' ? '✓' : (item.status === 'doing' ? '●' : item.seq) }}</div>
+                    <div class="flow-name">{{ item.name }}</div>
+                    <div class="flow-tag">{{ { done: '已完成', doing: '进行中', todo: '待启动' }[item.status] }}</div>
+                  </div>
+                  <!-- 流向箭头：第 1 行向右（→），第 2 行向左（←） -->
+                  <div v-else class="flow-sep" :class="{ rev: r === 1 }"><i class="line"></i></div>
+                </template>
+              </template>
+              <!-- 第 4→5 节点右端竖向折行箭头 -->
+              <div class="flow-turn"><i></i></div>
+            </div>
+          </div>
+        </dv-border-box-13>
+
+        <!-- 华北区域物流地图（ECharts geo + 飞线，黄骅港金色涟漪重点高亮） -->
+        <dv-border-box-13 class="map-panel" :color="['#2468bb', '#32d0e8']">
+          <div class="panel-body">
+            <div class="panel-title">华北区域物流流向地图</div>
+            <div class="map-chart chart-box" ref="mapChart"></div>
+          </div>
+        </dv-border-box-13>
+      </section>
+
+      <!-- 右列：矿价走势折线 / 矿种结构环形图 / 月度成交量柱状图 -->
+      <section class="col col-right">
+        <dv-border-box-13 class="chart-panel" :color="['#2468bb', '#32d0e8']">
+          <div class="panel-body">
+            <div class="panel-title">矿价走势对比（元/湿吨）</div>
+            <div class="chart-box" ref="priceChart"></div>
+          </div>
+        </dv-border-box-13>
+
+        <dv-border-box-13 class="chart-panel" :color="['#2468bb', '#32d0e8']">
+          <div class="panel-body">
+            <div class="panel-title">矿种采购结构占比</div>
+            <div class="chart-box" ref="donutChart"></div>
+          </div>
+        </dv-border-box-13>
+
+        <dv-border-box-13 class="chart-panel" :color="['#2468bb', '#32d0e8']">
+          <div class="panel-body">
+            <div class="panel-title">月度集采成交量（万吨）</div>
+            <div class="chart-box" ref="barChart"></div>
+          </div>
+        </dv-border-box-13>
+      </section>
+    </main>
+
+    <!-- ======== 底部通栏：风险预警滚动字幕 + 在途物资清单 ======== -->
+    <footer class="bottombar">
+      <dv-border-box-13 class="alert-panel" :color="['#2468bb', '#32d0e8']">
+        <div class="panel-body">
+          <div class="panel-title">风险预警播报</div>
+          <!-- 纵向无缝滚动字幕（JS 定时位移，无花哨动画） -->
+          <div class="alert-marquee">
+            <div class="alert-viewport">
+              <div class="alert-track" :style="{ transform: 'translateY(-' + alertOffset * 34 + 'px)' }">
+                <div v-for="(a, i) in doubledAlerts" :key="i" class="alert-item" :class="a.type">
+                  <span class="tag">●</span>{{ a.text }}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </dv-border-box-13>
+
+      <dv-border-box-13 class="transit-panel" :color="['#2468bb', '#32d0e8']">
+        <div class="panel-body">
+          <div class="panel-title">在途物资清单</div>
+          <!-- DataV 滚动看板：行数超出自动无缝滚动 -->
+          <dv-scroll-board
+            :config="transitConfig"
+            style="width:100%;height:118px" />
+        </div>
+      </dv-border-box-13>
+    </footer>
+
+  </div>
+</div>
+
+<!-- 本地化依赖（离线可用，无需 CDN） -->
+<script src="assets/vendor/vue.global.prod.js"></script>
+<script src="assets/vendor/echarts.min.js"></script>
+<script src="assets/vendor/datav-vue3.umd.js"></script>
+
+<!-- 4:3 大屏数据与逻辑（与 21:9 版互相独立，改数据见 js/data43.js） -->
+<script src="js/data43.js"></script>
+<script src="js/app43.js"></script>
+</body>
+</html>
