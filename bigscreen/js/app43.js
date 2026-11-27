@@ -1,15 +1,15 @@
 /* =============================================================================
- * 政府铁矿石集采平台 · 4:3 大屏主逻辑（Vue3 + DataV + ECharts）
+ * 区域大宗矿产集采平台 · 16:9 大屏主逻辑（Vue3 + DataV + ECharts）
  * -----------------------------------------------------------------------------
  * 结构：
- *   1) 4:3 舞台等比缩放适配（设计稿 1600×1200，居中缩放）
+ *   1) 16:9 舞台等比缩放适配（设计稿 1600×900，居中缩放）
  *   2) Vue3 应用（DataV 组件注册 + 顶栏时钟 + 预警字幕滚动 + 在途清单看板）
  *   3) ECharts 四图：华北物流地图 / 矿价走势 / 采购结构 / 月度成交量
  * 数据来源：window.MOCK_DATA_43（js/data43.js，后续替换为后端接口）
  * ========================================================================== */
 
-/* ---------- 1. 4:3 舞台缩放适配（设计稿 1600×1200，居中等比缩放） ---------- */
-const STAGE_W = 1600, STAGE_H = 1200;
+/* ---------- 1. 16:9 舞台缩放适配（设计稿 1600×900，居中等比缩放） ---------- */
+const STAGE_W = 1600, STAGE_H = 900;
 function fitStage() {
   const scale = Math.min(window.innerWidth / STAGE_W, window.innerHeight / STAGE_H);
   const stage = document.getElementById('stage');
@@ -50,7 +50,7 @@ const app = createApp({
       ];
     });
 
-    /* ----- 预警字幕纵向滚动（列表首尾拼接实现无缝循环，行高 34px） ----- */
+    /* ----- 预警字幕纵向滚动（列表首尾拼接实现无缝循环，行高 32px） ----- */
     const alerts = reactive(M.alerts);
     const doubledAlerts = computed(() => alerts.concat(alerts));
     const alertOffset = ref(0);
@@ -64,8 +64,8 @@ const app = createApp({
       headerBGC: 'rgba(36,104,187,.35)',
       oddRowBGC: 'rgba(15,40,80,.25)',
       evenRowBGC: 'rgba(15,40,80,.45)',
-      headerHeight: 34,
-      rowHeight: 28,
+      headerHeight: 30,
+      rowHeight: 24,
       align: ['center', 'center', 'center', 'center', 'center', 'center'],
     });
 
@@ -73,17 +73,25 @@ const app = createApp({
     const mapChart = ref(null), priceChart = ref(null), donutChart = ref(null), barChart = ref(null);
     let charts = [];
 
-    /* ============ 图表 1：华北物流地图（河北+天津 geoJSON + 港口/钢厂 + 飞线） ============ */
+    /* ============ 图表 1：华北物流地图（冀中南+晋+津+鲁 geoJSON + 港口/钢厂 + 飞线） ============ */
     async function renderMap() {
-      // 加载河北 + 天津边界（本地 geoJSON，见 assets/geo/，离线可用），
-      // 合并为一张地图注册，保证两板块同投影无缝拼接
-      const [hebei, tianjin] = await Promise.all([
+      // 加载河北（剔除张家口/承德/唐山/秦皇岛）+ 山西 + 天津 + 山东边界（本地 geoJSON，见 assets/geo/，离线可用），
+      // 合并为一张地图注册，保证各板块同投影无缝拼接
+      const [hebei, shanxi, tianjin, shandong] = await Promise.all([
         fetch('assets/geo/hebei.json').then((r) => r.json()),
+        fetch('assets/geo/shanxi.json').then((r) => r.json()),
         fetch('assets/geo/tianjin.json').then((r) => r.json()),
+        fetch('assets/geo/shandong.json').then((r) => r.json()),
       ]);
-      echarts.registerMap('hebei_tj', {
+      const removed = ['张家口市', '承德市', '唐山市', '秦皇岛市'];
+      echarts.registerMap('hb_sx_tj_sd', {
         type: 'FeatureCollection',
-        features: [...hebei.features, ...tianjin.features],
+        features: [
+          ...hebei.features.filter((f) => !removed.includes(f.properties.name)),
+          ...shanxi.features,
+          ...tianjin.features,
+          ...shandong.features,
+        ],
       });
 
       const nodes = M.mapNodes, lines = M.mapLines;
@@ -102,7 +110,8 @@ const app = createApp({
           },
         },
         geo: {
-          map: 'hebei_tj', roam: false, zoom: 1.12, top: 16, bottom: 6,
+          map: 'hb_sx_tj_sd', roam: false, zoom: 1,
+          left: 40, right: 40, top: 14, bottom: 8, // 左右约束：按需求横向拉伸铺满面板（约 1.3 倍横向拉伸）
           label: { show: true, color: '#5f7db3', fontSize: 13 },
           itemStyle: { areaColor: 'rgba(15,40,80,.75)', borderColor: '#2468bb', borderWidth: 1.2, shadowColor: 'rgba(36,104,187,.6)', shadowBlur: 16 },
           emphasis: { label: { color: '#cfe0ff' }, itemStyle: { areaColor: 'rgba(36,104,187,.75)' } },
@@ -132,25 +141,46 @@ const app = createApp({
       charts.push(chart);
     }
 
-    /* ============ 图表 2：矿价走势折线（PB粉 vs 西芒杜粉） ============ */
-    function renderPrice() {
+    /* ============ 图表 2：矿价走势折线（逐日展示最新一周全部录入数据，与平台录入价联动，定时自动刷新） ============ */
+    async function renderPrice() {
       const chart = echarts.init(priceChart.value);
       chart.setOption({
         color: ['#32d0e8', '#ffc837'],
         tooltip: { trigger: 'axis', backgroundColor: 'rgba(8,22,48,.92)', borderColor: '#2468bb', textStyle: { color: '#d8e6ff', fontSize: 14, fontFamily: 'SimHei' } },
         legend: { top: 0, right: 10, textStyle: { color: '#9db8e8', fontSize: 14 }, itemWidth: 18, itemHeight: 3 },
         grid: { left: 10, right: 18, top: 32, bottom: 4, containLabel: true },
-        xAxis: { type: 'category', boundaryGap: false, data: M.priceTrend.months, axisLine: { lineStyle: { color: '#2468bb' } }, axisLabel: { color: '#9db8e8', fontSize: 12 } },
+        xAxis: { type: 'category', boundaryGap: false, data: [], axisLine: { lineStyle: { color: '#2468bb' } }, axisLabel: { color: '#9db8e8', fontSize: 12 } },
         yAxis: { type: 'value', min: 'dataMin', max: 'dataMax', splitLine: { lineStyle: { color: 'rgba(36,104,187,.25)' } }, axisLabel: { color: '#9db8e8', fontSize: 12 } },
         series: [
-          { name: 'PB粉', type: 'line', smooth: true, symbol: 'circle', symbolSize: 5, data: M.priceTrend.pb,
+          { name: 'PB粉', type: 'line', smooth: true, symbol: 'circle', symbolSize: 5, data: [],
             lineStyle: { width: 2.5, shadowColor: 'rgba(50,208,232,.6)', shadowBlur: 8 }, areaStyle: { color: 'rgba(50,208,232,.12)' } },
-          { name: '西芒杜粉', type: 'line', smooth: true, symbol: 'circle', symbolSize: 5, data: M.priceTrend.simandou,
+          { name: '中华混一号', type: 'line', smooth: true, symbol: 'circle', symbolSize: 5, data: [],
             lineStyle: { width: 2.5, type: 'dashed', shadowColor: 'rgba(255,200,55,.5)', shadowBlur: 8 } },
         ],
         animationDuration: 1200, animationEasing: 'cubicOut',
       });
       charts.push(chart);
+
+      /* 拉取最新一周（近 7 日）录入价格逐日聚合（公开接口 /base-prices/bigscreen-trend），
+       * 失败时退回本地演示数据（data43.js priceTrend，同为按日口径） */
+      async function refresh() {
+        let data = null;
+        try {
+          const r = await fetch('/api/v1/base-prices/bigscreen-trend');
+          const j = await r.json();
+          if (j && j.code === 0 && j.data && j.data.days && j.data.days.length) data = j.data;
+        } catch (e) { /* 后端不可用 → 本地演示数据兜底 */ }
+        if (!data) data = { days: M.priceTrend.days, pb: M.priceTrend.pb, chinaBlend: M.priceTrend.chinaBlend };
+        chart.setOption({
+          xAxis: { data: data.days },
+          series: [
+            { name: 'PB粉', data: data.pb },
+            { name: '中华混一号', data: data.chinaBlend },
+          ],
+        });
+      }
+      await refresh();
+      setInterval(refresh, 30 * 1000); // 每 30 秒自动刷新，随平台录入价联动更新
     }
 
     /* ============ 图表 3：矿种采购结构占比（环形图） ============ */
@@ -205,7 +235,7 @@ const app = createApp({
       tickClock();
       clockTimer = setInterval(tickClock, 1000);
       window.addEventListener('keydown', onKeydown);
-      /* 预警字幕：每 3 秒滚动一行（行高 34px，首尾拼接无缝循环） */
+      /* 预警字幕：每 3 秒滚动一行（行高 32px，首尾拼接无缝循环） */
       alertTimer = setInterval(() => {
         alertOffset.value += 1;
         if (alertOffset.value >= alerts.length) setTimeout(() => { alertOffset.value = 0; }, 700);

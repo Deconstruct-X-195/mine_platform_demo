@@ -54,7 +54,8 @@
             UI.h('div', { class: 'flow-name' }, s.label)),
         ]).flat())));
 
-    /* 3. 待办事项列表（与供应商端一致）：需求待提交/重提 · 询价待评审/议价中 · 到货待签收 */
+    /* 3. 待办事项列表（与小铃铛任务页签同口径）：采购计划待提交/重提 · 询价待评审/议价中 ·
+       订单待确认 · 合同待签署 · 结算单待确认 · 到货待签收 */
     const todos = d.todos || [];
     page.appendChild(UI.h('div', { class: 'card' },
       UI.h('h3', { class: 'bar-title' }, '待办事项',
@@ -75,9 +76,15 @@
   /* 钢厂端待办：类型标签与跳转菜单 */
   const STEEL_TODO_TAG = {
     DEMAND: ['待提交', ' orange'], REVIEW: ['待评审', ' red'],
-    BARGAIN: ['议价中', ' blue'], ARRIVED: ['待签收', ' blue'],
+    BARGAIN: ['议价中', ' blue'], CONFIRM: ['待确认', ' red'],
+    CONTRACT: ['待签署', ' blue'], SETTLE: ['待确认', ' orange'],
+    ARRIVED: ['待签收', ' blue'],
   };
-  const STEEL_TODO_HASH = { DEMAND: '#/demand', REVIEW: '#/bargain', BARGAIN: '#/bargain', ARRIVED: '#/track' };
+  const STEEL_TODO_HASH = {
+    DEMAND: '#/demand', REVIEW: '#/bargain', BARGAIN: '#/bargain',
+    CONFIRM: '#/order', CONTRACT: '#/contract', SETTLE: '#/settlement',
+    ARRIVED: '#/track',
+  };
 
   /* 供应商端总览：KPI 五卡 + 待办事项列表 + 近期动态 */
   const SUP_TODO_TAG = { QUOTE: ['待报价', ' orange'], CONFIRM: ['待确认', ' red'] };

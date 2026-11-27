@@ -254,23 +254,60 @@ def list_todos():
             add('WAYBILL', r['id'], '运单待指派承运商：' + r['t'], r['created_at'], '#/logistics-dispatch')
     elif cid:
         if 'STEEL_BUYER' in roles:
+            # 采购计划待提交/重提（需求 DRAFT/WITHDRAWN）
             for r in qall(g.conn, """
-                    SELECT id, order_no AS t, created_at FROM biz_order
-                    WHERE buyer_id=%s AND status='PENDING_CONFIRM' AND is_deleted=0
-                    ORDER BY id DESC LIMIT 20""", (cid,)):
-                add('ORDER', r['id'], '订单待确认：' + r['t'], r['created_at'], '#/order')
+                    SELECT id, demand_no AS t, status, updated_at FROM biz_demand
+                    WHERE company_id=%s AND is_deleted=0 AND status IN ('DRAFT','WITHDRAWN')
+                    ORDER BY updated_at DESC LIMIT 20""", (cid,)):
+                add('DEMAND', r['id'], '需求 %s 待%s' % (r['t'], '提交' if r['status'] == 'DRAFT' else '重提（已撤回）'),
+                    r['updated_at'], '#/demand')
+            # 报价汇总推送（平台归集询价，buyer_id 为空按归集成员匹配，与询价列表同口径）：已揭示待评审
             for r in qall(g.conn, """
-                    SELECT c.id, c.contract_no AS t, c.created_at FROM biz_contract c
+                    SELECT i.id, i.inquiry_no AS t, i.updated_at FROM biz_inquiry i
+                    WHERE i.is_deleted=0 AND i.status='CLOSED' AND (i.buyer_id=%s OR (i.agg_id IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM biz_aggregated_order_item m
+                        JOIN biz_demand d ON d.id=m.demand_id
+                        WHERE m.agg_id=i.agg_id AND m.is_deleted=0 AND d.is_deleted=0 AND d.company_id=%s)))
+                    ORDER BY i.updated_at DESC LIMIT 20""", (cid, cid)):
+                add('INQUIRY', r['id'], '询价单 %s 已揭示待评审' % r['t'], r['updated_at'], '#/inquiry')
+            for r in qall(g.conn, """
+                    SELECT i.id, i.inquiry_no AS t, i.updated_at FROM biz_inquiry i
+                    WHERE i.is_deleted=0 AND i.status='BARGAINING' AND (i.buyer_id=%s OR (i.agg_id IS NOT NULL AND EXISTS (
+                        SELECT 1 FROM biz_aggregated_order_item m
+                        JOIN biz_demand d ON d.id=m.demand_id
+                        WHERE m.agg_id=i.agg_id AND m.is_deleted=0 AND d.is_deleted=0 AND d.company_id=%s)))
+                    ORDER BY i.updated_at DESC LIMIT 20""", (cid, cid)):
+                add('INQUIRY', r['id'], '询价单 %s 议价中待处理' % r['t'], r['updated_at'], '#/inquiry')
+            # 订单待确认：需方或集采成员（归集订单 buyer_id 为空），且本钢厂尚未确认
+            for r in qall(g.conn, """
+                    SELECT o.id, o.order_no AS t, o.updated_at FROM biz_order o
+                    WHERE o.is_deleted=0 AND o.status='PENDING_CONFIRM' AND (o.buyer_id=%s OR EXISTS (
+                        SELECT 1 FROM biz_order_member m WHERE m.order_id=o.id AND m.company_id=%s AND m.is_deleted=0))
+                      AND NOT EXISTS (SELECT 1 FROM biz_order_member m2
+                        WHERE m2.order_id=o.id AND m2.company_id=%s AND m2.is_deleted=0 AND m2.buyer_confirm_at IS NOT NULL)
+                    ORDER BY o.updated_at DESC LIMIT 20""", (cid, cid, cid)):
+                add('ORDER', r['id'], '订单待确认：' + r['t'], r['updated_at'], '#/order')
+            for r in qall(g.conn, """
+                    SELECT c.id, c.contract_no AS t, c.updated_at FROM biz_contract c
                     JOIN biz_order o ON o.id=c.order_id
-                    WHERE o.buyer_id=%s AND c.status='PENDING_BUYER' AND c.is_deleted=0
-                    ORDER BY c.id DESC LIMIT 20""", (cid,)):
-                add('CONTRACT', r['id'], '合同待签署（需方）：' + r['t'], r['created_at'], '#/contract')
+                    WHERE c.is_deleted=0 AND c.status='PENDING_BUYER' AND (o.buyer_id=%s OR EXISTS (
+                        SELECT 1 FROM biz_order_member m WHERE m.order_id=o.id AND m.company_id=%s AND m.is_deleted=0))
+                    ORDER BY c.updated_at DESC LIMIT 20""", (cid, cid)):
+                add('CONTRACT', r['id'], '合同待签署（需方）：' + r['t'], r['updated_at'], '#/contract')
             for r in qall(g.conn, """
-                    SELECT s.id, s.settle_no AS t, s.created_at FROM biz_settlement s
+                    SELECT s.id, s.settle_no AS t, s.updated_at FROM biz_settlement s
                     JOIN biz_order o ON o.id=s.order_id
-                    WHERE o.buyer_id=%s AND s.status='PENDING_CONFIRM_BUYER' AND s.is_deleted=0
-                    ORDER BY s.id DESC LIMIT 20""", (cid,)):
-                add('SETTLEMENT', r['id'], '结算单待确认：' + r['t'], r['created_at'], '#/settlement')
+                    WHERE s.is_deleted=0 AND s.status='PENDING_CONFIRM_BUYER' AND (o.buyer_id=%s OR EXISTS (
+                        SELECT 1 FROM biz_order_member m WHERE m.order_id=o.id AND m.company_id=%s AND m.is_deleted=0))
+                    ORDER BY s.updated_at DESC LIMIT 20""", (cid, cid)):
+                add('SETTLEMENT', r['id'], '结算单待确认：' + r['t'], r['updated_at'], '#/settlement')
+            for r in qall(g.conn, """
+                    SELECT w.id, w.waybill_no AS t, w.updated_at FROM biz_waybill w
+                    JOIN biz_order o ON o.id=w.order_id
+                    WHERE w.is_deleted=0 AND w.status='ARRIVED' AND (o.buyer_id=%s OR EXISTS (
+                        SELECT 1 FROM biz_order_member m WHERE m.order_id=o.id AND m.company_id=%s AND m.is_deleted=0))
+                    ORDER BY w.updated_at DESC LIMIT 20""", (cid, cid)):
+                add('WAYBILL', r['id'], '运单 %s 已到货待签收' % r['t'], r['updated_at'], '#/track')
         if 'SUPPLIER' in roles:
             for r in qall(g.conn, """
                     SELECT i.id, i.inquiry_no AS t, i.created_at FROM biz_inquiry_invite inv

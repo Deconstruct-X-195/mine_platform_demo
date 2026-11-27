@@ -129,8 +129,10 @@
       UI.h('div', { class: 'main' },
         UI.h('div', { class: 'topbar' },
           UI.h('div', { class: 'page-title', id: 'page-title' }, ''),
-          UI.h('button', { class: 'sm bigscreen-btn', id: 'bigscreen-btn', title: '在新窗口打开政务大屏',
-            style: 'display:none', onclick: () => window.open('/bigscreen/', '_blank') }, '政务大屏'),
+          UI.h('button', { class: 'sm bigscreen-btn', id: 'bigscreen-btn', title: '打开政务大屏',
+            style: 'display:none',
+            /* 同窗跳转：预览面板/嵌入环境对 window.open 新标签不可靠，浏览器返回键可回平台 */
+            onclick: () => { location.href = '/bigscreen/'; } }, '政务大屏'),
           bell,
           UI.h('div', { class: 'user-box' },
             UI.h('b', {}, user.realName || user.username),
