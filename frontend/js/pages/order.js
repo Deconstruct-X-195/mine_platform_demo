@@ -47,9 +47,12 @@
     listCard.appendChild(listBox);    // 定高列表区：纵向超出滚动，横向滚动条固定在分页行上方
     listCard.appendChild(pagerBox);   // 分页条固定在面板右下角
 
+    let loadSeq = 0;   // P2-4：竞态守卫（同 demand.js）——翻页/连续操作时旧响应不得覆盖新视图
     async function load() {
+      const seq = ++loadSeq;
       const d = await API.get('/orders' + API.qs({ page: pageNo, size: SIZE }));
       const spotMap = await UI.spotPrices();   // 报价模式单价：品种→港口现货价
+      if (seq !== loadSeq) return;             // 已有更新的请求，丢弃过期响应
       pageRows = d.list || [];
       pageRows.forEach((r) => rowCache.set(r.id, r));
       listBox.innerHTML = '';

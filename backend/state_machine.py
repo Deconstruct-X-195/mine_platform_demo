@@ -161,8 +161,11 @@ def transition(conn, ctx, table, entity_label, biz_type, biz_id, to_status, extr
     if extra_sql:
         sql += ', ' + extra_sql
     sql += ' WHERE %s=%%s' % id_col
-    execute(conn, sql, args + [biz_id])
+    # P1-2 修复（审计原子化）：先写操作日志、后改状态，二者同处调用方事务——
+    # 任意一步失败整体回滚，杜绝提交出"状态已变、无留痕"的半提交
+    # （原顺序先 UPDATE 后 op_log，op_log 失败时状态变更已入事务）。
     op_log(conn, ctx, table, biz_id, 'STATUS %s->%s' % (frm, to_status), {'status': frm}, {'status': to_status})
+    execute(conn, sql, args + [biz_id])
     if node_biz_type and node_code:
         add_node(conn, ctx, node_biz_type, node_biz_id if node_biz_id is not None else biz_id,
                  node_code, occur=None, remark=to_status)

@@ -51,13 +51,17 @@
           return UI.h('span', { class: 'inline-flex' },
             UI.h('button', { class: 'sm success', onclick: async () => {
               if (!(await UI.confirmBox('确认接受该轮还价？其余在途轮次将自动失效。'))) return;
-              await API.put('/bargains/' + r.id + '/accept');
-              UI.toast('已接受', 'ok'); onChanged();
+              try {                                             // P2-5：失败时 API 层已提示，避免未处理 Promise 拒绝
+                await API.put('/bargains/' + r.id + '/accept');
+                UI.toast('已接受', 'ok'); onChanged();
+              } catch (e) { /* 提示由 API 层统一处理 */ }
             } }, '接受'),
             UI.h('button', { class: 'sm danger', onclick: async () => {
               if (!(await UI.confirmBox('确认拒绝该轮还价？'))) return;
-              await API.put('/bargains/' + r.id + '/reject');
-              UI.toast('已拒绝', 'ok'); onChanged();
+              try {
+                await API.put('/bargains/' + r.id + '/reject');
+                UI.toast('已拒绝', 'ok'); onChanged();
+              } catch (e) { /* 提示由 API 层统一处理 */ }
             } }, '拒绝'));
         } },
       ], list));
@@ -491,6 +495,8 @@
       /* 采购需求细节（技术参数/质量要求/溢短装），取询价详情补充 */
       const det = await API.get('/inquiries/' + r.id).catch(() => null);
       const reqInfo = (det && det.requirement) || {};
+      /* 历史轮次单价按报价模式展示：取询价单品种港口现货价为基准（与 sDetail 同口径） */
+      const spotBase = (await UI.spotPrices())[(det && det.varietyName) || r.varietyName] ?? null;
       /* —— 上半：采购需求信息（只读，供应商不可修改） —— */
       const demandInfo = UI.kv([
         ['询价编号', r.inquiryNo],

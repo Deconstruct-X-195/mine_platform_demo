@@ -5,15 +5,17 @@
 window.UI 上、未在 IIFE 内定义局部绑定，导致履约跟踪页渲染时间轴时抛
 “fmtDateTime is not defined”，页面整体显示“页面加载失败”。
 
-回归断言（三层）：
-- T1 单元级：浏览器内直接执行 UI.timeline(...)，断言时间项 .t-time 正确格式化
+回归断言：
+- T0 单元级：浏览器内直接执行 UI.timeline(...)，断言时间项 .t-time 正确格式化
   （直接回归 BUG 根因，不依赖业务数据）。
-- T2 页面级：钢厂（普阳）进入履约跟踪页，断言无“页面加载失败”，
-  有订单时时间轴正常渲染且节点时间已格式化。
-- T3 页面级：承运商进入履约跟踪页（复现截图账号场景），同样断言。
-- T4 console：无 fmtDateTime 相关 SEVERE 错误。
+- T1 页面级：钢厂进入履约跟踪页。页面已改版为「五阶段进度 + 全链信息表」
+  （时间轴台账/运单筛选已下线），断言五阶段渲染、时间无 NaN/undefined/Invalid、
+  全链信息表有行。
+- T2 承运商禁登录校验：承运商端已下线（后端拒绝承运商角色登录），
+  断言登录被拒且停留在登录页。
+- T3 console：无 fmtDateTime 相关 SEVERE 错误。
 
-运行前置：Flask 运行于 127.0.0.1:8000。
+运行前置：Flask 运行于 127.0.0.1:8000（MINE_BASE 可覆盖，浏览器地址复用 ui_e2e.APP）。
 运行：python tests/ui_track_regression.py
 """
 import json
@@ -24,12 +26,12 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from ui_e2e import (  # noqa: E402  复用 UI 检测封装
-    BUYER, RESULTS, SHOTS, drv, goto, login, logout, q_css, q_text, rec, step,
+    BUYER, RESULTS, SHOTS, drv, goto, login, logout, q_css, q_ph, q_text, rec, step,
     _vis,
 )
 from selenium.webdriver.common.by import By  # noqa: E402
 
-CARRIER = ('13900000003', 'demo123456')  # 承运商（截图账号场景）
+CARRIER = ('13900000003', 'demo123456')  # 承运商（截图账号场景，登录已被平台拒绝）
 
 
 def _page_broken(d):
@@ -61,30 +63,35 @@ def _goto_track(d, tries=4):
 
 
 def _assert_track_page(d):
-    """履约跟踪页通用断言：无加载失败；有订单时时间轴渲染且时间已格式化。"""
+    """履约跟踪页通用断言（改版后：五阶段进度 + 全链信息表）：
+    无加载失败；五阶段渲染；时间无 NaN/undefined/Invalid（fmtDateTime 回归）；
+    全链信息表有行（有则统计）。"""
     assert _goto_track(d), '未能进入履约跟踪页'
     assert not _page_broken(d), '页面加载失败仍出现'
     kind = _wait_track_content(d, timeout=10)
-    assert kind, '时间轴未渲染（既无选择器也无空态）'
+    assert kind, '跟踪页未渲染（既无选择器也无空态）'
     if kind == 'empty':
         return '无订单（空态正常）'
-    assert wait_timeline(d), '时间轴未渲染'
-    times = [t.text for t in d.find_elements(By.CSS_SELECTOR, '.timeline .t-time') if _vis(t)]
-    if times:
-        # fmtDateTime 正常输出应为 “YYYY-MM-DD HH:MM” 或 '-'
-        bad = [t for t in times if t not in ('-',) and len(t) < 10]
-        assert not bad, '时间未格式化: %s' % bad[:3]
-    return '时间轴节点时间 %d 项' % len(times)
-
-
-def wait_timeline(d, timeout=10):
-    end = time.time() + timeout
+    # 五阶段进度：.flow-steps 内至少 1 个 .flow-step
+    end = time.time() + 10
+    steps = []
     while time.time() < end:
-        if d.find_elements(By.CSS_SELECTOR, '.timeline') or \
-           [e for e in d.find_elements(By.XPATH, "//div[contains(@class,'empty')][contains(.,'暂无节点记录')]") if _vis(e)]:
-            return True
+        steps = [s for s in d.find_elements(By.CSS_SELECTOR, '.flow-steps .flow-step') if _vis(s)]
+        if steps:
+            break
         time.sleep(0.3)
-    return False
+    assert steps, '五阶段进度未渲染'
+    # fmtDateTime 回归：阶段时间不得出现 NaN/undefined/Invalid
+    times = [t.text for t in d.find_elements(By.CSS_SELECTOR, '.flow-time') if _vis(t)]
+    bad = [t for t in times if 'NaN' in t or 'undefined' in t or 'Invalid' in t]
+    assert not bad, '时间未格式化: %s' % bad[:3]
+    # 全链信息表（钢厂端）：有则统计行数
+    info = [e for e in d.find_elements(By.XPATH, "//h3[contains(.,'全链信息')]") if _vis(e)]
+    if not info:
+        return '五阶段 %d 段' % len(steps)
+    rows = [r for r in d.find_elements(By.CSS_SELECTOR, '#page table tbody tr') if _vis(r)]
+    assert rows, '全链信息表无行'
+    return '五阶段 %d 段 + 全链信息 %d 行' % (len(steps), len(rows))
 
 
 def run(d):
@@ -98,7 +105,7 @@ def run(d):
         assert val == '2026-11-08 10:30', 'UI.timeline 时间格式化异常: %r' % val
     step(d, 'T0 UI.timeline 单元回归（fmtDateTime 格式化）', t0, 'track-01-单元回归')
 
-    # T1 页面级：钢厂履约跟踪
+    # T1 页面级：钢厂履约跟踪（五阶段进度 + 全链信息表）
     def t1():
         goto(d, 'track')
         detail = _assert_track_page(d)
@@ -107,12 +114,12 @@ def run(d):
 
     logout(d)
 
-    # T2 页面级：承运商履约跟踪（截图账号场景）
+    # T2 承运商禁登录校验（承运商端已下线：登录被拒并停留在登录页）
     def t2():
         login(d, *CARRIER)
-        detail = _assert_track_page(d)
-        print('    承运商视角:', detail)
-    step(d, 'T2 承运商履约跟踪页渲染', t2, 'track-03-承运商履约跟踪')
+        assert not [e for e in d.find_elements(By.CSS_SELECTOR, '.layout') if _vis(e)], '承运商不应进入主布局'
+        assert q_ph(d, '手机号', timeout=4), '未停留在登录页'
+    step(d, 'T2 承运商禁登录校验', t2, 'track-03-承运商禁登录')
 
     # T3 console 无 fmtDateTime 相关 SEVERE
     def t3():

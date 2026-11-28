@@ -650,15 +650,26 @@ def reveal_inquiry(conn, iid, ctx):
     if not row:
         raise ApiError(40401, '询价单不存在')
     if row['status'] in ('CLOSED', 'BARGAINING', 'AWARDED', 'FAILED'):
-        snap = json.loads(row['reveal_snapshot']) if row['reveal_snapshot'] else None
-        # 旧快照无港口字段：从报价表回填（比价表「港口」列）
-        if snap and snap.get('rows') and any('deliveryPlace' not in r for r in snap['rows']):
-            qmap = {q['id']: q['delivery_place'] for q in qall(conn, """
-                SELECT id, delivery_place FROM biz_quote WHERE inquiry_id=%s AND is_deleted=0
-                """, (iid,))}
-            for r in snap['rows']:
-                r.setdefault('deliveryPlace', qmap.get(r.get('quoteId')))
-        return snap
+        snap = None
+        if row['reveal_snapshot']:
+            try:
+                snap = json.loads(row['reveal_snapshot'])
+            except Exception:
+                snap = None  # P3-8：快照文本损坏按缺失处理，不再向上抛裸异常
+        if snap:
+            # 旧快照无港口字段：从报价表回填（比价表「港口」列）
+            if snap.get('rows') and any('deliveryPlace' not in r for r in snap['rows']):
+                qmap = {q['id']: q['delivery_place'] for q in qall(conn, """
+                    SELECT id, delivery_place FROM biz_quote WHERE inquiry_id=%s AND is_deleted=0
+                    """, (iid,))}
+                for r in snap['rows']:
+                    r.setdefault('deliveryPlace', qmap.get(r.get('quoteId')))
+            return snap
+        if row['status'] != 'CLOSED':
+            # 已流转至议价/定标/失败但快照缺失：无法凭空重建，明确报错而非 500
+            raise ApiError(40901, '比价快照缺失，请联系运营处理')
+        # P3-8：CLOSED 但快照缺失（历史半提交/异常数据）——向下补建快照并落库；
+        # 下方 transition 仅对 SENT/QUOTING 生效，CLOSED 不会重复流转
     if row['status'] == 'DRAFT':
         raise ApiError(40901, '询价尚未发出，无报价可揭示')
 

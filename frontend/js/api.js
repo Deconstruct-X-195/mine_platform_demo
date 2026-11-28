@@ -36,7 +36,8 @@
       err.http = resp.status;
       throw err;
     }
-    return data ? data.data : null;
+    // P3-14：空响应体/无 data 字段时统一返回 null，调用方 d.list 等取值不至 TypeError
+    return (data && data.data !== undefined) ? data.data : null;
   }
 
   function clearAuth() {

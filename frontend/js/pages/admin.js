@@ -547,10 +547,12 @@
       UI.exportPreview({
         title: '导出预览 — 价格数据',
         filename: '价格数据_' + todayStr.replace(/-/g, '') + '.csv',
-        head: ['产品名称', '品位', '港口', '行业价格(元/湿吨)', '计价口径', '价格日期', '来源', '涨跌'],
+        head: ['产品名称', '品位', '港口', '行业价格(元/湿吨)', '交易价格(元/湿吨)', '计价口径', '价格日期', '来源', '涨跌'],
         rows: chosen.map((r) => [
           r.varietyName, gradeTxt(gradeOf(r)), r.portName || r.port || '-',
-          Number(r.price).toFixed(2), r.priceBasis === 'DRY' ? '干基' : '湿基',
+          Number(r.price).toFixed(2),
+          r.dealPrice != null ? Number(r.dealPrice).toFixed(2) : '',   // P3-12：补齐基准价明细新列
+          r.priceBasis === 'DRY' ? '干基' : '湿基',
           String(r.priceDate).slice(0, 10), 'Mysteel',
           r.chg == null ? '' : (r.chg > 0 ? '+' : '') + Number(r.chg).toFixed(2),
         ]),
@@ -677,6 +679,9 @@
         f[key] = UI.input((props && props.type) || 'text', '', Object.assign({ placeholder: label }, props || {}));
         return UI.formRow(label, f[key], false); // 与注册页同结构，但无必填星号
       };
+      /* P3-13：经营范围 textarea 保存节点引用，提交时直接读 .value——
+         原实现依赖 onchange 把字符串写回 f.businessScope，未触发 change 事件时输入丢失 */
+      const bizScopeInp = UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '选填，如：铁矿石进口、销售' });
 
       /* 企业角色：radio 严格单选（同注册页交互），可全不选 */
       const TYPES = [['STEEL_BUYER', '钢铁企业（需方）'], ['SUPPLIER', '供应商（供方）']];
@@ -742,7 +747,7 @@
           field('address', '注册地址', { placeholder: '请输入注册详细地址' }),
           UI.h('div', { class: 'form-row full' },
             UI.h('label', {}, '经营范围'),
-            UI.h('textarea', { rows: 2, style: 'width:100%', placeholder: '选填，如：铁矿石进口、销售', onchange: (e) => { f.businessScope = e.target.value; } }))),
+            bizScopeInp)),
         UI.h('div', { class: 'sec' }, '联系信息'),
         UI.h('div', { class: 'form-grid' },
           field('contactName', '联系人', { placeholder: '请输入联系人姓名' }),
@@ -770,7 +775,7 @@
             contactName: f.contactName.value.trim(),
             contactPhone: f.contactPhone.value.trim(),
             contactEmail: f.contactEmail.value.trim(),
-            businessScope: f.businessScope || '',
+            businessScope: bizScopeInp.value.trim(),
             username: f.username.value.trim(),
             password: f.password.value,
           };
@@ -2221,6 +2226,7 @@
         desc: {
           DRAFT: '询价单尚未发出，仅创建方可见',
           SENT: '询价已发送给受邀供应商，等待供应商报价',
+          AGGREGATED: '需求已归集为集采询价（多条同类需求合并），等待供应商报价',
           QUOTING: '已有供应商提交报价，持续接收报价中',
           CLOSED: '询价已截止，进入比价、议价与定标环节',
           BARGAINING: '正与供应商就价格与条款磋商',

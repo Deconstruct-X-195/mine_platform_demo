@@ -10,7 +10,7 @@ import uuid
 from datetime import date, datetime
 from decimal import Decimal
 
-from flask import jsonify, request
+from flask import has_request_context, jsonify, request
 
 from .db import q1
 
@@ -75,6 +75,8 @@ def page_args(params):
         page = max(1, int(params.get('page', 1)))
     except (TypeError, ValueError):
         page = 1
+    # P3-2：页码上限 10000，防恶意深分页引发全量扫描（size 上限 100，PRD 6.1）
+    page = min(page, 10000)
     try:
         size = int(params.get('size', 10))
     except (TypeError, ValueError):
@@ -88,11 +90,36 @@ def page_data(rows, total, page, size):
 
 
 def client_ip():
-    return request.headers.get('X-Forwarded-For', request.remote_addr or '') or ''
+    """客户端 IP（审计留痕用）。
+
+    P0-0 修复：无请求上下文（后台线程/定时任务经 op_log 调用）时返回 'SYSTEM'。
+    原实现对 flask.request 裸访问，jobs 线程一进 op_log 即抛 RuntimeError，
+    导致"状态已变、审计缺失"的半提交被固化。
+    P3-1 加固：X-Forwarded-For 取首个有效地址（多级代理逗号串不再整段入库）。
+    注意该头可伪造，可信度取决于前置代理是否重写，仅作审计佐证。
+    """
+    if not has_request_context():
+        return 'SYSTEM'
+    xff = (request.headers.get('X-Forwarded-For') or '').strip()
+    if xff:
+        first = xff.split(',')[0].strip()[:64]
+        if first and IP_TOKEN_RE.match(first):
+            return first
+    return request.remote_addr or ''
+
+
+# X-Forwarded-For 首段合法性：IPv4/IPv6 常见字符（防脏数据原样入库）
+IP_TOKEN_RE = re.compile(r'^[0-9A-Fa-f.:]+$')
 
 
 def doc_no(conn, prefix):
-    """单据编号：前缀-YYYYMMDD-4位流水（按日重置；作废不复用——序列只增不减）。"""
+    """单据编号：前缀-YYYYMMDD-4位流水（按日重置；作废不复用——序列只增不减）。
+
+    P2-3 说明（性能热点）：计数行锁自 UPDATE 起持有至事务提交，所有写单据请求
+    在该行串行。实测审计冒烟 QPS 283.9 / p95 139ms 尚未触及瓶颈；改为独立短事务
+    发号需从连接池借第二个连接，池耗尽时有级联等待风险，维持现状并在此记录。
+    业务量增长（>1000 单/日写入）时再评估块分配方案。
+    """
     today = datetime.now().strftime('%Y%m%d')
     row = q1(
         conn,
@@ -126,10 +153,22 @@ def op_log(conn, ctx, biz_type, biz_id, action, before=None, after=None):
 
 
 def _dump(v):
+    """审计 before/after 序列化。
+
+    P3-4 加固：json_payload 之外的不可序列化结构（自定义对象/二进制等）此前会
+    抛 TypeError 使整条审计失败（连带触发 P1-2 链）；现 default=str 兜底 +
+    外层 try 保证审计留痕永不因序列化失败而中断。
+    """
     import json
     if v is None:
         return None
-    return json.dumps(json_payload(v), ensure_ascii=False)
+    try:
+        return json.dumps(json_payload(v), ensure_ascii=False, default=str)
+    except Exception:
+        try:
+            return json.dumps({'_repr': repr(v)}, ensure_ascii=False)
+        except Exception:
+            return repr(v)
 
 
 def send_msg(conn, receiver_company_id, title, content, biz_type=None, biz_id=None,
@@ -199,7 +238,9 @@ def decimal_field(params, name, positive=True, required=True):
         d = Decimal(str(v))
     except Exception:
         raise ApiError(40001, '参数格式错误：%s' % name)
-    if required and positive and d <= 0:
+    # P3-3：正数校验不再受 required 影响——可选数字字段一旦传值同样拒绝 0/负
+    # （如 settlement.settleQty 选填传 0 绕过校验）；允许 0 的字段用 positive=False 显式声明
+    if positive and d <= 0:
         raise ApiError(40001, '%s 必须大于0' % name)
     return d
 

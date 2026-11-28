@@ -120,7 +120,8 @@ def port_prices():
         SELECT p.id, p.variety_id AS "varietyId", v.variety_name AS "varietyName",
                p.port_name AS "portName", p.price_date AS "priceDate", p.price,
                p.deal_price AS "dealPrice",
-               COALESCE(p.grade, 61.5) AS "grade"
+               COALESCE(p.grade, 61.5) AS "grade",
+               'WET' AS "priceBasis"
         FROM base_port_price p JOIN base_variety v ON v.id=p.variety_id
         WHERE p.is_deleted=0
     """
@@ -172,7 +173,9 @@ def save_port_price():
             raise ApiError(40001, '交易价格必须是数字')
         if deal_price <= 0:
             raise ApiError(40001, '交易价格必须大于0')
-    # 同键（品种×港口×日期×品位）已有记录：不覆盖原记录，直接新增一条（前端按 duplicated 提醒）
+    # 同键（品种×港口×日期×品位）已有记录：不覆盖原记录，直接新增一条（前端按 duplicated 提醒）。
+    # P3-9 说明：检查与插入非原子——并发同键录入极端下 duplicated 标记可能漏报，
+    # 但业务上同键多条记录本就允许并存（2026-11-24 设计变更），标记仅为提示，风险受控。
     dup = q1(g.conn, """
         SELECT price FROM base_port_price
         WHERE variety_id=%s AND port_name=%s AND price_date=%s AND grade=%s AND is_deleted=0
@@ -256,9 +259,14 @@ def batch_remove_port_prices():
     except (TypeError, ValueError):
         raise ApiError(40001, 'ids 必须为整数数组')
     n = 0
+    deleted = []
     for pid in ids:
-        n += execute(g.conn, "UPDATE base_port_price SET is_deleted=1 WHERE id=%s AND is_deleted=0", (pid,)) or 0
-    op_log(g.conn, g.ctx, 'base_port_price', 0, 'BATCH_DELETE', None, {'count': n, 'ids': ids})
+        if execute(g.conn, "UPDATE base_port_price SET is_deleted=1 WHERE id=%s AND is_deleted=0", (pid,)):
+            n += 1
+            deleted.append(pid)
+    # P3-9 修复：逐条留痕（原 biz_id=0 无法定位具体记录）；被删除的 id 才写审计
+    for pid in deleted:
+        op_log(g.conn, g.ctx, 'base_port_price', pid, 'BATCH_DELETE', None, {'batch': ids})
     return ok({'deleted': n})
 
 

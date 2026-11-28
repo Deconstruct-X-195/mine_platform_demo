@@ -61,6 +61,9 @@ const app = createApp({
     /* ----- ECharts 实例句柄（resize 统一回收） ----- */
     const mapChart = ref(null), priceChart = ref(null), donutChart = ref(null), barChart = ref(null);
     let charts = [];
+    let onResize = null;
+    /* P3-16：tooltip 文案转义，防 HTML 注入（节点文案当前为本地静态数据，转义兜底） */
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
     /* ============ 图表 1：华北物流地图（河北 geoJSON + 港口/钢厂 + 飞线） ============ */
     async function renderMap() {
@@ -80,7 +83,8 @@ const app = createApp({
           textStyle: { color: '#d8e6ff', fontSize: 20, fontFamily: 'SimHei' },
           formatter: (p) => {
             const n = p.data.node; if (!n) return '';
-            return '<b style="color:#ffc837">' + n.name + '</b><br>' + n.desc;
+            // P3-16：节点文案转义后拼接，杜绝后续数据接入 API 时的 HTML 注入
+            return '<b style="color:#ffc837">' + esc(n.name) + '</b><br>' + esc(n.desc);
           },
         },
         geo: {
@@ -175,8 +179,9 @@ const app = createApp({
       fitStage();
       tickClock();
       clockTimer = setInterval(tickClock, 1000);
-      /* 预警字幕：每 3 秒滚动一行，行高 48px */
+      /* 预警字幕：每 3 秒滚动一行，行高 48px（P3-16：空列表不滚动、回卷定时只挂一次） */
       alertTimer = setInterval(() => {
+        if (!alerts.length) { alertOffset.value = 0; return; }
         alertOffset.value += 1;
         if (alertOffset.value >= alerts.length) setTimeout(() => { alertOffset.value = 0; }, 700);
       }, 3000);
@@ -184,10 +189,16 @@ const app = createApp({
       renderPrice(); renderDonut(); renderBar();
       try { await renderMap(); } catch (e) { console.warn('地图加载失败：', e); }
 
-      /* 窗口尺寸变化：重算舞台缩放 + 图表 resize */
-      window.addEventListener('resize', () => charts.forEach((c) => c.resize()));
+      /* 窗口尺寸变化：重算舞台缩放 + 图表 resize（P3-16：具名监听，卸载时移除） */
+      onResize = () => charts.forEach((c) => c.resize());
+      window.addEventListener('resize', onResize);
     });
-    onBeforeUnmount(() => { clearInterval(clockTimer); clearInterval(alertTimer); });
+    /* P3-16：卸载清理——移除 resize 监听并 dispose 图表，防内存泄漏 */
+    onBeforeUnmount(() => {
+      clearInterval(clockTimer); clearInterval(alertTimer);
+      if (onResize) window.removeEventListener('resize', onResize);
+      charts.forEach((c) => { try { c.dispose(); } catch (e) { /* 已释放则忽略 */ } });
+    });
 
     return { sysTime, kpi, flowNodes, doubledAlerts, alertOffset, transitConfig,
              mapChart, priceChart, donutChart, barChart };

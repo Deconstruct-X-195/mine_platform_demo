@@ -82,9 +82,11 @@ CREATE TABLE IF NOT EXISTS base_port_price (
   price NUMERIC(18,2) NOT NULL, grade NUMERIC(5,2) NOT NULL DEFAULT 61.5,
   deal_price NUMERIC(18,2), -- 交易价格（选填，随行业价格一并录入/修改）
   created_at TIMESTAMP NOT NULL DEFAULT now(), created_by BIGINT,
-  is_deleted SMALLINT DEFAULT 0,
-  CONSTRAINT uk_port_variety_date UNIQUE (variety_id, port_name, price_date, grade)
+  is_deleted SMALLINT DEFAULT 0
 );
+-- 同键（品种×港口×日期×品位）允许多条：重复录入不覆盖原记录、仅新增（2026-11-24 设计变更，
+-- 运行时已移除 uk_port_variety_date 唯一约束，改普通索引）
+CREATE INDEX IF NOT EXISTS idx_port_price_key ON base_port_price (variety_id, port_name, price_date, grade);
 CREATE INDEX IF NOT EXISTS idx_port_price_query ON base_port_price (variety_id, port_name, price_date);
 
 -- 需求单
@@ -219,6 +221,8 @@ CREATE TABLE biz_quote (
   origin VARCHAR(100), -- 产地：供应商申报（必填）
   grade NUMERIC(5,2), -- 品位(%)：供应商申报（必填）
   delivery_type VARCHAR(20), -- 交付方式：PORT_FOB/PORT_TRUCK/PLANT
+  price_sign VARCHAR(2), -- 上下浮方向：+/−（「港口现货价格」固定字样下的上下浮申报）
+  price_float NUMERIC(18,2), -- 上下浮金额（元/湿吨，0=平价）
   quantity NUMERIC(18,3) NOT NULL, delivery_date DATE NOT NULL,
   delivery_place VARCHAR(100), pay_terms VARCHAR(200), quality_commit VARCHAR(300),
   valid_until DATE, remark VARCHAR(300), version INT DEFAULT 1,
@@ -431,3 +435,48 @@ CREATE TABLE sys_file (
   created_at TIMESTAMP NOT NULL DEFAULT now(), created_by BIGINT, is_deleted SMALLINT DEFAULT 0,
   CONSTRAINT uk_file_id UNIQUE (file_id)
 );
+
+-- =============================================================
+-- 以下 4 表由后端运行时 DDL 创建（db.py init_schema 运行时补建），此前未纳入本文档，
+-- 2026-11-27 完整性检查（P3-18）回填；列定义与 db.py 运行时 DDL 一致
+-- =============================================================
+
+-- 集采聚合订单成员明细（T11 归集定标：聚合订单 × 参与钢厂成员的份额与提货计划）
+CREATE TABLE IF NOT EXISTS biz_order_member (
+  id BIGSERIAL PRIMARY KEY,
+  order_id BIGINT NOT NULL, company_id BIGINT NOT NULL, quantity NUMERIC(18,3) NOT NULL,
+  unit_price NUMERIC(18,2), freight_price NUMERIC(18,2),
+  pickup_start_date DATE, pickup_daily_qty NUMERIC(18,3), pickup_remark VARCHAR(500),
+  pickup_status VARCHAR(20) DEFAULT 'DRAFT', pickup_submitted_at TIMESTAMP,
+  buyer_confirm_at TIMESTAMP,
+  created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP,
+  is_deleted SMALLINT DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_order_member_order ON biz_order_member (order_id, is_deleted);
+
+-- 集采成员货权分吨台账（运单到货后按成员分摊登记，T14 分段运单）
+CREATE TABLE IF NOT EXISTS biz_member_cargo (
+  id BIGSERIAL PRIMARY KEY,
+  order_id BIGINT NOT NULL, company_id BIGINT NOT NULL, waybill_id BIGINT,
+  quantity NUMERIC(18,3) NOT NULL, arrive_at TIMESTAMP, remark VARCHAR(500),
+  created_at TIMESTAMP NOT NULL DEFAULT now(), created_by BIGINT, is_deleted SMALLINT DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_member_cargo_order ON biz_member_cargo (order_id, company_id);
+
+-- 物流轨迹发布台账（运营端推送各分段发运/到达节点，钢厂端履约跟踪数据源）
+CREATE TABLE IF NOT EXISTS biz_logistics_publish (
+  id BIGSERIAL PRIMARY KEY,
+  order_id BIGINT NOT NULL, waybill_id BIGINT,
+  node_code VARCHAR(50) NOT NULL, node_name VARCHAR(100),
+  occur_time TIMESTAMP, status VARCHAR(20), remark VARCHAR(500),
+  created_at TIMESTAMP NOT NULL DEFAULT now(), created_by BIGINT, is_deleted SMALLINT DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_logistics_publish_order ON biz_logistics_publish (order_id, is_deleted);
+
+-- 报价附件（报价单随附检测报告/货权证明等文件）
+CREATE TABLE IF NOT EXISTS biz_quote_file (
+  id BIGSERIAL PRIMARY KEY,
+  quote_id BIGINT NOT NULL, file_id VARCHAR(64) NOT NULL, file_name VARCHAR(200),
+  created_at TIMESTAMP NOT NULL DEFAULT now(), created_by BIGINT, is_deleted SMALLINT DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_quote_file_quote ON biz_quote_file (quote_id, is_deleted);

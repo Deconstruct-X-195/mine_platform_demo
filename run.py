@@ -8,6 +8,12 @@
 import os
 import sys
 
+if '--jobs' in sys.argv[1:]:
+    # 独立任务进程自身就是任务执行体（run_once）：禁用 create_app 内的应用任务线程，
+    # 防止同进程"线程 run_loop + run_once"双 tick 并发处理同一批单据
+    # （2026-11-27 P0 修复验证实测：双 tick 并发揭示造成重复审计留痕）
+    os.environ['MINE_DISABLE_JOBS'] = '1'
+
 from backend import create_app
 from backend.db import with_db, init_schema
 from backend.seed import seed, seed_base_data
@@ -36,8 +42,10 @@ if __name__ == '__main__':
     if '--jobs' in sys.argv[1:]:
         # C4（部署适配方案 §5）：独立任务进程单轮执行（systemd timer 调度），不启动 Web
         from backend import jobs
+        from backend.db import close_pool
         print('[jobs] 独立任务进程：单轮执行开始')
         jobs.run_once()
+        close_pool()  # 显式关闭连接池，避免解释器关闭阶段连接池 __del__ 打印噪音
         print('[jobs] 独立任务进程：单轮执行完成')
     else:
         from waitress import serve  # C1（部署适配方案 §5）：生产级 WSGI 容器替换 werkzeug 开发服务器

@@ -3,17 +3,18 @@
 并发冒烟压测（上线前检查 · 性能层）：
 30 线程 × 20 秒，只读接口混合负载（登录成功 + 列表/详情/字典轮询 + 健康检查）。
 判据：err == 0 且 ok > 500（waitress threads=8 下即可达标）。
-用法：python mine_audit_smoke.py   （需服务已在 127.0.0.1:8000 运行）
+用法：python mine_audit_smoke.py   （需服务已在 127.0.0.1:8000 运行，可用 MINE_BASE 覆盖）
 """
 import json
+import os
 import statistics
 import threading
 import time
 import urllib.error
 import urllib.request
 
-API = 'http://127.0.0.1:8000/api/v1'
-HEALTH = 'http://127.0.0.1:8000/health'
+API = os.environ.get('MINE_BASE', 'http://127.0.0.1:8000') + '/api/v1'
+HEALTH = os.environ.get('MINE_BASE', 'http://127.0.0.1:8000') + '/health'
 THREADS = 30
 DURATION = 20.0
 STEEL = {'username': '13800000001', 'password': 'demo123456'}

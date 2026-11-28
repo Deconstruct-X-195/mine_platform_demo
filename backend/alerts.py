@@ -18,7 +18,12 @@ ALERT_CONTENT = {
 
 def create_alert(conn, alert_type, biz_type, biz_id, company_ids, content=None):
     """生成预警（去重：同对象同类型仅一条未关闭预警；且 24h 内曾生成过则节流跳过，
-    避免预警被人工处理后条件仍满足时每轮扫描重复生成并反复推送消息）。"""
+    避免预警被人工处理后条件仍满足时每轮扫描重复生成并反复推送消息）。
+
+    P3-6 说明（多进程并发）：recent 预检查与插入非原子，两进程同时通过预检查时，
+    部分唯一索引 + ON CONFLICT DO NOTHING 仍保证只落一条（权威防线）；落败方
+    RETURNING 为空、不发消息，仅消耗一个 YJ 单号（编号空洞与作废同语义，无害）。
+    """
     recent = q1(
         conn,
         """

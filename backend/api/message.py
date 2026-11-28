@@ -142,18 +142,21 @@ def list_todos():
                      'biz_alert': 'ALERT', 'biz_aggregated_order': 'ORDER', 'biz_aggregated_demand': 'DEMAND'}
 
     def hash_of(biz_type):
-        """按业务类型 + 当前角色返回跳转页。"""
+        """按业务类型 + 当前角色返回跳转页。
+
+        P2-2 修复：合同/结算已无独立前端页（合同流程并入订单页、结算信息在
+        履约跟踪页全链信息表），原 #/contract、#/settlement、#/contract-admin、
+        #/settlement-stats 均为死链，统一改指真实存在的页面。
+        """
         if g.ctx.is_plat:
-            return {'CONTRACT': '#/contract-admin', 'COMPANY': '#/admin-companies',
+            return {'CONTRACT': '#/order-admin', 'COMPANY': '#/admin-companies',
                     'WAYBILL': '#/logistics-dispatch', 'ORDER': '#/logistics-dispatch',
-                    'SETTLEMENT': '#/settlement-stats', 'INQUIRY': '#/quote-inquiry',
+                    'SETTLEMENT': '#/order-admin', 'INQUIRY': '#/quote-inquiry',
                     'DEMAND': '#/demand-list'}.get(biz_type, '')
-        if 'LOGISTICS_CARRIER' in roles:
-            return '#/waybill'
         if 'SUPPLIER' in roles:
-            return {'CONTRACT': '#/contract', 'ORDER': '#/order', 'SETTLEMENT': '#/settlement',
+            return {'CONTRACT': '#/order', 'ORDER': '#/order', 'SETTLEMENT': '#/order',
                     'INQUIRY': '#/inquiry', 'DEMAND': '#/inquiry'}.get(biz_type, '')
-        return {'CONTRACT': '#/contract', 'ORDER': '#/order', 'SETTLEMENT': '#/settlement',
+        return {'CONTRACT': '#/order', 'ORDER': '#/order', 'SETTLEMENT': '#/track',
                 'WAYBILL': '#/track', 'DEMAND': '#/demand'}.get(biz_type, '')
 
     if box == 'done':
@@ -196,8 +199,9 @@ def list_todos():
         wscope = '' if g.ctx.is_plat else \
             ' AND (w.carrier_id=%s OR EXISTS (SELECT 1 FROM biz_order o WHERE o.id=w.order_id AND (o.buyer_id=%s OR o.supplier_id=%s)))'
         wargs = [] if g.ctx.is_plat else [cid, cid, cid]
-        # 运单（in 子句需要按 doing/applied 拼接）
-        wstat = ("IN ('PENDING_ASSIGN','PENDING_ACCEPT','PENDING_DEPART','IN_TRANSIT','ARRIVED')"
+        # P3-19：运单创建即 PENDING_DEPART（承运商端已下线，logistics.py 创建直入待发运），
+        # PENDING_ASSIGN/PENDING_ACCEPT 状态不可达，doing 统计不再包含
+        wstat = ("IN ('PENDING_DEPART','IN_TRANSIT','ARRIVED')"
                  if doing else "IN ('SIGNED','CANCELLED')")
         for r in qall(g.conn, """
                 SELECT w.id, w.waybill_no AS t, w.created_at FROM biz_waybill w
@@ -243,15 +247,13 @@ def list_todos():
         for r in qall(g.conn, """
                 SELECT id, contract_no AS t, created_at FROM biz_contract
                 WHERE plat_status='PENDING' AND is_deleted=0 ORDER BY id DESC LIMIT 20"""):
-            add('CONTRACT', r['id'], '合同待核验：' + r['t'], r['created_at'], '#/contract-admin')
+            add('CONTRACT', r['id'], '合同待核验：' + r['t'], r['created_at'], '#/order-admin')
         for r in qall(g.conn, """
                 SELECT id, company_name AS t, created_at FROM ent_company
                 WHERE audit_status='PENDING' AND is_deleted=0 ORDER BY id DESC LIMIT 20"""):
             add('COMPANY', r['id'], '企业准入待审核：' + r['t'], r['created_at'], '#/admin-companies')
-        for r in qall(g.conn, """
-                SELECT id, waybill_no AS t, created_at FROM biz_waybill
-                WHERE status='PENDING_ASSIGN' AND is_deleted=0 ORDER BY id DESC LIMIT 20"""):
-            add('WAYBILL', r['id'], '运单待指派承运商：' + r['t'], r['created_at'], '#/logistics-dispatch')
+        # P3-19：「运单待指派承运商」监听已移除——运单创建即 PENDING_DEPART，
+        # PENDING_ASSIGN 状态不可达（原查询永不命中）
     elif cid:
         if 'STEEL_BUYER' in roles:
             for r in qall(g.conn, """
@@ -264,13 +266,13 @@ def list_todos():
                     JOIN biz_order o ON o.id=c.order_id
                     WHERE o.buyer_id=%s AND c.status='PENDING_BUYER' AND c.is_deleted=0
                     ORDER BY c.id DESC LIMIT 20""", (cid,)):
-                add('CONTRACT', r['id'], '合同待签署（需方）：' + r['t'], r['created_at'], '#/contract')
+                add('CONTRACT', r['id'], '合同待签署（需方）：' + r['t'], r['created_at'], '#/order')
             for r in qall(g.conn, """
                     SELECT s.id, s.settle_no AS t, s.created_at FROM biz_settlement s
                     JOIN biz_order o ON o.id=s.order_id
                     WHERE o.buyer_id=%s AND s.status='PENDING_CONFIRM_BUYER' AND s.is_deleted=0
                     ORDER BY s.id DESC LIMIT 20""", (cid,)):
-                add('SETTLEMENT', r['id'], '结算单待确认：' + r['t'], r['created_at'], '#/settlement')
+                add('SETTLEMENT', r['id'], '结算单待确认：' + r['t'], r['created_at'], '#/track')
         if 'SUPPLIER' in roles:
             for r in qall(g.conn, """
                     SELECT i.id, i.inquiry_no AS t, i.created_at FROM biz_inquiry_invite inv
@@ -283,23 +285,14 @@ def list_todos():
                     JOIN biz_order o ON o.id=c.order_id
                     WHERE o.supplier_id=%s AND c.status='PENDING_SUPPLIER' AND c.is_deleted=0
                     ORDER BY c.id DESC LIMIT 20""", (cid,)):
-                add('CONTRACT', r['id'], '合同待签署（供方）：' + r['t'], r['created_at'], '#/contract')
+                add('CONTRACT', r['id'], '合同待签署（供方）：' + r['t'], r['created_at'], '#/order')
             for r in qall(g.conn, """
                     SELECT s.id, s.settle_no AS t, s.created_at FROM biz_settlement s
                     JOIN biz_order o ON o.id=s.order_id
                     WHERE o.supplier_id=%s AND s.status='PENDING_CONFIRM_SUPPLIER' AND s.is_deleted=0
                     ORDER BY s.id DESC LIMIT 20""", (cid,)):
-                add('SETTLEMENT', r['id'], '结算单待确认：' + r['t'], r['created_at'], '#/settlement')
-        if 'LOGISTICS_CARRIER' in roles:
-            for r in qall(g.conn, """
-                    SELECT id, waybill_no AS t, created_at FROM biz_waybill
-                    WHERE carrier_id=%s AND status='PENDING_ACCEPT' AND is_deleted=0
-                    ORDER BY id DESC LIMIT 20""", (cid,)):
-                add('WAYBILL', r['id'], '运单待接单：' + r['t'], r['created_at'], '#/waybill')
-            for r in qall(g.conn, """
-                    SELECT id, waybill_no AS t, created_at FROM biz_waybill
-                    WHERE carrier_id=%s AND status='PENDING_DEPART' AND is_deleted=0
-                    ORDER BY id DESC LIMIT 20""", (cid,)):
-                add('WAYBILL', r['id'], '运单待发运：' + r['t'], r['created_at'], '#/waybill')
+                add('SETTLEMENT', r['id'], '结算单待确认：' + r['t'], r['created_at'], '#/order')
+        # P3-19：承运商待办监听已移除——承运商端已下线（登录禁用），且
+        # PENDING_ACCEPT 状态不可达、#/waybill 为死链，原两段查询永不命中
     tasks.sort(key=lambda x: str(x['createdAt'] or ''), reverse=True)
     return ok({'list': tasks, 'total': len(tasks)})

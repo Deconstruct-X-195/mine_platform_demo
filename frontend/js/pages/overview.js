@@ -24,13 +24,15 @@
     const roles = (user && user.roles) || [];
     if (roles.indexOf('SUPPLIER') >= 0) return supplierOverview(page);
     const d = await API.get('/buyer/overview');
+    const kpi = d.kpi || {};                       // P3-14：后端缺字段/接口异常时空值兜底，防整页渲染失败
+    const flow = Array.isArray(d.flow) ? d.flow : [];
 
     /* 1. KPI 面板 */
     const kpis = [
-      ['订单总数', d.kpi.orderTotal, '单', '#/order'],
-      ['待询价', d.kpi.pendingInquiry, '条', '#/demand'],
-      ['运输中', d.kpi.inTransit, '票', '#/logistics'],
-      ['待付款', d.kpi.pendingPay, '笔', '#/order'],
+      ['订单总数', kpi.orderTotal, '单', '#/order'],
+      ['待询价', kpi.pendingInquiry, '条', '#/demand'],
+      ['运输中', kpi.inTransit, '票', '#/logistics'],
+      ['待付款', kpi.pendingPay, '笔', '#/order'],
     ];
     page.appendChild(UI.h('div', { class: 'card stat-strip' },
       kpis.map(([label, val, unit, hash]) => UI.h('a', { class: 'stat-strip-item ov-kpi', href: hash },
@@ -42,7 +44,7 @@
       UI.h('h3', { class: 'bar-title' }, '采购全流程概览',
         UI.h('button', { class: 'sm primary', style: 'margin-left:auto', onclick: () => { location.hash = '#/demand'; } }, '去采购')),
       UI.h('div', { class: 'flow-steps' },
-        d.flow.map((s, i) => [
+        flow.map((s, i) => [
           i ? UI.h('span', { class: 'flow-arrow' }, '→') : null,
           UI.h('a', {
             class: 'flow-step' + (s.count > 0 ? ' active' : '') + (s.hash ? '' : ' disabled'),
@@ -72,12 +74,12 @@
       ], todos) : UI.h('div', { class: 'empty' }, '暂无待办事项，一切进展顺利')));
   };
 
-  /* 钢厂端待办：类型标签与跳转菜单 */
+  /* 钢厂端待办：类型标签与跳转菜单（#/bargain 页面已并入询价报价议价页，P2-1 修复死链） */
   const STEEL_TODO_TAG = {
     DEMAND: ['待提交', ' orange'], REVIEW: ['待评审', ' red'],
     BARGAIN: ['议价中', ' blue'], ARRIVED: ['待签收', ' blue'],
   };
-  const STEEL_TODO_HASH = { DEMAND: '#/demand', REVIEW: '#/bargain', BARGAIN: '#/bargain', ARRIVED: '#/track' };
+  const STEEL_TODO_HASH = { DEMAND: '#/demand', REVIEW: '#/inquiry', BARGAIN: '#/inquiry', ARRIVED: '#/track' };
 
   /* 供应商端总览：KPI 五卡 + 待办事项列表 + 近期动态 */
   const SUP_TODO_TAG = { QUOTE: ['待报价', ' orange'], CONFIRM: ['待确认', ' red'] };
@@ -85,14 +87,15 @@
 
   async function supplierOverview(page) {
     const d = await API.get('/supplier/overview');
+    const kpi = d.kpi || {};                       // P3-14：空值兜底同钢厂端
 
     /* 1. KPI 面板（五卡） */
     const kpis = [
-      ['总订单数', d.kpi.orderTotal, '单', '#/order'],
-      ['总吨数', UI.fmtQty(d.kpi.totalQty), '湿吨', '#/order'],
-      ['待报价单数', d.kpi.pendingQuote, '条', '#/inquiry'],
-      ['运输中单数', d.kpi.inTransit, '票', '#/track'],
-      ['已完成订单', d.kpi.completed, '单', '#/order'],
+      ['总订单数', kpi.orderTotal, '单', '#/order'],
+      ['总吨数', UI.fmtQty(kpi.totalQty), '湿吨', '#/order'],
+      ['待报价单数', kpi.pendingQuote, '条', '#/inquiry'],
+      ['运输中单数', kpi.inTransit, '票', '#/track'],
+      ['已完成订单', kpi.completed, '单', '#/order'],
     ];
     page.appendChild(UI.h('div', { class: 'card stat-strip' },
       kpis.map(([label, val, unit, hash]) => UI.h('a', { class: 'stat-strip-item ov-kpi', href: hash },

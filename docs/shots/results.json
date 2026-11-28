@@ -1,0 +1,92 @@
+[
+  {
+    "step": "S01 登录页渲染",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S02 需方登录+首页",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S03 新建需求+提交",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S04 平台需求归集",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S05 平台代发询价",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S06 平台询价列表渲染",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S07 供方登录+询价列表",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S08 供方密封报价",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S09 平台汇总揭示",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S10 钢厂比价认可自动成单",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S11 供方确认订单",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S12 钢厂提交提货计划",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S13 平台方案+分段运单",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S14 平台节点录入+推送钢厂",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S15 钢厂物流节点跟踪",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S16 钢厂订单详情渲染",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S17 履约跟踪渲染",
+    "ok": true,
+    "detail": "OK"
+  },
+  {
+    "step": "S24 console错误收集",
+    "ok": true,
+    "detail": "OK"
+  }
+]

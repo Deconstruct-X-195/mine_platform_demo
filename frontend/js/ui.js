@@ -25,6 +25,20 @@
     setTimeout(() => t.remove(), 3200);
   }
 
+  /* P2-6/P3-15 卸载自清理登记：动态节点离开 DOM 后，其上挂的 document 级监听
+     （下拉关闭）与 ResizeObserver 不再可达也不会被 GC 回收，形成内存泄漏。
+     这里统一登记 (节点, 清理函数)，30s 周期扫描将已卸载节点的资源释放。 */
+  const _detachedCleanups = [];
+  function registerCleanup(el, fn) { _detachedCleanups.push([el, fn]); }
+  setInterval(() => {
+    for (let i = _detachedCleanups.length - 1; i >= 0; i--) {
+      if (!_detachedCleanups[i][0].isConnected) {
+        try { _detachedCleanups[i][1](); } catch (e) { /* 清理失败不影响扫描 */ }
+        _detachedCleanups.splice(i, 1);
+      }
+    }
+  }, 30000);
+
   function modal(title, bodyNode, footNodes, opts) {
     const close = () => mask.remove();
     /* noAutoClose: 不自动追加「关 闭」按钮（弹窗已自带取消/保存时使用） */
@@ -71,6 +85,7 @@
       document.body.appendChild(a);
       a.click();
       a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);   // P3-15：释放 blob URL，防内存累积
       toast('已导出 ' + rows.length + ' 条', 'ok');
     };
     let m;
@@ -204,7 +219,11 @@
         panel.appendChild(opt);
       });
     }
-    function open() { renderPanel(); wrap.classList.add('open'); document.addEventListener('click', close, true); }
+    function open() {
+      renderPanel(); wrap.classList.add('open');
+      document.addEventListener('click', close, true);
+      registerCleanup(wrap, close);   // P2-6：节点卸载后自动摘除 document 级监听，防泄漏
+    }
     function close() { wrap.classList.remove('open'); document.removeEventListener('click', close, true); }
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -380,7 +399,11 @@
     svg.appendChild(overlay);
     };
     requestAnimationFrame(draw);
-    if (window.ResizeObserver) new ResizeObserver(draw).observe(wrap);
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(draw);
+      ro.observe(wrap);
+      registerCleanup(wrap, () => ro.disconnect());   // P3-15：节点卸载后停止观察，防泄漏
+    }
     return wrap;
   }
 
@@ -569,7 +592,11 @@
       svg.appendChild(overlay);
     };
     requestAnimationFrame(draw);
-    if (window.ResizeObserver) new ResizeObserver(draw).observe(chartWrap);
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(draw);
+      ro.observe(chartWrap);
+      registerCleanup(chartWrap, () => ro.disconnect());   // P3-15：同上防泄漏
+    }
     wrap.appendChild(chartWrap);
     return wrap;
   }

@@ -49,6 +49,20 @@ def pool():
     return _pool
 
 
+def close_pool():
+    """显式关闭进程级连接池：独立任务进程（run.py --jobs）单轮执行完成后调用，
+    避免解释器关闭阶段 ConnectionPool.__del__ 后台 join 线程打印
+    PythonFinalizationError 噪音（退出码不受影响，但定时任务日志不该有异常栈）。"""
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            try:
+                _pool.close()
+            except Exception:
+                pass
+            _pool = None
+
+
 @contextmanager
 def with_db():
     """请求级连接：进入开启事务，正常退出提交，异常回滚（连接自池获取/归还）。
@@ -61,9 +75,15 @@ def with_db():
         yield conn
         conn.commit()
     except Exception:
-        conn.rollback()
-        raise
+        try:
+            conn.rollback()
+        except Exception:
+            pass  # P3-10：坏连接上 rollback 自身可能抛错，保留原异常向外传播
+        raise  # 业务异常继续向外传播（Flask 错误处理依赖）
     finally:
+        # P3-10 修复：putconn 保证归还（防连接泄漏）；断连/坏连接由连接池
+        # 归还时自动弃用并重建（_return_connection 判定 transaction_status
+        # == UNKNOWN 即丢弃重开），坏连接不会再被反复复用
         pool().putconn(conn)
 
 
@@ -97,7 +117,8 @@ def init_schema(conn):
     """执行建表脚本（幂等：仅当核心表不存在时执行）。"""
     created = False
     if not schema_ready(conn):
-        sql = open(_SCHEMA_FILE, encoding='utf-8').read()
+        with open(_SCHEMA_FILE, encoding='utf-8') as f:  # P3-10：with 块确保句柄及时释放
+            sql = f.read()
         with conn.cursor() as cur:
             cur.execute(sql)
         created = True
